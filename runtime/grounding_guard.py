@@ -82,6 +82,7 @@ class GroundingGuard:
         self._timestamps: list[tuple[float, float]] = []  # (start, end) per token
         self._tombstones: list[Tombstone] = []
         self._staged_candidates: dict[str, tuple[str, tuple[int, int], int]] = {}
+        self._turn_id: int = 0
 
     # ---- ingestion ------------------------------------------------------
 
@@ -104,6 +105,7 @@ class GroundingGuard:
         self._timestamps.clear()
         self._tombstones.clear()
         self._staged_candidates.clear()
+        self._turn_id += 1
 
     # ---- tombstoning ------------------------------------------------
 
@@ -196,8 +198,7 @@ class GroundingGuard:
         """
         is_grounded, _, _ = self.check_argument_grounding(raw_value, token_range, domain)
         if is_grounded:
-            capture_epoch = self.epoch_clock.current if self.epoch_clock else 0
-            self._staged_candidates[field_name] = (raw_value, token_range, capture_epoch)
+            self._staged_candidates[field_name] = (raw_value, token_range, self._turn_id)
             return field_name
         return None
 
@@ -208,20 +209,20 @@ class GroundingGuard:
         Returns None if:
           - field_name is not in _staged_candidates
           - the stored token_range currently overlaps ANY tombstone (live check)
-          - epoch_clock is set and capture_epoch != epoch_clock.current
+          - the candidate was captured in a prior turn
         Otherwise returns the stored value.
         """
         if field_name not in self._staged_candidates:
             return None
         
-        raw_value, token_range, capture_epoch = self._staged_candidates[field_name]
+        raw_value, token_range, capture_turn = self._staged_candidates[field_name]
         start, end = token_range
         
         # Re-check live for overlapping tombstones
         if any(self.is_tombstoned(i) for i in range(start, end)):
             return None
             
-        if self.epoch_clock is not None and capture_epoch != self.epoch_clock.current:
+        if capture_turn != self._turn_id:
             return None
             
         return raw_value
