@@ -17,11 +17,15 @@ boundary).
 
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
+
+from runtime.speculative_saga import TurnEpochClock
+
 
 # Domain-adaptive confidence floors. FDB-v3's chained (depth 2-3) tasks
 # compound low-confidence args across hops, so higher-stakes domains get
@@ -71,11 +75,13 @@ class GroundingGuard:
     saga manager.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, epoch_clock: Optional[TurnEpochClock] = None) -> None:
+        self.epoch_clock = epoch_clock
         self._tokens: list[str] = []
         self._confidences: list[float] = []
         self._timestamps: list[tuple[float, float]] = []  # (start, end) per token
         self._tombstones: list[Tombstone] = []
+        self._staged_candidates: dict[str, tuple[str, tuple[int, int], int]] = {}
 
     # ---- ingestion ------------------------------------------------------
 
@@ -97,6 +103,7 @@ class GroundingGuard:
         self._confidences.clear()
         self._timestamps.clear()
         self._tombstones.clear()
+        self._staged_candidates.clear()
 
     # ---- tombstoning ------------------------------------------------
 
@@ -119,6 +126,18 @@ class GroundingGuard:
             end_ts=self._timestamps[repair_cue_idx - 1][1],
         )
         self._tombstones.append(Tombstone(span=span, reason="repair_cue"))
+
+        # Evict overlapping staged candidates
+        fields_to_remove = []
+        for field_name, (_, (c_start, c_end), _) in self._staged_candidates.items():
+            if max(start, c_start) < min(repair_cue_idx, c_end):
+                fields_to_remove.append(field_name)
+        for field_name in fields_to_remove:
+            self._staged_candidates.pop(field_name, None)
+
+        # Let Phase 2 machinery see this correction as a stale-epoch event
+        if self.epoch_clock is not None:
+            asyncio.create_task(self.epoch_clock.advance(reason="self_correction"))
 
     def is_tombstoned(self, token_idx: int) -> bool:
         return any(t.span.start <= token_idx < t.span.end for t in self._tombstones)
@@ -161,6 +180,51 @@ class GroundingGuard:
             return False, mean_conf, f"mean confidence {mean_conf:.2f} below {domain} floor {floor:.2f}"
 
         return True, mean_conf, "grounded"
+
+    # ---- candidate staging and resolution -------------------------------
+
+    def stage_candidate(
+        self,
+        field_name: str,
+        raw_value: str,
+        token_range: tuple[int, int],
+        domain: str = "default",
+    ) -> Optional[str]:
+        """
+        Runs check_argument_grounding; on success, stores into
+        _staged_candidates and returns field_name. On failure returns None.
+        """
+        is_grounded, _, _ = self.check_argument_grounding(raw_value, token_range, domain)
+        if is_grounded:
+            capture_epoch = self.epoch_clock.current if self.epoch_clock else 0
+            self._staged_candidates[field_name] = (raw_value, token_range, capture_epoch)
+            return field_name
+        return None
+
+    def resolve_current_value(self, field_name: str) -> Optional[str]:
+        """
+        The ONLY method that should ever hand back a value fit for use as a tool argument.
+
+        Returns None if:
+          - field_name is not in _staged_candidates
+          - the stored token_range currently overlaps ANY tombstone (live check)
+          - epoch_clock is set and capture_epoch != epoch_clock.current
+        Otherwise returns the stored value.
+        """
+        if field_name not in self._staged_candidates:
+            return None
+        
+        raw_value, token_range, capture_epoch = self._staged_candidates[field_name]
+        start, end = token_range
+        
+        # Re-check live for overlapping tombstones
+        if any(self.is_tombstoned(i) for i in range(start, end)):
+            return None
+            
+        if self.epoch_clock is not None and capture_epoch != self.epoch_clock.current:
+            return None
+            
+        return raw_value
 
 
 # --------------------------------------------------------------------------
