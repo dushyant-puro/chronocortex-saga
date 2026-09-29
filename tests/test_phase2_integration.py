@@ -233,7 +233,8 @@ async def test_05_stale_read_cannot_corrupt_current_result():
     assert action_new.state == ActionState.COMMITTED
 
     # Let the OLD stale read complete (it should be ABORTED at this point)
-    gate.set_result({"stale": True})
+    if not gate.done():
+        gate.set_result({"stale": True})
     await asyncio.sleep(0)
 
     # get_current_result must return the NEW result from epoch 1, never the stale one
