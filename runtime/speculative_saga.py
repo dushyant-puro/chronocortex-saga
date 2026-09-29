@@ -142,6 +142,9 @@ class StagedAction:
     error: Optional[BaseException] = None
     compensate: Optional[Callable[[Any], Awaitable[None]]] = None
     superseded_epoch: Optional[int] = None     # set by _on_epoch_advance when write is IN_FLIGHT
+    compensation_failed: bool = False          # set True if _auto_compensate() raises; allows
+                                               # a failed auto-compensation to be distinguished
+                                               # from one that was never attempted
     _task: Optional[asyncio.Task] = field(default=None, repr=False)
     created_at: float = field(default_factory=time.monotonic)
 
@@ -279,6 +282,49 @@ class SpeculativeSagaManager:
                         )
 
     # ---- speculative reads ------------------------------------------------
+
+    def get_current_result(self, entity_hash: str) -> Any:
+        """
+        Return the result of the most recent speculative read for this
+        entity_hash, BUT ONLY IF:
+          - the most recent action for this entity_hash is in COMMITTED state, AND
+          - its capture_epoch equals the current epoch (i.e. the result is
+            still valid for this conversational turn).
+
+        Returns None in ALL other cases, including:
+          - No action has ever been fired for this entity_hash.
+          - The most recent action is IN_FLIGHT, ABORTED, IN_FLIGHT_UNKNOWN,
+            COMMITTED_STALE, or COMPENSATED.
+          - The action is COMMITTED but its capture_epoch is stale (the epoch
+            advanced after the read landed, making the result obsolete).
+
+        This is the ONLY sanctioned way for write-staging code to consume
+        a prior speculative read's result. Do NOT read action.result directly
+        from an action object to decide write arguments — epoch-staleness
+        checks are silently skipped that way, enabling a new class of
+        'stale-read feeds live-write' bugs that are invisible to the saga
+        state machine.
+
+        Usage pattern::
+
+            result = saga.get_current_result("truck-17")
+            if result is None:
+                return  # read not ready or stale — do not stage the write yet
+            action = saga.stage_write("reroute_truck", {"destination": result["route"]})
+        """
+        entry = self._debounce.get(entity_hash)
+        if entry is None:
+            return None
+        action_id, _ = entry
+        action = self._actions.get(action_id)
+        if action is None:
+            return None
+        if (
+            action.state == ActionState.COMMITTED
+            and action.capture_epoch == self.epoch_clock.current
+        ):
+            return action.result
+        return None
 
     def fire_speculative_read(
         self,
@@ -515,7 +561,14 @@ class SpeculativeSagaManager:
         return result
 
     async def _auto_compensate(self, action: StagedAction) -> None:
-        """Run automatic compensation for a COMMITTED_STALE action."""
+        """
+        Run automatic compensation for a COMMITTED_STALE action.
+
+        On success: action.state -> COMPENSATED.
+        On failure: logs CRITICAL and sets action.compensation_failed = True
+          so the failure is observable via snapshot()/inspection, not just in
+          log output. Mirrors the error-handling pattern of abort_chain_from().
+        """
         assert action.compensate is not None
         try:
             await action.compensate(action.result)
@@ -525,10 +578,12 @@ class SpeculativeSagaManager:
                 action.action_id, action.tool_name,
             )
         except Exception:
-            logger.exception(
+            action.compensation_failed = True
+            logger.critical(
                 "AUTO-COMPENSATION FAILED for COMMITTED_STALE action %s (%s) — "
-                "MANUAL RECONCILIATION REQUIRED",
+                "MANUAL RECONCILIATION REQUIRED; action.compensation_failed=True",
                 action.action_id, action.tool_name,
+                exc_info=True,
             )
 
     # ---- reconciliation ---------------------------------------------------
@@ -681,6 +736,7 @@ class SpeculativeSagaManager:
                 "epoch": a.capture_epoch,
                 "superseded_epoch": a.superseded_epoch,
                 "idempotency_key": a.idempotency_key,
+                "compensation_failed": a.compensation_failed,
                 "age_ms": round((time.monotonic() - a.created_at) * 1000, 1),
             }
             for a in self._actions.values()

@@ -16,6 +16,8 @@ import random
 from dataclasses import dataclass
 from typing import Any
 
+from runtime.tool_contract import ToolManifest
+
 
 # ---- mock backing store (stands in for a real fleet telematics API) -------
 
@@ -115,4 +117,76 @@ READ_TOOLS = {
 WRITE_TOOLS = {
     "reroute_truck": (reroute_truck, compensate_reroute),
     "reserve_dock": (reserve_dock, compensate_reserve_dock),
+}
+
+# ---- tool manifests (additive metadata; does not replace READ_TOOLS/WRITE_TOOLS) ----
+#
+# Each ToolManifest describes the behavioural contract of one tool so that
+# the saga integration layer can decide dispatch strategy without hard-coding
+# per-tool logic. All actual dispatch still goes through SpeculativeSagaManager.
+#
+# Timeout rationale:
+#   - Reads: 2.0 s — network P99 for telematics fabric is well under 500 ms;
+#     2 s gives headroom for degraded conditions without blocking speculative
+#     prefetch for too long.
+#   - reroute_truck: 4.0 s — fleet routing API has higher tail latency.
+#   - reserve_dock: 3.0 s — dock management API; shorter than routing because
+#     the dock call either succeeds quickly or raises immediately on conflict.
+
+TOOL_MANIFEST: dict[str, ToolManifest] = {
+    "query_telemetry": ToolManifest(
+        tool_name="query_telemetry",
+        kind="read",
+        idempotent=True,           # same truck_id always returns current snapshot
+        cancellable=True,          # read; no remote side-effect to worry about
+        requires_authoritative_commit=False,
+        compensate=None,           # reads have no compensation path
+        reconciliation=None,       # reads need no reconciliation (idempotent re-read)
+        timeout=2.0,
+        telemetry_category="fleet.telematics",
+    ),
+    "query_traffic": ToolManifest(
+        tool_name="query_traffic",
+        kind="read",
+        idempotent=True,           # snapshot read; repeated calls yield fresh snapshots
+        cancellable=True,
+        requires_authoritative_commit=False,
+        compensate=None,
+        reconciliation=None,
+        timeout=2.0,
+        telemetry_category="fleet.traffic",
+    ),
+    "query_dock_availability": ToolManifest(
+        tool_name="query_dock_availability",
+        kind="read",
+        idempotent=True,           # availability is a snapshot; re-reading is safe
+        cancellable=True,
+        requires_authoritative_commit=False,
+        compensate=None,
+        reconciliation=None,
+        timeout=2.0,
+        telemetry_category="fleet.dock",
+    ),
+    "reroute_truck": ToolManifest(
+        tool_name="reroute_truck",
+        kind="write",
+        idempotent=False,          # each call creates a new route record
+        cancellable=False,         # write; cancellation after dispatch ≠ non-execution
+        requires_authoritative_commit=True,
+        compensate=compensate_reroute,
+        reconciliation=None,       # no reconciliation endpoint modelled in mock
+        timeout=4.0,
+        telemetry_category="fleet.routing",
+    ),
+    "reserve_dock": ToolManifest(
+        tool_name="reserve_dock",
+        kind="write",
+        idempotent=False,          # reserving an already-reserved dock raises
+        cancellable=False,
+        requires_authoritative_commit=True,
+        compensate=compensate_reserve_dock,
+        reconciliation=None,
+        timeout=3.0,
+        telemetry_category="fleet.dock",
+    ),
 }
