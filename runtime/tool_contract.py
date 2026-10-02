@@ -54,12 +54,32 @@ Fields:
   telemetry_category : str
       Free-form label for observability routing (e.g. dashboard bucketing,
       alerting thresholds). Not validated here.
+
+  depends_on   : list[str]
+      Tool names this tool's execution pattern depends on (e.g. query_traffic
+      depends_on=["query_telemetry"]).
+
+  required_permissions : list[str]
+      Inert permission metadata for future authorization layers (New Phase 12).
+      Does not block or alter tool dispatch in this phase.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Literal, Optional
+
+
+class ToolContractError(ValueError):
+    """Base exception for tool contract violations."""
+
+
+class InvalidToolKindError(ToolContractError):
+    """Raised when a tool's kind (read vs write) does not match the operation being performed."""
+
+
+class CyclicDependencyError(ToolContractError):
+    """Raised when registering a tool would create a cyclic dependency in the tool graph."""
 
 
 @dataclass(frozen=True)
@@ -71,10 +91,112 @@ class ToolManifest:
     """
     tool_name: str
     kind: Literal["read", "write"]
-    idempotent: bool
-    cancellable: bool
-    requires_authoritative_commit: bool
-    compensate: Optional[Callable[[Any], Awaitable[None]]]
-    reconciliation: Optional[Callable[[Any], Awaitable[Optional[bool]]]]
-    timeout: float
-    telemetry_category: str
+    idempotent: bool = True
+    cancellable: bool = True
+    requires_authoritative_commit: bool = False
+    compensate: Optional[Callable[[Any], Awaitable[None]]] = None
+    reconciliation: Optional[Callable[[Any], Awaitable[Optional[bool]]]] = None
+    timeout: float = 4.0
+    telemetry_category: str = "default"
+    depends_on: list[str] = field(default_factory=list)
+    required_permissions: list[str] = field(default_factory=list)
+
+
+class ToolRegistry:
+    """
+    Registry for ToolManifest objects enforcing graph acyclicity at registration time
+    and offering deterministic topological ordering.
+    """
+
+    def __init__(self) -> None:
+        self._manifests: dict[str, ToolManifest] = {}
+
+    def register(self, manifest: ToolManifest) -> None:
+        """
+        Register a ToolManifest.
+        Detects cycles in the depends_on graph across all currently registered manifests
+        at registration time and raises CyclicDependencyError if adding this manifest
+        would create a cycle.
+        """
+        candidate = dict(self._manifests)
+        candidate[manifest.tool_name] = manifest
+
+        # 0 = unvisited, 1 = visiting (in active recursion stack), 2 = visited
+        state: dict[str, int] = {}
+
+        def dfs(node: str) -> None:
+            state[node] = 1
+            mf = candidate[node]
+            for dep in mf.depends_on:
+                if dep in candidate:
+                    dep_state = state.get(dep, 0)
+                    if dep_state == 1:
+                        raise CyclicDependencyError(
+                            f"Cyclic dependency detected: '{node}' depends on '{dep}', "
+                            f"which is currently active in the dependency chain."
+                        )
+                    if dep_state == 0:
+                        dfs(dep)
+            state[node] = 2
+
+        for tool_name in candidate:
+            if state.get(tool_name, 0) == 0:
+                dfs(tool_name)
+
+        # Committed only if cycle check passes
+        self._manifests[manifest.tool_name] = manifest
+
+    def get(self, tool_name: str, default: Optional[ToolManifest] = None) -> Optional[ToolManifest]:
+        return self._manifests.get(tool_name, default)
+
+    def __getitem__(self, tool_name: str) -> ToolManifest:
+        return self._manifests[tool_name]
+
+    def __contains__(self, tool_name: str) -> bool:
+        return tool_name in self._manifests
+
+    def __len__(self) -> int:
+        return len(self._manifests)
+
+    def __iter__(self):
+        return iter(self._manifests)
+
+    @property
+    def manifests(self) -> dict[str, ToolManifest]:
+        return dict(self._manifests)
+
+    def topological_order(self) -> list[str]:
+        """
+        Returns registered tool names in dependency-respecting order
+        (prerequisites before dependents). Deterministic tie-breaking
+        using alphabetical order for equal-priority nodes.
+        """
+        if not self._manifests:
+            return []
+
+        in_degree: dict[str, int] = {name: 0 for name in self._manifests}
+        dependents: dict[str, list[str]] = {name: [] for name in self._manifests}
+
+        for name, mf in self._manifests.items():
+            for dep in mf.depends_on:
+                if dep in self._manifests:
+                    in_degree[name] += 1
+                    dependents[dep].append(name)
+
+        ready = sorted([name for name, deg in in_degree.items() if deg == 0])
+        order: list[str] = []
+
+        while ready:
+            curr = ready.pop(0)
+            order.append(curr)
+            for nxt in dependents[curr]:
+                in_degree[nxt] -= 1
+                if in_degree[nxt] == 0:
+                    ready.append(nxt)
+            ready.sort()
+
+        if len(order) < len(self._manifests):
+            raise CyclicDependencyError("Dependency graph contains an unresolved cycle.")
+
+        return order
+

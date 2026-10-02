@@ -16,7 +16,7 @@ import random
 from dataclasses import dataclass
 from typing import Any
 
-from runtime.tool_contract import ToolManifest
+from runtime.tool_contract import ToolManifest, ToolRegistry
 
 
 # ---- mock backing store (stands in for a real fleet telematics API) -------
@@ -155,6 +155,7 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         reconciliation=None,
         timeout=2.0,
         telemetry_category="fleet.traffic",
+        depends_on=["query_telemetry"],
     ),
     "query_dock_availability": ToolManifest(
         tool_name="query_dock_availability",
@@ -190,3 +191,12 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         telemetry_category="fleet.dock",
     ),
 }
+
+# ---- tool registry (with acyclicity enforcement and topological ordering) --
+
+TOOL_REGISTRY: ToolRegistry = ToolRegistry()
+for _mf in TOOL_MANIFEST.values():
+    TOOL_REGISTRY.register(_mf)
+
+FLEET_TOOL_REGISTRY = TOOL_REGISTRY
+

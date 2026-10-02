@@ -52,6 +52,13 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any, Awaitable, Callable, Optional
 
+from runtime.tool_contract import (
+    InvalidToolKindError,
+    ToolContractError,
+    ToolManifest,
+    ToolRegistry,
+)
+
 logger = logging.getLogger("ccs.saga")
 
 
@@ -146,6 +153,7 @@ class StagedAction:
                                                # a failed auto-compensation to be distinguished
                                                # from one that was never attempted
     dispatch_latency_ms: Optional[float] = None # measured latency in ms for speculative read dispatch-to-resolution
+    manifest: Optional[ToolManifest] = None     # manifested contract, if known at staging/call time
     _task: Optional[asyncio.Task] = field(default=None, repr=False)
     created_at: float = field(default_factory=time.monotonic)
 
@@ -212,8 +220,13 @@ def _compute_idempotency_key(tool_name: str, args: dict[str, Any]) -> str:
 
 
 class SpeculativeSagaManager:
-    def __init__(self, epoch_clock: TurnEpochClock) -> None:
+    def __init__(
+        self,
+        epoch_clock: TurnEpochClock,
+        registry: Optional[ToolRegistry] = None,
+    ) -> None:
         self.epoch_clock = epoch_clock
+        self.registry = registry
         self._actions: dict[str, StagedAction] = {}
         self._ikey_index: dict[str, str] = {}  # idempotency_key -> action_id
         self._debounce: dict[str, tuple[str, float]] = {}  # entity_hash -> (action_id, ts)
@@ -222,6 +235,10 @@ class SpeculativeSagaManager:
         self._chain: list[StagedAction] = []  # committed order, for compensation unwind
         self._id_gen = itertools.count()
         self.epoch_clock.on_advance(self._on_epoch_advance)
+
+    def set_tool_registry(self, registry: Optional[ToolRegistry]) -> None:
+        """Assign or update the ToolRegistry used for tool manifest lookups."""
+        self.registry = registry
 
     # ---- prediction hook registration -----------------------------------
 
@@ -350,9 +367,13 @@ class SpeculativeSagaManager:
         args: dict[str, Any],
         executor: ReadExecutor,
         entity_hash: str,
+        *,
+        manifest: Optional[ToolManifest] = None,
+        registry: Optional[ToolRegistry] = None,
     ) -> StagedAction:
         """
         Dispatch an idempotent read the moment an entity is recognized.
+        Kind-enforced: verifies the tool is manifested with kind="read" if a manifest is provided or found.
         Deduplicated: if a speculative read for the same (tool_name, args, epoch)
         is already in-flight or completed, returns the existing action instead
         of firing a second real executor call.
@@ -360,6 +381,18 @@ class SpeculativeSagaManager:
         window, the earlier in-flight call is cancelled first (ASR
         flicker protection) rather than allowed to pile up.
         """
+        # Kind enforcement: verify tool is manifested as 'read'
+        mf = manifest
+        if mf is None:
+            reg = registry or self.registry
+            if reg is not None:
+                mf = reg.get(tool_name)
+        if mf is not None and mf.kind != "read":
+            raise InvalidToolKindError(
+                f"fire_speculative_read requires a tool with kind='read', but '{tool_name}' "
+                f"is manifested as kind='{mf.kind}'"
+            )
+
         now = time.monotonic()
         curr_epoch = self.epoch_clock.current
         canon_args = json.dumps(args, sort_keys=True, separators=(",", ":"))
@@ -401,6 +434,7 @@ class SpeculativeSagaManager:
             capture_epoch=curr_epoch,
             idempotency_key=_compute_idempotency_key(tool_name, args),
             entity_hash=entity_hash,
+            manifest=mf,
         )
         self._actions[action_id] = action
         self._debounce[entity_hash] = (action_id, now)
@@ -445,6 +479,8 @@ class SpeculativeSagaManager:
         compensate: Optional[Callable[[Any], Awaitable[None]]] = None,
         *,
         idempotency_key: Optional[str] = None,
+        manifest: Optional[ToolManifest] = None,
+        registry: Optional[ToolRegistry] = None,
     ) -> StagedAction:
         """
         Create a write in the uncommitted in-memory envelope. It is NOT
@@ -457,6 +493,12 @@ class SpeculativeSagaManager:
         IN_FLIGHT_UNKNOWN, or unreconciled COMMITTED_STALE),
         DuplicateOperationError is raised.
         """
+        mf = manifest
+        if mf is None:
+            reg = registry or self.registry
+            if reg is not None:
+                mf = reg.get(tool_name)
+
         ikey = idempotency_key or _compute_idempotency_key(tool_name, args)
 
         # Idempotency enforcement: reject if the key is already live.
@@ -480,6 +522,7 @@ class SpeculativeSagaManager:
             capture_epoch=self.epoch_clock.current,
             idempotency_key=ikey,
             compensate=compensate,
+            manifest=mf,
         )
         self._actions[action_id] = action
         self._ikey_index[ikey] = action_id
@@ -498,6 +541,8 @@ class SpeculativeSagaManager:
         executor: WriteExecutor,
         *,
         timeout: float = 4.0,
+        manifest: Optional[ToolManifest] = None,
+        registry: Optional[ToolRegistry] = None,
     ) -> Any:
         """
         Dispatch a staged write. Outcome classification:
@@ -536,6 +581,21 @@ class SpeculativeSagaManager:
             action._set_terminal(ActionState.ABORTED)
             raise StaleEpochError(
                 f"write {action_id} epoch stale: {action.capture_epoch}"
+            )
+
+        # Kind enforcement: verify tool is manifested with kind="write" before dispatching
+        mf = manifest
+        if mf is None:
+            reg = registry or self.registry
+            if reg is not None:
+                mf = reg.get(action.tool_name)
+        if mf is None:
+            mf = action.manifest
+
+        if mf is not None and mf.kind != "write":
+            raise InvalidToolKindError(
+                f"commit_write requires a tool with kind='write', but '{action.tool_name}' "
+                f"is manifested as kind='{mf.kind}'"
             )
 
         action.state = ActionState.IN_FLIGHT

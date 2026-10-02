@@ -16,7 +16,7 @@ except ImportError:
 
 from runtime.speculative_saga import SpeculativeSagaManager, TurnEpochClock, StaleEpochError
 from runtime.grounding_guard import GroundingGuard, zero_hop_repair, RepairOutcome
-from tools.fleet_tools import READ_TOOLS, WRITE_TOOLS
+from tools.fleet_tools import READ_TOOLS, WRITE_TOOLS, TOOL_REGISTRY
 
 logger = logging.getLogger("ccs.agent")
 
@@ -35,7 +35,7 @@ class PendingSlot:
 class CCSAgent:
     def __init__(self) -> None:
         self.epoch_clock = TurnEpochClock()
-        self.saga = SpeculativeSagaManager(self.epoch_clock)
+        self.saga = SpeculativeSagaManager(self.epoch_clock, registry=TOOL_REGISTRY)
         self.guard = GroundingGuard(epoch_clock=self.epoch_clock)
         self._pending_slots: dict[str, PendingSlot] = {}
         self._backchannel_task: Optional[asyncio.Task] = None
