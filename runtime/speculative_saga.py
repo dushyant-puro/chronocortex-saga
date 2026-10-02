@@ -145,6 +145,7 @@ class StagedAction:
     compensation_failed: bool = False          # set True if _auto_compensate() raises; allows
                                                # a failed auto-compensation to be distinguished
                                                # from one that was never attempted
+    dispatch_latency_ms: Optional[float] = None # measured latency in ms for speculative read dispatch-to-resolution
     _task: Optional[asyncio.Task] = field(default=None, repr=False)
     created_at: float = field(default_factory=time.monotonic)
 
@@ -216,9 +217,20 @@ class SpeculativeSagaManager:
         self._actions: dict[str, StagedAction] = {}
         self._ikey_index: dict[str, str] = {}  # idempotency_key -> action_id
         self._debounce: dict[str, tuple[str, float]] = {}  # entity_hash -> (action_id, ts)
+        self._read_dedup_cache: dict[tuple[str, str, int], str] = {}  # (tool_name, canon_args, epoch) -> action_id
+        self._prediction_hook: Optional[Callable[[StagedAction, Any], None]] = None
         self._chain: list[StagedAction] = []  # committed order, for compensation unwind
         self._id_gen = itertools.count()
         self.epoch_clock.on_advance(self._on_epoch_advance)
+
+    # ---- prediction hook registration -----------------------------------
+
+    def set_prediction_hook(self, hook: Optional[Callable[[StagedAction, Any], None]]) -> None:
+        """
+        Register a domain-specific prediction callback invoked synchronously
+        when a speculative read completes and commits in the current epoch.
+        """
+        self._prediction_hook = hook
 
     # ---- epoch reaction -------------------------------------------------
 
@@ -226,6 +238,9 @@ class SpeculativeSagaManager:
         """
         Called synchronously (inside the epoch clock's lock) when the
         epoch advances.
+
+        Deduplication cache:
+          -> Invalidated when the epoch advances (stale entries evicted).
 
         PENDING actions (never dispatched):
           -> ABORTED immediately. Safe: nothing was ever sent, no remote
@@ -245,6 +260,9 @@ class SpeculativeSagaManager:
              docstring), and forgoing cancel gives commit_write a clean,
              deterministic view of the actual result.
         """
+        # Invalidate read dedup cache on epoch advance
+        self._read_dedup_cache.clear()
+
         for action in list(self._actions.values()):
             if action.capture_epoch < new_epoch:
                 if action.state == ActionState.PENDING:
@@ -335,11 +353,33 @@ class SpeculativeSagaManager:
     ) -> StagedAction:
         """
         Dispatch an idempotent read the moment an entity is recognized.
+        Deduplicated: if a speculative read for the same (tool_name, args, epoch)
+        is already in-flight or completed, returns the existing action instead
+        of firing a second real executor call.
         Debounced: if the same entity_hash fired within the debounce
         window, the earlier in-flight call is cancelled first (ASR
         flicker protection) rather than allowed to pile up.
         """
         now = time.monotonic()
+        curr_epoch = self.epoch_clock.current
+        canon_args = json.dumps(args, sort_keys=True, separators=(",", ":"))
+        cache_key = (tool_name, canon_args, curr_epoch)
+
+        # Check deduplication cache within the current epoch
+        cached_action_id = self._read_dedup_cache.get(cache_key)
+        if cached_action_id:
+            cached_action = self._actions.get(cached_action_id)
+            if (
+                cached_action
+                and cached_action.capture_epoch == curr_epoch
+                and cached_action.state in (ActionState.PENDING, ActionState.IN_FLIGHT, ActionState.COMMITTED)
+            ):
+                logger.debug(
+                    "deduplicated speculative read for (%s, %s, epoch=%d) -> action %s",
+                    tool_name, canon_args, curr_epoch, cached_action_id,
+                )
+                return cached_action
+
         prior = self._debounce.get(entity_hash)
         if prior:
             prior_id, prior_ts = prior
@@ -358,28 +398,40 @@ class SpeculativeSagaManager:
             kind=ActionKind.SPECULATIVE_READ,
             tool_name=tool_name,
             args=args,
-            capture_epoch=self.epoch_clock.current,
+            capture_epoch=curr_epoch,
             idempotency_key=_compute_idempotency_key(tool_name, args),
             entity_hash=entity_hash,
         )
         self._actions[action_id] = action
         self._debounce[entity_hash] = (action_id, now)
+        self._read_dedup_cache[cache_key] = action_id
         action._task = asyncio.create_task(self._run_read(action, executor))
         return action
 
     async def _run_read(self, action: StagedAction, executor: ReadExecutor) -> None:
         action.state = ActionState.IN_FLIGHT
+        t0 = time.monotonic()
         try:
             result = await executor(action.args)
+            action.dispatch_latency_ms = (time.monotonic() - t0) * 1000.0
             if action.capture_epoch != self.epoch_clock.current:
                 action.state = ActionState.ABORTED
                 return
             action.result = result
             action.state = ActionState.COMMITTED
+
+            # Invoke prediction hook if registered and epoch still current
+            if self._prediction_hook is not None:
+                try:
+                    self._prediction_hook(action, result)
+                except Exception:
+                    logger.exception("prediction hook failed for action %s", action.action_id)
         except asyncio.CancelledError:
+            action.dispatch_latency_ms = (time.monotonic() - t0) * 1000.0
             action.state = ActionState.ABORTED
             raise
         except Exception as exc:  # noqa: BLE001
+            action.dispatch_latency_ms = (time.monotonic() - t0) * 1000.0
             action.error = exc
             action.state = ActionState.ABORTED
             logger.warning("speculative read %s failed: %s", action.tool_name, exc)
@@ -737,7 +789,35 @@ class SpeculativeSagaManager:
                 "superseded_epoch": a.superseded_epoch,
                 "idempotency_key": a.idempotency_key,
                 "compensation_failed": a.compensation_failed,
+                "dispatch_latency_ms": a.dispatch_latency_ms,
                 "age_ms": round((time.monotonic() - a.created_at) * 1000, 1),
             }
             for a in self._actions.values()
         ]
+
+    # ---- latency observability -------------------------------------------
+
+    def get_latency_stats(self) -> dict[str, Any]:
+        """
+        Report min/max/mean dispatch latency across all resolved speculative
+        reads in the current session that recorded a latency measurement.
+        """
+        latencies = [
+            a.dispatch_latency_ms
+            for a in self._actions.values()
+            if a.kind == ActionKind.SPECULATIVE_READ and a.dispatch_latency_ms is not None
+        ]
+        if not latencies:
+            return {
+                "count": 0,
+                "min_ms": None,
+                "max_ms": None,
+                "mean_ms": None,
+            }
+        return {
+            "count": len(latencies),
+            "min_ms": min(latencies),
+            "max_ms": max(latencies),
+            "mean_ms": sum(latencies) / len(latencies),
+        }
+

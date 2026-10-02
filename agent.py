@@ -39,11 +39,30 @@ class CCSAgent:
         self.guard = GroundingGuard(epoch_clock=self.epoch_clock)
         self._pending_slots: dict[str, PendingSlot] = {}
         self._backchannel_task: Optional[asyncio.Task] = None
-        self._current_domain = "default"
         self.session: Optional[AgentSession] = None
         
         # Track ingested tokens to avoid duplicating them on repeated interim transcripts
         self._ingested_word_count = 0
+
+        # Wire narrow fleet-specific prediction heuristic:
+        # Upon query_telemetry completing, pre-fire query_traffic IFF destination is resolvable.
+        # HARD CONSTRAINT: If resolve_current_value("destination") returns None, do NOT fire.
+        self.saga.set_prediction_hook(self._fleet_prediction_hook)
+
+    def _fleet_prediction_hook(self, action: Any, result: Any) -> None:
+        if action.tool_name == "query_telemetry":
+            destination = self.guard.resolve_current_value("destination")
+            if destination is not None:
+                logger.info(
+                    "Fleet prediction rule: query_telemetry completed, pre-firing query_traffic "
+                    "for grounded destination %s", destination
+                )
+                self.saga.fire_speculative_read(
+                    tool_name="query_traffic",
+                    args={"route": destination},
+                    executor=READ_TOOLS["query_traffic"],
+                    entity_hash=f"route:{destination}",
+                )
 
     # ---------------------------------------------------------------
     # Cortex-A: acoustic reflex layer
