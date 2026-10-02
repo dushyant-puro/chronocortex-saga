@@ -18,13 +18,16 @@ boundary).
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
+from typing import Callable, Optional
 
 from runtime.speculative_saga import TurnEpochClock
+
+logger = logging.getLogger("ccs.grounding_guard")
 
 
 # Domain-adaptive confidence floors. FDB-v3's chained (depth 2-3) tasks
@@ -75,8 +78,13 @@ class GroundingGuard:
     saga manager.
     """
 
-    def __init__(self, epoch_clock: Optional[TurnEpochClock] = None) -> None:
+    def __init__(
+        self,
+        epoch_clock: Optional[TurnEpochClock] = None,
+        on_eviction: Optional[Callable[[str, str], None]] = None,
+    ) -> None:
         self.epoch_clock = epoch_clock
+        self._on_eviction = on_eviction
         self._tokens: list[str] = []
         self._confidences: list[float] = []
         self._timestamps: list[tuple[float, float]] = []  # (start, end) per token
@@ -135,7 +143,13 @@ class GroundingGuard:
             if max(start, c_start) < min(repair_cue_idx, c_end):
                 fields_to_remove.append(field_name)
         for field_name in fields_to_remove:
+            evicted_value, _, _ = self._staged_candidates[field_name]
             self._staged_candidates.pop(field_name, None)
+            if self._on_eviction is not None:
+                try:
+                    self._on_eviction(field_name, evicted_value)
+                except Exception:
+                    logger.exception("on_eviction callback failed for field %s", field_name)
 
         # Let Phase 2 machinery see this correction as a stale-epoch event
         if self.epoch_clock is not None:

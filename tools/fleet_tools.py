@@ -200,3 +200,76 @@ for _mf in TOOL_MANIFEST.values():
 
 FLEET_TOOL_REGISTRY = TOOL_REGISTRY
 
+
+# ---- task step definitions for the Uninterruptible Task Engine (Phase 6) ----
+
+from runtime.task_engine import TaskStep
+
+
+def _build_telemetry_args(task: Any, step_idx: int) -> dict[str, Any]:
+    """Build args for query_telemetry: requires truck_id."""
+    from runtime.task_engine import Task
+    # truck_id is resolved by the task engine's resolve_field
+    return {"truck_id": task._resolved_fields.get("truck_id", "unknown")}
+
+
+def _build_traffic_args(task: Any, step_idx: int) -> dict[str, Any]:
+    """Build args for query_traffic: requires destination."""
+    return {"route": task._resolved_fields.get("destination", "unknown")}
+
+
+def _build_dock_args(task: Any, step_idx: int) -> dict[str, Any]:
+    """Build args for query_dock_availability: requires dock_id."""
+    return {"dock_id": task._resolved_fields.get("dock_id", "unknown")}
+
+
+def _build_reroute_args(task: Any, step_idx: int) -> dict[str, Any]:
+    """Build args for reroute_truck: requires truck_id + destination."""
+    return {
+        "truck_id": task._resolved_fields.get("truck_id", "unknown"),
+        "destination": task._resolved_fields.get("destination", "unknown"),
+    }
+
+
+def _build_reserve_dock_args(task: Any, step_idx: int) -> dict[str, Any]:
+    """Build args for reserve_dock: requires truck_id + dock_id."""
+    return {
+        "truck_id": task._resolved_fields.get("truck_id", "unknown"),
+        "dock_id": task._resolved_fields.get("dock_id", "unknown"),
+    }
+
+
+FLEET_REROUTE_LOGISTICS_TASK_STEPS: list[TaskStep] = [
+    TaskStep(
+        tool_name="query_telemetry",
+        required_fields=["truck_id"],
+        build_args=_build_telemetry_args,
+        kind="read",
+    ),
+    TaskStep(
+        tool_name="query_traffic",
+        required_fields=["destination"],
+        build_args=_build_traffic_args,
+        kind="read",
+    ),
+    TaskStep(
+        tool_name="query_dock_availability",
+        required_fields=["dock_id"],
+        build_args=_build_dock_args,
+        kind="read",
+    ),
+    TaskStep(
+        tool_name="reroute_truck",
+        required_fields=["truck_id", "destination"],
+        build_args=_build_reroute_args,
+        kind="write",
+        compensate=compensate_reroute,
+    ),
+    TaskStep(
+        tool_name="reserve_dock",
+        required_fields=["truck_id", "dock_id"],
+        build_args=_build_reserve_dock_args,
+        kind="write",
+        compensate=compensate_reserve_dock,
+    ),
+]

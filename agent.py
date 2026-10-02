@@ -16,6 +16,7 @@ except ImportError:
 
 from runtime.speculative_saga import SpeculativeSagaManager, TurnEpochClock, StaleEpochError
 from runtime.grounding_guard import GroundingGuard, zero_hop_repair, RepairOutcome
+from runtime.task_engine import TaskManager
 from tools.fleet_tools import READ_TOOLS, WRITE_TOOLS, TOOL_REGISTRY
 
 logger = logging.getLogger("ccs.agent")
@@ -36,7 +37,22 @@ class CCSAgent:
     def __init__(self) -> None:
         self.epoch_clock = TurnEpochClock()
         self.saga = SpeculativeSagaManager(self.epoch_clock, registry=TOOL_REGISTRY)
-        self.guard = GroundingGuard(epoch_clock=self.epoch_clock)
+
+        # TaskManager must be created before GroundingGuard so we can wire
+        # the on_eviction callback. resolve_field is bound to guard after
+        # guard creation below.
+        self.task_manager = TaskManager(
+            saga=self.saga,
+            resolve_field=lambda f: None,  # placeholder, rebound below
+        )
+
+        self.guard = GroundingGuard(
+            epoch_clock=self.epoch_clock,
+            on_eviction=self.task_manager.on_field_evicted,
+        )
+        # Now rebind resolve_field to the real guard method
+        self.task_manager._resolve_field = self.guard.resolve_current_value
+
         self._pending_slots: dict[str, PendingSlot] = {}
         self._backchannel_task: Optional[asyncio.Task] = None
         self.session: Optional[AgentSession] = None
