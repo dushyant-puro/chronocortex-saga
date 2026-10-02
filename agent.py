@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from livekit import agents
-from livekit.agents import AgentSession, JobContext, WorkerOptions, cli
+from livekit.agents import AgentSession, JobContext, WorkerOptions, cli, UserInputTranscribedEvent, UserStateChangedEvent
 
 # We only have livekit-plugins-openai verified
 try:
@@ -219,7 +219,7 @@ async def entrypoint(ctx: JobContext) -> None:
 
     # Hook real LiveKit events
     @session.on("user_input_transcribed")
-    def on_transcribed(ev: agents.transcription.UserInputTranscribedEvent):
+    def on_transcribed(ev: UserInputTranscribedEvent):
         # Fake confidence/timings as real API does not supply them on this event
         ccs.on_interim_transcript(
             transcript=ev.transcript,
@@ -230,13 +230,21 @@ async def entrypoint(ctx: JobContext) -> None:
         )
 
     @session.on("user_state_changed")
-    def on_state_changed(ev: agents.state.UserStateChangedEvent):
+    def on_state_changed(ev: UserStateChangedEvent):
         if ev.new_state == "speaking":
             ccs.on_barge_in()
         elif ev.new_state == "listening":
             asyncio.create_task(ccs._confirm_turn_boundary())
 
-    await session.start(room=ctx.room)
+    agent = agents.Agent(
+        instructions=(
+            "You are a fleet operations assistant for ChronoCortex-Saga. "
+            "Your job is to assist with fleet operations and use the existing fleet workflow. "
+            "You must respect corrected user intent and never treat stale or retracted information as current."
+        )
+    )
+
+    await session.start(agent, room=ctx.room)
     logger.info("CCS-Agent session started; epoch clock initialized at 0")
 
 if __name__ == "__main__":
