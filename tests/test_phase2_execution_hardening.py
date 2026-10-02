@@ -464,6 +464,67 @@ async def test_3g_reconcile_racing_stage():
     assert new_action.action_id != action.action_id
 
 
+@pytest.mark.asyncio
+async def test_3g2_reconcile_stale_racing_stage():
+    """An action in IN_FLIGHT_UNKNOWN where the epoch advances BEFORE reconcile:
+    reconcile_write with status_check=True resolves it to COMMITTED_STALE.
+    1. stage_write WHILE reconciliation is in-flight must be rejected with DuplicateOperationError.
+    2. stage_write AFTER reconciliation completes to COMMITTED_STALE must STILL be
+       rejected with DuplicateOperationError (COMMITTED_STALE is in _BLOCKING_STATES per BUG-B fix).
+    """
+    clock, saga = _fresh()
+
+    action = saga.stage_write(
+        "reserve_dock", {"dock_id": "D-1", "truck_id": "t-5"},
+        idempotency_key="dock-reservation-002",
+    )
+
+    async def never_completes(args):
+        await asyncio.sleep(999)
+        return {"reserved": True}
+
+    with pytest.raises(asyncio.TimeoutError):
+        await saga.commit_write(action.action_id, never_completes, timeout=0.05)
+
+    assert action.state == ActionState.IN_FLIGHT_UNKNOWN
+
+    # Advance the epoch BEFORE calling reconcile_write so capture_epoch (0) != current (1)
+    await clock.advance(reason="turn_boundary_during_unknown")
+    assert clock.current == 1
+    assert action.capture_epoch == 0
+
+    reconcile_gate = asyncio.Event()
+
+    async def gated_status_check(a):
+        await reconcile_gate.wait()
+        return True  # remote confirms it executed
+
+    reconcile_task = asyncio.create_task(
+        saga.reconcile_write(action.action_id, gated_status_check)
+    )
+    await asyncio.sleep(0)  # let reconcile_write start and wait on gate
+
+    # While reconciliation is in flight (state is still IN_FLIGHT_UNKNOWN), stage_write must be rejected
+    with pytest.raises(DuplicateOperationError):
+        saga.stage_write(
+            "reserve_dock", {"dock_id": "D-1", "truck_id": "t-5"},
+            idempotency_key="dock-reservation-002",
+        )
+
+    # Let reconcile finish -> resolves to COMMITTED_STALE (no compensate handler, remains COMMITTED_STALE)
+    reconcile_gate.set()
+    await reconcile_task
+
+    assert action.state == ActionState.COMMITTED_STALE
+
+    # Even AFTER reconcile completes, an unreconciled COMMITTED_STALE action still blocks stage_write
+    with pytest.raises(DuplicateOperationError):
+        saga.stage_write(
+            "reserve_dock", {"dock_id": "D-1", "truck_id": "t-5"},
+            idempotency_key="dock-reservation-002",
+        )
+
+
 # ============================================================================
 # 3h. TASK CANCELLATION DURING COMPENSATION
 # ============================================================================

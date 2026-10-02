@@ -142,7 +142,7 @@ Three concrete API mismatches in gent.py against livekit-agents==1.8.3 were fix
 
 ### 8.1 Adversarial Test Suite Results
 
-	ests/test_phase2_execution_hardening.py -- **9/9 passed**
+	ests/test_phase2_execution_hardening.py -- **10/10 passed** (including 	est_3g2_reconcile_stale_racing_stage)
 
 | Test | Category | Result |
 | :--- | :--- | :--- |
@@ -152,13 +152,14 @@ Three concrete API mismatches in gent.py against livekit-agents==1.8.3 were fix
 | 	est_3d_compensation_storm_independent | Concurrent compensation isolation | PASS |
 | 	est_3e_repeated_self_correction_storm | 5x rapid correction via GroundingGuard | PASS |
 | 	est_3f_concurrent_reads_epoch_churn | Speculative read staleness under churn | PASS |
-| 	est_3g_reconcile_racing_stage | Reconcile vs. re-stage interleaving | PASS |
+| 	est_3g_reconcile_racing_stage | Reconcile vs. re-stage interleaving (current epoch -> COMMITTED frees key) | PASS |
+| 	est_3g2_reconcile_stale_racing_stage | Reconcile vs. re-stage interleaving (stale epoch -> COMMITTED_STALE continues blocking key) | PASS |
 | 	est_3h_cancellation_during_compensation | Compensation task cancellation | PASS |
 | 	est_no_shared_state_between_tests | Isolation check | PASS |
 
 ### 8.2 No New Concurrency Bugs Found
 
-All 8 adversarial categories passed without revealing a concurrency bug in speculative_saga.py or grounding_guard.py. The _set_terminal() guard, idempotency-key blocking, and superseded_epoch tracking hold under adversarial conditions.
+All adversarial categories passed without revealing a concurrency bug in speculative_saga.py or grounding_guard.py. The _set_terminal() guard, idempotency-key blocking, and superseded_epoch tracking hold under adversarial conditions.
 
 ### 8.3 Known Gap: Compensation Task Cancellation (test_3h)
 
@@ -166,9 +167,9 @@ _auto_compensate() catches Exception but does NOT catch syncio.CancelledError. 
 
 ### 8.4 Confidence-Faking Safety Gap
 
-**Finding:** UserInputTranscribedEvent (livekit-agents 1.8.3) only exposes 	ranscript: str and is_final: bool. It does NOT carry per-word confidence, timing, or word-level data. Real per-word confidence IS available at the lower-level STT layer (stt.SpeechData.words -> list[TimedString] where each TimedString has 	ext, start_time, end_time, confidence fields), but this data lives on stt.SpeechEvent, not on AgentSessions high-level event. Wiring it requires intercepting the raw STT pipeline directly.
+**Finding:** UserInputTranscribedEvent (livekit-agents 1.8.3) only exposes 	ranscript: str and is_final: bool. It does NOT carry per-word confidence, timing, or word-level data. Real per-word confidence IS available at the lower-level STT layer (stt.SpeechData.words -> list[TimedString] where each TimedString has 	ext, start_time, end_time, confidence fields), but this data lives on stt.SpeechEvent, not on AgentSession's high-level event. Wiring it requires intercepting the raw STT pipeline directly.
 
-**Consequence:** GroundingGuards confidence-floor rejection is currently a no-op against real speech input because confidence is faked as a constant 1.0 at the LiveKit integration layer. This is a known safety gap requiring real STT confidence wiring before production use. A prominent code comment has been added to gent.pys on_transcribed handler.
+**Consequence:** GroundingGuard's confidence-floor rejection is currently a no-op against real speech input because confidence is faked as a constant 1.0 at the LiveKit integration layer. This is a known safety gap requiring real STT confidence wiring before production use. A prominent code comment has been added to gent.py's on_transcribed handler.
 
 ### 8.5 Backlog: TOOL_MANIFEST Non-Consumption
 
