@@ -91,6 +91,57 @@ async def test_01_read_deduplication_same_epoch():
     assert a1.result == {"telemetry": "ok", "truck_id": "truck-17"}
 
 
+@pytest.mark.asyncio
+async def test_01b_racing_concurrent_identical_speculative_reads():
+    """Two coroutines call fire_speculative_read with identical tool_name+args
+    in the same epoch at effectively the same moment, synchronized via asyncio.Event.
+    Assert exactly ONE real executor call occurs (not two)."""
+    clock, saga, _ = _make_env()
+
+    sync_event = asyncio.Event()
+    executor_gate = asyncio.Event()
+    call_count = 0
+    actions: list[Any] = []
+
+    async def counting_executor(args: dict[str, Any]) -> dict[str, Any]:
+        nonlocal call_count
+        call_count += 1
+        await executor_gate.wait()
+        return {"data": args, "count": call_count}
+
+    async def caller():
+        await sync_event.wait()
+        act = saga.fire_speculative_read(
+            tool_name="query_telemetry",
+            args={"truck_id": "truck-99"},
+            executor=counting_executor,
+            entity_hash="truck_id:truck-99",
+        )
+        actions.append(act)
+
+    task_0 = asyncio.create_task(caller())
+    task_1 = asyncio.create_task(caller())
+
+    # Release both callers simultaneously
+    sync_event.set()
+    await asyncio.gather(task_0, task_1)
+
+    assert len(actions) == 2
+    act_0, act_1 = actions[0], actions[1]
+    assert act_0.action_id == act_1.action_id
+    assert act_0 is act_1
+
+    # Release the mock executor
+    executor_gate.set()
+    await act_0._task
+
+    # Exactly one executor dispatch occurred
+    assert call_count == 1
+    assert act_0.state == ActionState.COMMITTED
+    assert act_0.result == {"data": {"truck_id": "truck-99"}, "count": 1}
+
+
+
 # ============================================================================
 # 2. DEDUP CACHE INVALIDATION ON EPOCH ADVANCE
 # ============================================================================
