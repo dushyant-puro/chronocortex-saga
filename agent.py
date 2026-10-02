@@ -220,13 +220,33 @@ async def entrypoint(ctx: JobContext) -> None:
     # Hook real LiveKit events
     @session.on("user_input_transcribed")
     def on_transcribed(ev: UserInputTranscribedEvent):
-        # Fake confidence/timings as real API does not supply them on this event
+        # KNOWN SAFETY GAP — CONFIDENCE FAKING (New Phase 2 audit finding):
+        #
+        # UserInputTranscribedEvent (livekit-agents 1.8.3) only exposes:
+        #   transcript: str, is_final: bool, item_id, speaker_id, language, created_at
+        # It does NOT carry per-word confidence scores or per-word timing data.
+        #
+        # Real per-word confidence IS available at the lower-level STT layer:
+        #   stt.SpeechData.words → list[TimedString] where each TimedString has:
+        #     text: str, start_time: float, end_time: float, confidence: float
+        #   stt.SpeechData also has: confidence (utterance-level), start_time, end_time
+        #
+        # However, SpeechData lives on stt.SpeechEvent (the raw STT pipeline event),
+        # NOT on AgentSession's "user_input_transcribed" event. Wiring real confidence
+        # requires intercepting the STT pipeline directly (e.g. via session.stt and
+        # subscribing to its stream), which is a larger integration change beyond
+        # this phase's scope.
+        #
+        # CONSEQUENCE: GroundingGuard's confidence-floor rejection is currently a
+        # no-op against real speech input because confidence is faked as a constant
+        # 1.0 at this LiveKit integration layer. This is a known safety gap
+        # requiring real STT confidence wiring before production use.
         ccs.on_interim_transcript(
             transcript=ev.transcript,
             is_final=getattr(ev, "is_final", False),
-            confidence=1.0,
-            start_ts=time.monotonic(),
-            end_ts=time.monotonic()
+            confidence=1.0,           # FAKED — see safety gap comment above
+            start_ts=time.monotonic(),  # FAKED — no real timing from this event
+            end_ts=time.monotonic()     # FAKED — no real timing from this event
         )
 
     @session.on("user_state_changed")

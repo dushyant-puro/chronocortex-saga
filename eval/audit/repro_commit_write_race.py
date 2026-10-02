@@ -1,15 +1,25 @@
 """
 eval/audit/repro_commit_write_race.py
 
-Minimal reproduction script for the race condition in
+Reproduction / regression script for the Phase 0 race condition in
 speculative_saga.SpeculativeSagaManager.commit_write.
 
-Invariant violated:
-If the epoch advances while a staged write executor is in-flight,
-the action is marked ABORTED by _on_epoch_advance.
-However, commit_write() does not check the current epoch or action.state
-after awaiting the executor. It unconditionally overwrites action.state
-with ActionState.COMMITTED and appends the action to self._chain.
+Original bug (pre-Phase 1):
+  If the epoch advanced while a staged write executor was in-flight,
+  _on_epoch_advance marked the action ABORTED, but commit_write() did not
+  check the current epoch or action.state after awaiting the executor.
+  It unconditionally overwrote action.state with COMMITTED and appended
+  the action to _chain.
+
+Phase 1 fix:
+  commit_write() now uses _set_terminal() guards and checks superseded_epoch
+  after the executor completes. If superseded_epoch is set, the action
+  resolves to COMMITTED_STALE (not COMMITTED), and auto-compensation fires
+  if a handler is available. The race condition no longer reproduces.
+
+  _on_epoch_advance intentionally does NOT cancel or force-abort IN_FLIGHT
+  writes; it only records superseded_epoch. The executor is allowed to run
+  to completion for deterministic outcome classification.
 """
 
 import asyncio
@@ -68,7 +78,10 @@ async def main() -> None:
     print(f"[3] Immediately after epoch advance, action state is: {action.state.name}")
 
     if action.state == ActionState.ABORTED:
-        print("    -> Confirmed: _on_epoch_advance marked action as ABORTED.")
+        print("    -> Pre-Phase-1 behaviour: _on_epoch_advance force-aborted the write.")
+    elif action.state == ActionState.IN_FLIGHT:
+        print("    -> Expected (Phase 1): action remains IN_FLIGHT (superseded_epoch set, "
+              "not force-aborted); executor allowed to complete for deterministic outcome.")
     else:
         print(f"    -> Unexpected: action state is {action.state.name}")
 
