@@ -36,11 +36,14 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any, Awaitable, Callable, Optional
 
+from runtime.persistence import CheckpointStore
 from runtime.speculative_saga import (
+    ActionKind,
     ActionState,
     DuplicateOperationError,
     SagaAbortedError,
     SpeculativeSagaManager,
+    StagedAction,
     StaleEpochError,
 )
 
@@ -72,6 +75,7 @@ class StepState(Enum):
     WAITING_FOR_GROUNDING = auto()   # required grounded field was evicted
     SKIPPED = auto()                 # skipped due to upstream failure/cancel
     COMPENSATED = auto()             # was COMMITTED, then compensated for replanning
+    NEEDS_RECONCILIATION = auto()    # was IN_FLIGHT at restart; requires status_check before advancing
 
 
 # --------------------------------------------------------------------------
@@ -94,12 +98,14 @@ class TaskStep:
     kind: "read" or "write" — determines whether to use fire_speculative_read
         or stage_write + commit_write.
     compensate: optional compensation handler (for writes).
+    status_check: optional reconciliation handler for NEEDS_RECONCILIATION steps.
     """
     tool_name: str
     required_fields: list[str] = field(default_factory=list)
     build_args: Optional[Callable[["Task", int], dict[str, Any]]] = None
     kind: str = "write"
     compensate: Optional[Callable[[Any], Awaitable[None]]] = None
+    status_check: Optional[Callable[[Any], Awaitable[Optional[bool]]]] = None
 
 
 # --------------------------------------------------------------------------
@@ -147,6 +153,7 @@ class TaskManager:
       - re-grounding on epoch-triggered eviction
       - task-level lifecycle that survives epoch advances
       - compensation unwind on step failure
+      - optional durable checkpoint persistence and process-restart recovery
 
     It does NOT introduce a second dispatch path.
     """
@@ -155,14 +162,17 @@ class TaskManager:
         self,
         saga: SpeculativeSagaManager,
         resolve_field: Callable[[str], Optional[str]],
+        store: Optional[CheckpointStore] = None,
     ) -> None:
         """
         Args:
             saga: the existing SpeculativeSagaManager instance
             resolve_field: typically GroundingGuard.resolve_current_value
+            store: optional CheckpointStore for task persistence (default None)
         """
         self._saga = saga
         self._resolve_field = resolve_field
+        self.store = store
         self._tasks: dict[str, Task] = {}
         self._evicted_fields: set[str] = set()
 
@@ -375,6 +385,59 @@ class TaskManager:
             idx = task.current_step_index
             step = task.steps[idx]
 
+            # Check if step NEEDS_RECONCILIATION (restored from IN_FLIGHT state after restart)
+            if task.step_states[idx] == StepState.NEEDS_RECONCILIATION:
+                action_id = task.step_action_ids[idx]
+                status_check = step.status_check
+
+                if action_id is None or status_check is None:
+                    task.step_states[idx] = StepState.FAILED
+                    task.state = TaskState.FAILED
+                    task.error = f"step {idx} ({step.tool_name}) NEEDS_RECONCILIATION but action_id or status_check is missing"
+                    task.completed_at = time.monotonic()
+                    self._save_checkpoint(task)
+                    return task
+
+                # Ensure action exists in saga so reconcile_write can be called on it
+                action = self._saga._actions.get(action_id)
+                if action is None:
+                    action = StagedAction(
+                        action_id=action_id,
+                        kind=ActionKind.STAGED_WRITE,
+                        tool_name=step.tool_name,
+                        args=task.step_dispatched_args[idx] or {},
+                        capture_epoch=self._saga.epoch_clock.current,
+                        idempotency_key=action_id,
+                        compensate=step.compensate,
+                        state=ActionState.IN_FLIGHT_UNKNOWN,
+                    )
+                    self._saga._actions[action_id] = action
+
+                try:
+                    await self._saga.reconcile_write(action_id, status_check)
+                    action = self._saga._actions.get(action_id)
+                    if action and action.state in (ActionState.COMMITTED, ActionState.COMMITTED_STALE):
+                        task.step_states[idx] = StepState.COMMITTED
+                        task.step_results[idx] = action.result
+                        task.current_step_index += 1
+                        self._save_checkpoint(task)
+                        logger.info("reconciled step %d (%s) -> COMMITTED", idx, step.tool_name)
+                        continue
+                    else:
+                        task.step_states[idx] = StepState.FAILED
+                        task.state = TaskState.FAILED
+                        task.error = f"reconciliation for step {idx} ({step.tool_name}) failed"
+                        task.completed_at = time.monotonic()
+                        self._save_checkpoint(task)
+                        return task
+                except Exception as exc:
+                    task.step_states[idx] = StepState.FAILED
+                    task.state = TaskState.FAILED
+                    task.error = f"reconciliation error for step {idx} ({step.tool_name}): {exc}"
+                    task.completed_at = time.monotonic()
+                    self._save_checkpoint(task)
+                    return task
+
             # Check required fields are grounded
             if not self._check_fields_resolved(step):
                 task.step_states[idx] = StepState.WAITING_FOR_GROUNDING
@@ -383,6 +446,7 @@ class TaskManager:
                     "task %s step %d waiting for grounding: %s",
                     task.task_id, idx, step.required_fields,
                 )
+                self._save_checkpoint(task)
                 return task
 
             # Build args using the lazy builder
@@ -405,6 +469,7 @@ class TaskManager:
                 task.step_results[idx] = result
                 task.step_states[idx] = StepState.COMMITTED
                 task.current_step_index += 1
+                self._save_checkpoint(task)
                 logger.info(
                     "task %s step %d (%s) committed",
                     task.task_id, idx, step.tool_name,
@@ -421,6 +486,7 @@ class TaskManager:
                 if not self._check_fields_resolved(step):
                     task.step_states[idx] = StepState.WAITING_FOR_GROUNDING
                     task.state = TaskState.WAITING_FOR_GROUNDING
+                    self._save_checkpoint(task)
                     return task
                 # Fields still good — retry immediately (stay at same index)
                 continue
@@ -437,6 +503,7 @@ class TaskManager:
                 )
                 # Compensate previously committed steps
                 await self._compensate_committed_steps(task, idx)
+                self._save_checkpoint(task)
                 return task
 
             except Exception as exc:  # noqa: BLE001
@@ -449,11 +516,13 @@ class TaskManager:
                     task.task_id, idx, step.tool_name, exc,
                 )
                 await self._compensate_committed_steps(task, idx)
+                self._save_checkpoint(task)
                 return task
 
         # All steps completed
         task.state = TaskState.COMPLETED
         task.completed_at = time.monotonic()
+        self._save_checkpoint(task)
         logger.info("task %s completed: all %d steps committed", task.task_id, len(task.steps))
         return task
 
@@ -519,6 +588,78 @@ class TaskManager:
             if task.step_states[i] in (StepState.PENDING, StepState.WAITING_FOR_GROUNDING):
                 task.step_states[i] = StepState.SKIPPED
         logger.info("task %s cancelled by user", task_id)
+        self._save_checkpoint(task)
+        return task
+
+    # ---- persistence & checkpointing ------------------------------------
+
+    def _save_checkpoint(self, task: Task) -> None:
+        """Save a task checkpoint to the configured store, if present."""
+        if self.store is not None:
+            try:
+                cp = self.checkpoint(task.task_id)
+                self.store.save(task.task_id, cp)
+            except Exception:
+                logger.exception("Failed to save checkpoint for task %s", task.task_id)
+
+    def restore_task(
+        self,
+        task_id: str,
+        steps: Optional[list[TaskStep]] = None,
+    ) -> Optional[Task]:
+        """
+        Restore a task from the persistence store by task_id.
+        Reconstructs the Task object and marks any step that was IN_FLIGHT or
+        IN_FLIGHT_UNKNOWN at checkpoint time as NEEDS_RECONCILIATION rather than
+        trusting its last-known state.
+
+        Idempotent: calling restore_task multiple times on the same task_id
+        returns the same task instance without duplicate dispatch or state reset.
+        """
+        if task_id in self._tasks:
+            return self._tasks[task_id]
+
+        if self.store is None:
+            logger.warning("restore_task called but no CheckpointStore is configured")
+            return None
+
+        cp = self.store.load(task_id)
+        if cp is None:
+            logger.warning("No checkpoint found for task %s", task_id)
+            return None
+
+        if steps is None:
+            num_steps = len(cp.get("step_states", []))
+            steps = [
+                TaskStep(
+                    tool_name=f"restored_step_{i}",
+                    kind="write",
+                )
+                for i in range(num_steps)
+            ]
+
+        task = Task(
+            task_id=cp["task_id"],
+            name=cp["name"],
+            steps=steps,
+            state=TaskState[cp["state"]],
+            step_states=[StepState[s] for s in cp["step_states"]],
+            step_results=list(cp.get("step_results", [])),
+            step_action_ids=list(cp.get("step_action_ids", [None] * len(steps))),
+            step_dispatched_args=list(cp.get("step_dispatched_args", [None] * len(steps))),
+            current_step_index=cp["current_step_index"],
+            error=cp.get("error"),
+        )
+
+        # CRITICAL CONSTRAINT: Mark any IN_FLIGHT or IN_FLIGHT_UNKNOWN steps as NEEDS_RECONCILIATION
+        for i in range(len(task.step_states)):
+            if task.step_states[i] == StepState.IN_FLIGHT:
+                task.step_states[i] = StepState.NEEDS_RECONCILIATION
+                if task.state not in (TaskState.CANCELLED, TaskState.FAILED):
+                    task.state = TaskState.RUNNING
+
+        self._tasks[task_id] = task
+        logger.info("restored task %s from checkpoint (state: %s)", task_id, task.state.name)
         return task
 
     # ---- dispatch helpers (all go through saga) -------------------------
@@ -632,8 +773,7 @@ class TaskManager:
     def checkpoint(self, task_id: str) -> dict[str, Any]:
         """
         Serialize the current state of a task into a plain dict that can
-        be round-tripped via restore_checkpoint(). No real persistence —
-        purely in-memory snapshot for test/debug use.
+        be round-tripped via restore_checkpoint() or FileCheckpointStore.
         """
         task = self._tasks[task_id]
         return {
@@ -643,6 +783,7 @@ class TaskManager:
             "current_step_index": task.current_step_index,
             "step_states": [s.name for s in task.step_states],
             "step_results": list(task.step_results),
+            "step_action_ids": list(task.step_action_ids),
             "step_dispatched_args": list(task.step_dispatched_args),
             "error": task.error,
         }
@@ -656,6 +797,8 @@ class TaskManager:
         task.current_step_index = cp["current_step_index"]
         task.step_states = [StepState[s] for s in cp["step_states"]]
         task.step_results = cp["step_results"]
+        if "step_action_ids" in cp:
+            task.step_action_ids = cp["step_action_ids"]
         task.step_dispatched_args = cp["step_dispatched_args"]
         task.error = cp["error"]
         return task
