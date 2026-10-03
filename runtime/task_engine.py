@@ -56,6 +56,8 @@ class TaskState(Enum):
     PENDING = auto()                 # created, no steps dispatched yet
     RUNNING = auto()                 # at least one step is in flight or committed
     WAITING_FOR_GROUNDING = auto()   # a step's required field was evicted; waiting for re-grounding
+    REPLANNING = auto()              # a committed step's dispatched args were invalidated;
+                                     # compensation in progress, will rewind and redispatch
     COMPLETED = auto()               # all steps successfully committed
     FAILED = auto()                  # unrecoverable step failure (after compensation)
     CANCELLED = auto()               # user explicitly cancelled
@@ -69,6 +71,7 @@ class StepState(Enum):
     FAILED = auto()                  # saga reports ABORTED/failure
     WAITING_FOR_GROUNDING = auto()   # required grounded field was evicted
     SKIPPED = auto()                 # skipped due to upstream failure/cancel
+    COMPENSATED = auto()             # was COMMITTED, then compensated for replanning
 
 
 # --------------------------------------------------------------------------
@@ -115,6 +118,7 @@ class Task:
     step_states: list[StepState] = field(default_factory=list)
     step_results: list[Any] = field(default_factory=list)
     step_action_ids: list[Optional[str]] = field(default_factory=list)
+    step_dispatched_args: list[Optional[dict[str, Any]]] = field(default_factory=list)
     current_step_index: int = 0
     created_at: float = field(default_factory=time.monotonic)
     completed_at: Optional[float] = None
@@ -127,6 +131,8 @@ class Task:
             self.step_results = [None] * len(self.steps)
         if not self.step_action_ids:
             self.step_action_ids = [None] * len(self.steps)
+        if not self.step_dispatched_args:
+            self.step_dispatched_args = [None] * len(self.steps)
 
 
 # --------------------------------------------------------------------------
@@ -175,17 +181,56 @@ class TaskManager:
     def on_field_evicted(self, field_name: str, evicted_value: str) -> None:
         """
         Called by GroundingGuard's on_eviction hook when a staged candidate
-        is tombstone-evicted. Records the evicted field so that running tasks
-        can detect that a required field needs re-grounding.
+        is tombstone-evicted.
+
+        TASK-INV-5: if a COMMITTED step's recorded dispatched_args actually
+        contained the evicted field and value (exact match), that step must be
+        compensated and the task rewound to redispatch with corrected data.
+        If no committed step used that value, only not-yet-dispatched steps are
+        parked.
         """
         self._evicted_fields.add(field_name)
         logger.info("field evicted: %s (value was %r)", field_name, evicted_value)
 
-        # Check all running tasks: if any pending step depends on this field,
-        # park it at WAITING_FOR_GROUNDING.
         for task in self._tasks.values():
-            if task.state not in (TaskState.RUNNING, TaskState.PENDING):
+            if task.state in (TaskState.FAILED, TaskState.CANCELLED):
                 continue
+
+            # --- TASK-INV-5: check COMMITTED steps for exact field+value match ---
+            rewind_to: Optional[int] = None
+            for i in range(len(task.steps)):
+                if task.step_states[i] != StepState.COMMITTED:
+                    continue
+                dispatched = task.step_dispatched_args[i]
+                if dispatched is None:
+                    continue
+
+                # Exact match: the step must have used field_name with evicted_value
+                step_used_field = False
+                if field_name in dispatched and dispatched[field_name] == evicted_value:
+                    step_used_field = True
+                elif field_name in task.steps[i].required_fields and evicted_value in dispatched.values():
+                    step_used_field = True
+
+                if step_used_field:
+                    if rewind_to is None or i < rewind_to:
+                        rewind_to = i
+
+            if rewind_to is not None:
+                # Compensate from the latest committed step down to rewind_to
+                # and mark them for redispatch.
+                task.state = TaskState.REPLANNING
+                logger.info(
+                    "task %s REPLANNING: committed step %d used evicted field %s=%r",
+                    task.task_id, rewind_to, field_name, evicted_value,
+                )
+                # Schedule async compensation
+                asyncio.ensure_future(
+                    self._replan_from_step(task, rewind_to, field_name, evicted_value)
+                )
+                continue
+
+            # --- not-yet-dispatched steps: park if they depend on this field ---
             idx = task.current_step_index
             if idx < len(task.steps):
                 step = task.steps[idx]
@@ -196,6 +241,77 @@ class TaskManager:
                         "task %s step %d parked: field %s evicted",
                         task.task_id, idx, field_name,
                     )
+
+    async def _replan_from_step(
+        self,
+        task: Task,
+        rewind_to: int,
+        field_name: str = "",
+        evicted_value: str = "",
+    ) -> None:
+        """
+        Compensate all committed steps from the latest back to rewind_to
+        (inclusive), reset them for redispatch, rewind current_step_index, and
+        transition the task to WAITING_FOR_GROUNDING or RUNNING as appropriate.
+        """
+        upper_idx = (
+            task.current_step_index
+            if task.current_step_index < len(task.steps)
+            else len(task.steps)
+        )
+        for i in range(upper_idx - 1, rewind_to - 1, -1):
+            if task.step_states[i] != StepState.COMMITTED:
+                continue
+            step = task.steps[i]
+            result = task.step_results[i]
+            if step.compensate is not None and result is not None:
+                try:
+                    await step.compensate(result)
+                    logger.info(
+                        "task %s step %d (%s) compensated for replanning",
+                        task.task_id, i, step.tool_name,
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.critical(
+                        "COMPENSATION FAILED during replan for task %s step %d (%s) — "
+                        "MANUAL RECONCILIATION REQUIRED",
+                        task.task_id, i, step.tool_name,
+                        exc_info=True,
+                    )
+                    task.state = TaskState.FAILED
+                    task.error = f"compensation failed during replan at step {i}"
+                    task.completed_at = time.monotonic()
+                    return
+            elif step.compensate is None and step.kind == "write":
+                logger.critical(
+                    "COMMITTED step %d (%s) used evicted field %s=%r but has NO "
+                    "compensate() handler — MANUAL RECONCILIATION REQUIRED; remote "
+                    "side-effect cannot be rolled back automatically",
+                    i, step.tool_name, field_name, evicted_value,
+                )
+
+            # Mark step for redispatch
+            task.step_states[i] = StepState.COMPENSATED
+            task.step_results[i] = None
+            task.step_dispatched_args[i] = None
+            task.step_action_ids[i] = None
+
+        # Rewind
+        task.current_step_index = rewind_to
+        task.completed_at = None
+
+        # Transition back to RUNNING or WAITING_FOR_GROUNDING
+        if self._check_fields_resolved(task.steps[rewind_to]):
+            task.step_states[rewind_to] = StepState.PENDING
+            task.state = TaskState.RUNNING
+        else:
+            task.step_states[rewind_to] = StepState.WAITING_FOR_GROUNDING
+            task.state = TaskState.WAITING_FOR_GROUNDING
+
+        logger.info(
+            "task %s rewound to step %d (state: %s)",
+            task.task_id, rewind_to, task.state.name,
+        )
 
     # ---- field re-grounding check ---------------------------------------
 
@@ -280,6 +396,10 @@ class TaskManager:
             else:
                 args = {}
 
+            # Record what args were actually dispatched (for TASK-INV-5
+            # eviction matching — exact dispatched value comparison)
+            task.step_dispatched_args[idx] = dict(args)
+
             # Dispatch through saga
             try:
                 if step.kind == "write":
@@ -361,10 +481,12 @@ class TaskManager:
 
     # ---- cancellation ---------------------------------------------------
 
-    def cancel_task(self, task_id: str) -> Task:
+    async def cancel_task(self, task_id: str) -> Task:
         """
         Explicitly cancel a task. This is the ONLY way to stop a task other
         than completion or unrecoverable failure.
+
+        Compensates all committed steps in reverse order before marking CANCELLED.
         """
         task = self._tasks[task_id]
         if task.state in (TaskState.COMPLETED, TaskState.FAILED):
@@ -375,8 +497,30 @@ class TaskManager:
             return task
         task.state = TaskState.CANCELLED
         task.completed_at = time.monotonic()
+
+        # Compensate committed steps in reverse order
+        for i in range(len(task.steps) - 1, -1, -1):
+            if task.step_states[i] != StepState.COMMITTED:
+                continue
+            step = task.steps[i]
+            result = task.step_results[i]
+            if step.compensate is not None and result is not None:
+                try:
+                    await step.compensate(result)
+                    task.step_states[i] = StepState.COMPENSATED
+                    logger.info(
+                        "task %s step %d (%s) compensated on cancel",
+                        task.task_id, i, step.tool_name,
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.critical(
+                        "COMPENSATION FAILED during cancel for task %s step %d (%s)",
+                        task.task_id, i, step.tool_name,
+                        exc_info=True,
+                    )
+
         # Mark pending/waiting steps as SKIPPED
-        for i in range(task.current_step_index, len(task.steps)):
+        for i in range(len(task.steps)):
             if task.step_states[i] in (StepState.PENDING, StepState.WAITING_FOR_GROUNDING):
                 task.step_states[i] = StepState.SKIPPED
         logger.info("task %s cancelled by user", task_id)
@@ -489,3 +633,34 @@ class TaskManager:
             }
             for t in self._tasks.values()
         ]
+
+    def checkpoint(self, task_id: str) -> dict[str, Any]:
+        """
+        Serialize the current state of a task into a plain dict that can
+        be round-tripped via restore_checkpoint(). No real persistence —
+        purely in-memory snapshot for test/debug use.
+        """
+        task = self._tasks[task_id]
+        return {
+            "task_id": task.task_id,
+            "name": task.name,
+            "state": task.state.name,
+            "current_step_index": task.current_step_index,
+            "step_states": [s.name for s in task.step_states],
+            "step_results": list(task.step_results),
+            "step_dispatched_args": list(task.step_dispatched_args),
+            "error": task.error,
+        }
+
+    def restore_checkpoint(self, task_id: str, cp: dict[str, Any]) -> Task:
+        """
+        Restore task state from a checkpoint dict. Overwrites in-place.
+        """
+        task = self._tasks[task_id]
+        task.state = TaskState[cp["state"]]
+        task.current_step_index = cp["current_step_index"]
+        task.step_states = [StepState[s] for s in cp["step_states"]]
+        task.step_results = cp["step_results"]
+        task.step_dispatched_args = cp["step_dispatched_args"]
+        task.error = cp["error"]
+        return task
