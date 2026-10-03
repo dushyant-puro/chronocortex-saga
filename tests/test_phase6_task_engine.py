@@ -436,6 +436,81 @@ async def test_6d_unrelated_correction_no_replanning():
 
 
 # ===========================================================================
+# Test 6d2: Direct on_field_evicted discrimination against dangerous false positives
+# ===========================================================================
+
+@pytest.mark.asyncio
+async def test_6d2_explicit_on_field_evicted_discrimination():
+    """
+    Directly tests TaskManager.on_field_evicted in isolation without GroundingGuard:
+    1. Step 0 commits with dispatched_args={'truck_id': 'truck-17', 'destination': 'Chennai'}
+    2. Case A: on_field_evicted('truck_id', 'truck-99') -> field matches, but value differs.
+       Must NOT trigger compensation.
+    3. Case B: on_field_evicted('destination', 'truck-17') -> value 'truck-17' coincidentally
+       exists in dispatched_args (under truck_id), but destination's value is 'Chennai'.
+       Must NOT trigger compensation (proves no looser OR-branch false-positive).
+    4. Case C: on_field_evicted('dock_id', 'D1') -> completely unreferenced field.
+       Must NOT trigger compensation.
+    """
+    clock = TurnEpochClock()
+    saga = SpeculativeSagaManager(clock)
+
+    compensated = []
+
+    async def compensate_handler(result):
+        compensated.append(result)
+
+    executors = {
+        "multi_arg_step": _simple_executor({"status": "ok"}),
+    }
+
+    tm = _HarnessTaskManager(
+        saga=saga,
+        resolve_field=lambda f: "value",
+        executors=executors,
+    )
+
+    steps = [
+        TaskStep(
+            tool_name="multi_arg_step",
+            required_fields=["truck_id", "destination"],
+            build_args=lambda t, i: {"truck_id": "truck-17", "destination": "Chennai"},
+            kind="write",
+            compensate=compensate_handler,
+        ),
+    ]
+
+    task = tm.create_task("discriminator_test", steps)
+    result = await tm.run_task(task.task_id)
+
+    # Step 0 committed
+    assert result.state == TaskState.COMPLETED
+    assert result.step_states[0] == StepState.COMMITTED
+    assert result.step_dispatched_args[0] == {"truck_id": "truck-17", "destination": "Chennai"}
+
+    # Case A: Same field name, different value
+    tm.on_field_evicted("truck_id", "truck-99")
+    await asyncio.sleep(0.02)
+    assert len(compensated) == 0, f"Case A failed: compensate called for different value: {compensated}"
+    assert task.step_states[0] == StepState.COMMITTED
+
+    # Case B: Value 'truck-17' matches truck_id, but eviction is for 'destination'
+    tm.on_field_evicted("destination", "truck-17")
+    await asyncio.sleep(0.02)
+    assert len(compensated) == 0, f"Case B failed: coincidental value match triggered compensate: {compensated}"
+    assert task.step_states[0] == StepState.COMMITTED
+
+    # Case C: Unrelated field
+    tm.on_field_evicted("dock_id", "D1")
+    await asyncio.sleep(0.02)
+    assert len(compensated) == 0, f"Case C failed: unrelated field triggered compensate: {compensated}"
+    assert task.step_states[0] == StepState.COMMITTED
+
+    print(f"\n[TEST 6d2 VERIFICATION] All 3 non-matching eviction calls rejected. compensated: {compensated}")
+
+
+
+# ===========================================================================
 # Test 6e: cancel_task compensates committed steps in reverse order
 # ===========================================================================
 

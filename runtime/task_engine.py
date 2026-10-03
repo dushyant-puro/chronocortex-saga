@@ -205,14 +205,9 @@ class TaskManager:
                 if dispatched is None:
                     continue
 
-                # Exact match: the step must have used field_name with evicted_value
-                step_used_field = False
-                if field_name in dispatched and dispatched[field_name] == evicted_value:
-                    step_used_field = True
-                elif field_name in task.steps[i].required_fields and evicted_value in dispatched.values():
-                    step_used_field = True
-
-                if step_used_field:
+                # Exact match: the step's recorded dispatched args must contain
+                # field_name as a key AND that key's value must equal evicted_value exactly.
+                if dispatched.get(field_name) == evicted_value:
                     if rewind_to is None or i < rewind_to:
                         rewind_to = i
 
