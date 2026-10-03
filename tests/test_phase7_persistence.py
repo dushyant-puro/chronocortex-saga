@@ -145,7 +145,8 @@ async def test_7b_restore_reconstructs_equivalent_state():
     1. Create and run task on TaskManager 1 with FileCheckpointStore
     2. Create a fresh TaskManager 2 pointing to the same store
     3. Call restore_task(task_id)
-    4. Assert reconstructed Task state matches original Task state
+    4. Assert restored Task fields match original Task fields EXACTLY:
+       - task_id, name, state, current_step_index, step_states, step_results, step_dispatched_args
     """
     with tempfile.TemporaryDirectory() as tmpdir:
         store = FileCheckpointStore(tmpdir)
@@ -217,16 +218,17 @@ async def test_7b_restore_reconstructs_equivalent_state():
 
         restored_task = tm2.restore_task(task_id, steps=steps2)
         assert restored_task is not None
-        assert restored_task.task_id == task_id
-        assert restored_task.name == "restore_test"
-        assert restored_task.state == TaskState.WAITING_FOR_GROUNDING
-        assert restored_task.current_step_index == 1
-        assert restored_task.step_states[0] == StepState.COMMITTED
-        assert restored_task.step_states[1] == StepState.WAITING_FOR_GROUNDING
-        assert restored_task.step_results[0] == {"a": "result_a"}
-        assert restored_task.step_dispatched_args[0] == {"arg_a": "1"}
 
-        print(f"\n[TEST 7b VERIFICATION] Task restored across process restart: state={restored_task.state.name}, step_0={restored_task.step_states[0].name}")
+        # Explicit direct before/after equality assertions between original and restored task
+        assert restored_task.task_id == task1.task_id
+        assert restored_task.name == task1.name
+        assert restored_task.state == task1.state
+        assert restored_task.current_step_index == task1.current_step_index
+        assert restored_task.step_states == task1.step_states
+        assert restored_task.step_results == task1.step_results
+        assert restored_task.step_dispatched_args == task1.step_dispatched_args
+
+        print(f"\n[TEST 7b VERIFICATION] Explicit before/after equality verified across process restart: state={restored_task.state.name}, step_0={restored_task.step_states[0].name}")
 
 
 # ===========================================================================
@@ -306,34 +308,47 @@ async def test_7c_in_flight_restores_as_needs_reconciliation():
 
 
 # ===========================================================================
-# Test 7d: Restoring the same checkpoint twice is idempotent
+# Test 7d: Restoring the same checkpoint twice is idempotent (Process Restart Case B)
 # ===========================================================================
 
 @pytest.mark.asyncio
 async def test_7d_restore_idempotent_no_duplicate_dispatch():
     """
-    Calling restore_task multiple times on the same task_id returns the exact
-    same Task instance and does NOT duplicate state or execution.
+    Test 7d (Case B): Test surviving a process restart and idempotent restoration.
+    1. Process 1: Create and execute a task to completion on TaskManager 1, saving checkpoint.
+    2. Process 2: Discard TaskManager 1. Create a FRESH TaskManager 2 with fresh saga
+       pointing to the same CheckpointStore, with executors that count dispatches.
+    3. Call restore_task twice on TaskManager 2.
+    4. Also create a FRESH TaskManager 3 pointing to the same CheckpointStore and call restore_task.
+    5. Assert all restorations produce equivalent state, and running the tasks results in
+       ZERO duplicate step dispatches.
     """
     with tempfile.TemporaryDirectory() as tmpdir:
         store = FileCheckpointStore(tmpdir)
-        task_id = "task-idempotent-restore"
 
-        checkpoint = {
-            "task_id": task_id,
-            "name": "idempotent_task",
-            "state": "COMPLETED",
-            "current_step_index": 1,
-            "step_states": ["COMMITTED"],
-            "step_results": [{"ok": True}],
-            "step_action_ids": ["write-0-111"],
-            "step_dispatched_args": [{"k": "v"}],
-            "error": None,
-        }
-        store.save(task_id, checkpoint)
+        # --- Process 1: Execute task and write checkpoint ---
+        clock1 = TurnEpochClock()
+        saga1 = SpeculativeSagaManager(clock1)
 
-        clock = TurnEpochClock()
-        saga = SpeculativeSagaManager(clock)
+        steps1 = [
+            TaskStep(tool_name="step_a", build_args=lambda t, i: {"k": "v"}, kind="write")
+        ]
+
+        tm1 = _HarnessTaskManager(
+            saga=saga1,
+            resolve_field=lambda f: "val",
+            executors={"step_a": _simple_executor({"ok": True})},
+            store=store,
+        )
+
+        orig_task = tm1.create_task("idempotent_task", steps1)
+        orig_result = await tm1.run_task(orig_task.task_id)
+        assert orig_result.state == TaskState.COMPLETED
+        task_id = orig_task.task_id
+
+        # --- Process 2 (Restart): Discard TaskManager 1, create fresh TaskManager 2 ---
+        clock2 = TurnEpochClock()
+        saga2 = SpeculativeSagaManager(clock2)
 
         dispatch_count = 0
 
@@ -342,25 +357,51 @@ async def test_7d_restore_idempotent_no_duplicate_dispatch():
             dispatch_count += 1
             return {"ok": True}
 
-        steps = [TaskStep(tool_name="step_a", kind="write")]
+        executors2 = {"step_a": counting_exec}
 
-        tm = _HarnessTaskManager(
-            saga=saga,
+        tm2 = _HarnessTaskManager(
+            saga=saga2,
             resolve_field=lambda f: "val",
-            executors={"step_a": counting_exec},
+            executors=executors2,
             store=store,
         )
 
-        # Restore twice
-        task_ref1 = tm.restore_task(task_id, steps=steps)
-        task_ref2 = tm.restore_task(task_id, steps=steps)
+        steps2_a = [TaskStep(tool_name="step_a", build_args=lambda t, i: {"k": "v"}, kind="write")]
+        steps2_b = [TaskStep(tool_name="step_a", build_args=lambda t, i: {"k": "v"}, kind="write")]
 
-        # Assert identical object reference
-        assert task_ref1 is task_ref2
+        # Restore twice on fresh TaskManager 2
+        restored_ref1 = tm2.restore_task(task_id, steps=steps2_a)
+        restored_ref2 = tm2.restore_task(task_id, steps=steps2_b)
 
-        # Run task — should be a no-op since task is COMPLETED
-        result = await tm.run_task(task_id)
-        assert result.state == TaskState.COMPLETED
+        assert restored_ref1 is restored_ref2
+        assert restored_ref1.state == orig_result.state
+        assert restored_ref1.step_states == orig_result.step_states
+        assert restored_ref1.step_results == orig_result.step_results
+
+        # Run task on restored TaskManager 2 — must be a no-op
+        res2 = await tm2.run_task(task_id)
+        assert res2.state == TaskState.COMPLETED
         assert dispatch_count == 0  # Zero duplicate dispatches!
 
-        print(f"\n[TEST 7d VERIFICATION] Restoring task twice returned same instance, 0 duplicate dispatches.")
+        # --- Process 3 (Another fresh instance): Verify independent restoration ---
+        clock3 = TurnEpochClock()
+        saga3 = SpeculativeSagaManager(clock3)
+        tm3 = _HarnessTaskManager(
+            saga=saga3,
+            resolve_field=lambda f: "val",
+            executors=executors2,
+            store=store,
+        )
+        steps3 = [TaskStep(tool_name="step_a", build_args=lambda t, i: {"k": "v"}, kind="write")]
+        restored_ref3 = tm3.restore_task(task_id, steps=steps3)
+
+        assert restored_ref3.state == orig_result.state
+        assert restored_ref3.step_states == orig_result.step_states
+        assert restored_ref3.step_results == orig_result.step_results
+
+        res3 = await tm3.run_task(task_id)
+        assert res3.state == TaskState.COMPLETED
+        assert dispatch_count == 0  # Still zero duplicate dispatches across fresh restarts!
+
+        print(f"\n[TEST 7d VERIFICATION] Process restart restoration verified idempotent across fresh TaskManagers, 0 duplicate dispatches.")
+
