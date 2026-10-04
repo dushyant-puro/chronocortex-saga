@@ -172,7 +172,7 @@ async def test_2_cascading_replan_compensated_and_redispatched():
 
     graph = TaskGraph("graph_test_2")
     graph.add_task(task_a.task_id, task_a)
-    graph.add_task(task_b.task_id, task_b, depends_on={task_a.task_id: ["x"]})
+    graph.add_task(task_b.task_id, task_b, depends_on={task_a.task_id: {"x": "b_input"}})
 
     # Initial run: both complete with value1
     await graph.run(tm)
@@ -252,10 +252,10 @@ async def test_3_negative_case_isolated_discrimination():
     task_b.state = TaskState.COMPLETED
     task_b.current_step_index = 1
 
-    # Call on_upstream_replanned directly in isolation with changed 'x'
+    # Call on_upstream_replanned directly in isolation with changed 'x' (unconsumed field)
     cascaded = await graph.on_upstream_replanned(task_a.task_id, {"x": "new_x_value"})
 
-    # ASSERTION: B was NOT affected
+    # ASSERTION 1: B was NOT affected (field name discrimination)
     assert cascaded == [], f"Expected empty cascade, got: {cascaded}"
     assert len(b_compensated) == 0, "B's compensate handler should NOT be called for unconsumed field"
     assert task_b.state == TaskState.COMPLETED
@@ -263,11 +263,28 @@ async def test_3_negative_case_isolated_discrimination():
 
     print("\n[TEST 3 VERIFICATION] Isolated on_upstream_replanned directly verified negative discrimination: 0 cascades for unconsumed field 'x'")
 
-    # Positive control: Calling with changed 'y' MUST cascade
-    cascaded_pos = await graph.on_upstream_replanned(task_a.task_id, {"y": "new_y_value"})
+    # ASSERTION 2: Exact value mismatch discrimination (Phase 6 Bug 2 protection)
+    # Field matches 'y', but step dispatched with 'y_other' while evicted value is 'y_val'
+    task_b.step_dispatched_args[0] = {"y": "y_other"}
+    cascaded_mismatch = await graph.on_upstream_replanned(
+        task_a.task_id,
+        {"y": "new_y_value", "_evicted_values": {"y": "y_val"}},
+        event_id="test_ev_mismatch",
+    )
+    assert cascaded_mismatch == [], "Step with mismatched dispatched value must NOT be compensated"
+    assert len(b_compensated) == 0, "No compensation on value mismatch"
+    print("[TEST 3 VERIFICATION] Exact-match discrimination verified: 0 cascades when dispatched value differs from evicted value")
+
+    # ASSERTION 3: Positive control — exact field and value match MUST cascade
+    task_b.step_dispatched_args[0] = {"y": "y_val"}
+    cascaded_pos = await graph.on_upstream_replanned(
+        task_a.task_id,
+        {"y": "new_y_value", "_evicted_values": {"y": "y_val"}},
+        event_id="test_ev_match",
+    )
     assert task_b.task_id in cascaded_pos
     assert len(b_compensated) == 1
-    print("[TEST 3 VERIFICATION] Positive control verified: cascade triggered when dependent field 'y' changed")
+    print("[TEST 3 VERIFICATION] Positive control verified: cascade triggered when dependent field 'y' and exact value matched")
 
 
 # ===========================================================================
@@ -358,51 +375,98 @@ def test_5_dispatch_order_deterministic():
 @pytest.mark.asyncio
 async def test_6_replan_storm_bound_prevents_loop():
     """
-    GRAPH-INV-3: Refuse to replan the same task twice for the same originating
-    event, bounding cascade propagation and preventing loops.
+    GRAPH-INV-3: Replan-storm bound.
+    Drives event_id generation through the REAL mechanism (on_field_evicted -> _build_replan_summary)
+    and verifies that duplicate cascades for the SAME originating eviction event are suppressed,
+    while a genuine subsequent correction event (new epoch) successfully cascades.
     """
     clock = TurnEpochClock()
     saga = SpeculativeSagaManager(clock)
 
+    current_values = {"x": "val1"}
+    b_compensated: list[Any] = []
+
+    async def b_compensate(res):
+        b_compensated.append(res)
+
+    executors = {
+        "tool_a": _simple_executor({"x": "out"}),
+        "tool_b": _simple_executor({"b": "done"}),
+    }
+
     tm = _HarnessTaskManager(
         saga=saga,
-        resolve_field=lambda f: "val",
-        executors={"tool_b": _simple_executor({"ok": True})},
+        resolve_field=lambda f: current_values.get(f),
+        executors=executors,
     )
 
-    task_a = tm.create_task("task_a", [TaskStep(tool_name="tool_a", kind="write")])
+    task_a = tm.create_task("task_a", [
+        TaskStep(
+            tool_name="tool_a",
+            required_fields=["x"],
+            build_args=lambda t, i: {"x": current_values["x"]},
+            kind="write",
+            compensate=_simple_executor(None),
+        )
+    ])
     task_b = tm.create_task("task_b", [
         TaskStep(
             tool_name="tool_b",
             required_fields=["x"],
-            build_args=lambda t, i: {"x": "val"},
+            build_args=lambda t, i: {"b_in": current_values["x"]},
             kind="write",
-            compensate=_simple_executor(None),
+            compensate=b_compensate,
         )
     ])
 
     graph = TaskGraph("replan_bound_graph")
     graph.add_task(task_a.task_id, task_a)
-    graph.add_task(task_b.task_id, task_b, depends_on={task_a.task_id: ["x"]})
-    graph._task_manager = tm
+    graph.add_task(task_b.task_id, task_b, depends_on={task_a.task_id: {"x": "b_in"}})
 
-    task_b.step_states[0] = StepState.COMMITTED
-    task_b.step_results[0] = {"ok": True}
-    task_b.step_dispatched_args[0] = {"x": "val"}
-    task_b.state = TaskState.COMPLETED
-    task_b.current_step_index = 1
+    # Run graph to completion
+    await graph.run(tm)
+    assert task_a.state == TaskState.COMPLETED
+    assert task_b.state == TaskState.COMPLETED
+    assert len(b_compensated) == 0
 
-    event_id = "test-orig-event-1"
+    # 1. Trigger the REAL eviction pipeline:
+    current_values["x"] = "val2"
+    tm.on_field_evicted("x", "val1")
 
-    # First cascade for this event -> succeeds
-    cascaded_1 = await graph.on_upstream_replanned(task_a.task_id, {"x": "new_val"}, event_id=event_id)
-    assert task_b.task_id in cascaded_1
+    # Allow async replan to complete
+    await asyncio.sleep(0.08)
 
-    # Second cascade for the SAME event -> blocked by replan-storm bound
-    cascaded_2 = await graph.on_upstream_replanned(task_a.task_id, {"x": "new_val"}, event_id=event_id)
-    assert cascaded_2 == [], "Replan-storm bound must block second replan of task B for the same event"
+    # Task B cascaded once
+    assert len(b_compensated) == 1, f"Expected 1 compensation, got {len(b_compensated)}"
+    real_event_id = getattr(task_a, "_replan_event_id", None)
+    assert real_event_id is not None
+    assert "evict-x-val1" in real_event_id
 
-    print(f"\n[TEST 6 VERIFICATION] Replan-storm bound verified: second cascade suppressed for {event_id}")
+    # 2. Simulate a storm / duplicate delivery of the SAME originating event:
+    # (e.g. late retry, circular notification, or duplicate callback with the real event payload)
+    summary_duplicate = tm._build_replan_summary(task_a, "x")
+    summary_duplicate["_event_id"] = real_event_id
+    summary_duplicate["_evicted_values"] = {"x": "val1"}
+
+    duplicate_cascaded = await graph.on_upstream_replanned(task_a.task_id, summary_duplicate)
+    # The real bound MUST suppress this duplicate cascade:
+    assert duplicate_cascaded == [], "Replan-storm bound must suppress duplicate cascade for the same event"
+    assert len(b_compensated) == 1, "Compensation count must remain 1 (no duplicate compensation)"
+
+    # 3. Contrast with a GENUINE subsequent correction event (new epoch, new eviction):
+    await clock.advance(reason="second_correction")
+    current_values["x"] = "val3"
+    tm.on_field_evicted("x", "val2")
+
+    await asyncio.sleep(0.08)
+
+    # Genuine new event DOES cascade:
+    assert len(b_compensated) == 2, f"Expected 2 compensations after genuine second correction, got {len(b_compensated)}"
+    second_event_id = getattr(task_a, "_replan_event_id", None)
+    assert second_event_id != real_event_id
+    assert "epoch-1" in second_event_id
+
+    print(f"\n[TEST 6 VERIFICATION] Replan-storm bound verified with REAL pipeline event generation: duplicate suppressed for {real_event_id}, second event {second_event_id} succeeded.")
 
 
 # ===========================================================================
@@ -504,7 +568,7 @@ async def test_8_checkpoint_restore_round_trip():
         graph_cp = graph1.checkpoint()
         assert graph_cp["node_ids"] == [task_a.task_id, task_b.task_id]
         assert graph_cp["edges"][task_b.task_id] == [task_a.task_id]
-        assert graph_cp["field_dependencies"][task_b.task_id][task_a.task_id] == ["x"]
+        assert graph_cp["field_dependencies"][task_b.task_id][task_a.task_id] == {"x": "x"}
 
         # -------------------------------------------------------------
         # Process restart simulation: discard tm1 and graph1 completely

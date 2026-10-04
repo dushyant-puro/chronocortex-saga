@@ -147,12 +147,18 @@ class TaskGraph:
         # Commit graph changes once cycle detection passes
         self.nodes[task_id] = task
         self.edges[task_id] = upstream_ids
-        self.field_dependencies[task_id] = {
-            up_id: list(fields) for up_id, fields in deps_dict.items()
-        }
+        self.field_dependencies[task_id] = {}
+        for up_id, fields in deps_dict.items():
+            if isinstance(fields, dict):
+                self.field_dependencies[task_id][up_id] = dict(fields)
+            elif isinstance(fields, (list, tuple, set)):
+                self.field_dependencies[task_id][up_id] = {f: f for f in fields}
+            else:
+                self.field_dependencies[task_id][up_id] = {str(fields): str(fields)}
+
         logger.info(
             "Graph %s added task %s (depends on: %s)",
-            self.graph_id, task_id, deps_dict,
+            self.graph_id, task_id, self.field_dependencies[task_id],
         )
 
     def dispatch_order(self) -> list[str]:
@@ -234,16 +240,17 @@ class TaskGraph:
         """
         Core cascade mechanism (wired to TaskManager.on_task_replanned).
 
-        For every downstream task that depends on upstream_task_id:
-          1. Checks whether downstream task declared dependency on any of changed_fields.
-          2. If YES: downstream task replans (compensates affected committed steps and redispatches).
-          3. If NO: does nothing (negative-case discrimination).
-          4. GRAPH-INV-3: Bounded cascade prevents infinite loops by tracking event_id history.
+        Enforces EXACT-MATCH DISCIPLINE:
+        A downstream step only replans if its own recorded dispatched_args
+        genuinely contains the specific upstream value that changed, under
+        whatever argument key that step actually used it under.
         """
         if self._task_manager is None:
             logger.warning("on_upstream_replanned called without TaskManager")
             return []
 
+        if event_id is None:
+            event_id = changed_fields.get("_event_id")
         if event_id is None:
             self._replan_event_counter += 1
             event_id = f"replan-{upstream_task_id}-{self._replan_event_counter}"
@@ -253,18 +260,25 @@ class TaskGraph:
 
         cascaded_tasks: list[str] = []
 
-        for downstream_id, upstream_dict in self.field_dependencies.items():
-            if upstream_task_id not in upstream_dict:
+        for downstream_id, upstream_mapping in self.field_dependencies.items():
+            if upstream_task_id not in upstream_mapping:
                 continue
 
-            declared_fields = upstream_dict[upstream_task_id]
-            affected_fields = [f for f in declared_fields if f in changed_fields]
+            field_map = upstream_mapping[upstream_task_id]  # {upstream_field: downstream_arg_key}
+            evicted_vals = changed_fields.get("_evicted_values", {})
+
+            # Check which declared upstream fields changed
+            matched_pairs: list[tuple[str, str, Any]] = []
+            for up_field, down_arg in field_map.items():
+                if up_field in changed_fields or up_field in evicted_vals:
+                    evicted_v = evicted_vals.get(up_field)
+                    matched_pairs.append((up_field, down_arg, evicted_v))
 
             # Negative-case discrimination: do nothing if changed fields are not consumed
-            if not affected_fields:
+            if not matched_pairs:
                 logger.debug(
                     "Task %s depends on %s, but not for changed fields %s (declared: %s); no cascade",
-                    downstream_id, upstream_task_id, list(changed_fields.keys()), declared_fields,
+                    downstream_id, upstream_task_id, list(changed_fields.keys()), list(field_map.keys()),
                 )
                 continue
 
@@ -276,44 +290,56 @@ class TaskGraph:
                 )
                 continue
 
-            self._cascade_history[event_id].add(downstream_id)
-
             task = self._task_manager._tasks.get(downstream_id) or self.nodes.get(downstream_id)
             if task is None:
                 continue
 
-            # Locate earliest committed step that consumed any affected field
+            # Exact-match check across committed steps:
+            # Step must have recorded dispatched_args containing down_arg matching evicted_v
             rewind_to: Optional[int] = None
+            evicted_down_arg: str = ""
+            evicted_down_val: str = ""
+
             for i in range(len(task.steps)):
                 if task.step_states[i] != StepState.COMMITTED:
                     continue
-                step = task.steps[i]
-                dispatched = task.step_dispatched_args[i] or {}
+                dispatched = task.step_dispatched_args[i]
+                if not dispatched:
+                    continue
 
-                consumed = any(f in step.required_fields or f in dispatched for f in affected_fields)
-                if consumed:
-                    if rewind_to is None or i < rewind_to:
-                        rewind_to = i
+                for up_field, down_arg, evicted_v in matched_pairs:
+                    if down_arg in dispatched:
+                        actual_val = dispatched[down_arg]
+                        # Exact match check:
+                        if evicted_v is not None:
+                            is_match = (actual_val == evicted_v)
+                        else:
+                            new_val = changed_fields.get(up_field)
+                            is_match = (actual_val != new_val)
+
+                        if is_match:
+                            if rewind_to is None or i < rewind_to:
+                                rewind_to = i
+                                evicted_down_arg = down_arg
+                                evicted_down_val = str(actual_val)
 
             if rewind_to is not None:
+                self._cascade_history[event_id].add(downstream_id)
                 logger.info(
-                    "Cascading replan to task %s (rewind to step %d) due to upstream %s change in %s",
-                    downstream_id, rewind_to, upstream_task_id, affected_fields,
+                    "Cascading replan to task %s (rewind to step %d) due to upstream %s change: %s=%r",
+                    downstream_id, rewind_to, upstream_task_id, evicted_down_arg, evicted_down_val,
                 )
                 task.state = TaskState.REPLANNING
+                task._replan_event_id = event_id
                 if not hasattr(task, "_replanning_fields"):
                     task._replanning_fields = set()
-                task._replanning_fields.update(affected_fields)
-
-                evicted_val = ""
-                if task.step_dispatched_args[rewind_to]:
-                    evicted_val = str(task.step_dispatched_args[rewind_to].get(affected_fields[0], ""))
+                task._replanning_fields.add(evicted_down_arg)
 
                 await self._task_manager._replan_from_step(
                     task,
                     rewind_to,
-                    field_name=affected_fields[0],
-                    evicted_value=evicted_val,
+                    field_name=evicted_down_arg,
+                    evicted_value=evicted_down_val,
                 )
                 cascaded_tasks.append(downstream_id)
 
@@ -334,7 +360,7 @@ class TaskGraph:
             "node_ids": list(self.nodes.keys()),
             "edges": {tid: list(deps) for tid, deps in self.edges.items()},
             "field_dependencies": {
-                tid: {up_id: list(fields) for up_id, fields in deps.items()}
+                tid: {up_id: dict(fields) for up_id, fields in deps.items()}
                 for tid, deps in self.field_dependencies.items()
             },
             "state": self.state.name,
@@ -365,10 +391,16 @@ class TaskGraph:
             graph.nodes[task_id] = task
 
         graph.edges = {tid: list(deps) for tid, deps in graph_checkpoint["edges"].items()}
-        graph.field_dependencies = {
-            tid: {up_id: list(fields) for up_id, fields in deps.items()}
-            for tid, deps in graph_checkpoint.get("field_dependencies", {}).items()
-        }
+        graph.field_dependencies = {}
+        for tid, deps in graph_checkpoint.get("field_dependencies", {}).items():
+            graph.field_dependencies[tid] = {}
+            for up_id, fields in deps.items():
+                if isinstance(fields, dict):
+                    graph.field_dependencies[tid][up_id] = dict(fields)
+                elif isinstance(fields, (list, tuple, set)):
+                    graph.field_dependencies[tid][up_id] = {f: f for f in fields}
+                else:
+                    graph.field_dependencies[tid][up_id] = {str(fields): str(fields)}
 
         task_manager.on_task_replanned = graph.on_upstream_replanned
         return graph

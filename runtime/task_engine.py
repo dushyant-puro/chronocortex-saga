@@ -191,6 +191,10 @@ class TaskManager:
 
     def _build_replan_summary(self, task: Task, field_name: str = "") -> dict[str, Any]:
         summary: dict[str, Any] = {}
+        if getattr(task, "_replan_event_id", None):
+            summary["_event_id"] = task._replan_event_id
+        if getattr(task, "_evicted_values", None):
+            summary["_evicted_values"] = dict(task._evicted_values)
         if field_name:
             val = self._resolve_field(field_name)
             summary[field_name] = val
@@ -257,6 +261,10 @@ class TaskManager:
                 if not hasattr(task, "_replanning_fields"):
                     task._replanning_fields = set()
                 task._replanning_fields.add(field_name)
+                if not hasattr(task, "_evicted_values"):
+                    task._evicted_values = {}
+                task._evicted_values[field_name] = evicted_value
+                task._replan_event_id = f"evict-{field_name}-{evicted_value}-epoch-{self._saga.epoch_clock.current}"
                 logger.info(
                     "task %s REPLANNING: committed step %d used evicted field %s=%r",
                     task.task_id, rewind_to, field_name, evicted_value,
