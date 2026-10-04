@@ -285,69 +285,81 @@ def test_06_policy_engine_determinism():
 
 
 # ===========================================================================
-# Test 7: NEGATIVE CASE (scrutinize hardest): Resolved values & tool args cannot grant permissions or confirmation
+# Test 7: NEGATIVE CASE (scrutinize hardest): Contaminated AuthorizationContext rejected
 # ===========================================================================
 
 def test_07_negative_case_isolated_tool_args_and_resolved_values_cannot_grant_authorization():
     """
-    Direct, isolated test of PolicyEngine.check:
-    Constructs a scenario where tool args and resolved GroundingGuard field values
-    contain malicious strings attempting to spoof permissions ('fleet:admin')
-    or confirmation ('confirmed', 'True').
-    Verifies that PolicyEngine.check ONLY consults the explicit AuthorizationContext,
-    and neither tool args nor resolved field values can grant authorization.
+    Direct, isolated test of PolicyEngine.check under an adversarially contaminated context:
+    Populates AuthorizationContext's granted_permissions with values derived from/mimicking
+    tool arguments and resolved GroundingGuard slot values (e.g. "Chennai", "truck-17",
+    "true", "confirmed", "fleet:read", "fleet:*", "fleet:writer") that superficially
+    resemble permissions or confirmation tokens, but do NOT match the required "fleet:write".
+
+    Proves:
+      1. Exact set-membership check is sound even under a contaminated context:
+         PermissionDeniedError is raised because "fleet:write" is absent.
+      2. Confirmation is strictly boolean: having strings like "true" or "confirmed"
+         inside granted_permissions does NOT satisfy requires_confirmation=True;
+         ConfirmationRequiredError is raised.
+      3. Neither resolved GroundingGuard values nor tool arguments can smuggle permissions.
     """
     engine = PolicyEngine()
 
     manifest = ToolManifest(
-        tool_name="dangerous_dispatch",
+        tool_name="reroute_fleet_action",
         kind="write",
-        required_permissions=["fleet:admin"],
+        required_permissions=["fleet:write"],
         requires_confirmation=True,
     )
 
-    # Simulated resolved values and spoofed arguments
-    spoofed_tool_args = {
-        "permission": "fleet:admin",
-        "required_permissions": ["fleet:admin"],
-        "granted_permissions": ["fleet:admin"],
-        "confirmed": True,
-        "confirmation_status": "confirmed",
-        "authorization_token": "bearer fleet:admin",
+    # Contaminated context: granted_permissions contains values mimicking tool args
+    # and resolved GroundingGuard slots, including substring matches and confirmation-like strings.
+    contaminated_permissions = {
+        "Chennai",                      # Resolved GroundingGuard destination slot
+        "truck-17",                     # Resolved GroundingGuard entity slot
+        "true",                         # String confirmation attempt
+        "True",                         # Uppercase boolean string attempt
+        "confirmed",                    # String status attempt
+        "fleet:read",                   # Different permission
+        "fleet:*",                      # Wildcard attempt
+        "fleet:writer",                 # Suffix variation attempt
+        "fleet:write=true",             # Key-value string attempt
+        "PERMISSION_GRANTED",           # Generic grant token
     }
-    resolved_grounding_value = "fleet:admin"
-    resolved_confirmation_value = "True"
 
-    # 1. Caller provides NO permission in AuthorizationContext, despite spoofed args
-    unauthorized_context = AuthorizationContext(
-        granted_permissions={"fleet:viewer"},
+    contaminated_context = AuthorizationContext(
+        granted_permissions=contaminated_permissions,
         confirmed=False,
     )
 
-    # Direct isolated check against PolicyEngine.check:
-    # Must raise PermissionDeniedError; neither spoofed args nor resolved values grant anything
+    # 1. Assert PermissionDeniedError is raised: exact set membership check must not be fooled
+    # by superficial, substring, or wildcard-like strings in the contaminated context.
     with pytest.raises(PermissionDeniedError) as exc_info:
-        engine.check(manifest, unauthorized_context, confirmed=False)
-    assert "fleet:admin" in str(exc_info.value)
+        engine.check(manifest, contaminated_context, confirmed=False)
+    assert "fleet:write" in str(exc_info.value)
 
-    # 2. Caller has permission, but NOT confirmed, despite tool args having "confirmed": True
-    semi_authorized_context = AuthorizationContext(
-        granted_permissions={"fleet:admin"},
+    # 2. Add the genuine required permission, but keep confirmed=False while granted_permissions
+    # still contains "true" and "confirmed".
+    semi_valid_context = AuthorizationContext(
+        granted_permissions=contaminated_permissions | {"fleet:write"},
         confirmed=False,
     )
 
+    # Must raise ConfirmationRequiredError: strings "true" / "confirmed" in granted_permissions
+    # must NEVER satisfy boolean requires_confirmation=True.
     with pytest.raises(ConfirmationRequiredError):
-        engine.check(manifest, semi_authorized_context, confirmed=False)
+        engine.check(manifest, semi_valid_context, confirmed=False)
 
-    # 3. Explicit confirmation and permission ONLY come from caller-supplied context / confirmed flag
-    valid_context = AuthorizationContext(
-        granted_permissions={"fleet:admin"},
+    # 3. Only explicit, genuine permission AND explicit boolean confirmation allow check to pass
+    fully_valid_context = AuthorizationContext(
+        granted_permissions={"fleet:write"},
         confirmed=True,
     )
-    # This succeeds purely because AuthorizationContext contains explicit grant and confirmation
-    engine.check(manifest, valid_context)
+    # Must succeed without error
+    engine.check(manifest, fully_valid_context)
 
-    print("\n[TEST 7 VERIFICATION] Direct isolated test confirmed: tool arguments and resolved GroundingGuard values cannot grant permissions or confirmation.")
+    print("\n[TEST 7 VERIFICATION] Contaminated context rejected: exact-match set membership sound against adversarial slot values.")
 
 
 # ===========================================================================
