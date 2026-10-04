@@ -288,6 +288,73 @@ async def test_3_negative_case_isolated_discrimination():
 
 
 # ===========================================================================
+# Test 3b: Missing evicted-value information fails safe (no cascade)
+# ===========================================================================
+
+@pytest.mark.asyncio
+async def test_3b_missing_evicted_value_fails_safe_no_cascade():
+    """
+    Verifies that when evicted_v is None (missing _evicted_values entry),
+    on_upstream_replanned fails safe: NO cascade occurs, even if the downstream
+    step's dispatched_args happen to differ from the new value reported in
+    changed_fields (preventing Bug 2 loose-matching regression).
+    """
+    clock = TurnEpochClock()
+    saga = SpeculativeSagaManager(clock)
+
+    b_compensated: list[Any] = []
+
+    async def b_compensate(res):
+        b_compensated.append(res)
+
+    tm = _HarnessTaskManager(
+        saga=saga,
+        resolve_field=lambda f: "val",
+        executors={"tool_b": _simple_executor({"ok": True})},
+    )
+
+    task_a = tm.create_task("task_a", [TaskStep(tool_name="tool_a", kind="write")])
+    task_b = tm.create_task("task_b", [
+        TaskStep(
+            tool_name="tool_b",
+            required_fields=["x"],
+            build_args=lambda t, i: {"x": "old_dispatched_val"},
+            kind="write",
+            compensate=b_compensate,
+        )
+    ])
+
+    graph = TaskGraph("graph_test_3b")
+    graph.add_task(task_a.task_id, task_a)
+    graph.add_task(task_b.task_id, task_b, depends_on={task_a.task_id: ["x"]})
+    graph._task_manager = tm
+
+    # Mark Task B as committed with 'old_dispatched_val'
+    task_b.step_states[0] = StepState.COMMITTED
+    task_b.step_results[0] = {"ok": True}
+    task_b.step_dispatched_args[0] = {"x": "old_dispatched_val"}
+    task_b.state = TaskState.COMPLETED
+    task_b.current_step_index = 1
+
+    # Call on_upstream_replanned directly with changed_fields containing 'x'='new_val',
+    # but NO entry in _evicted_values (evicted_v is None).
+    # Note: 'old_dispatched_val' != 'new_val', so the old loose branch WOULD have matched.
+    cascaded = await graph.on_upstream_replanned(
+        task_a.task_id,
+        {"x": "new_val"},  # NO _evicted_values provided!
+        event_id="test_missing_evicted_val",
+    )
+
+    # ASSERTION: Missing evicted-value information must fail safe -> NO cascade
+    assert cascaded == [], f"Expected empty cascade when evicted_v is None, got: {cascaded}"
+    assert len(b_compensated) == 0, "Compensate handler must NOT be called when evicted value is unknown"
+    assert task_b.state == TaskState.COMPLETED
+    assert task_b.step_states[0] == StepState.COMMITTED
+
+    print("\n[TEST 3b VERIFICATION] Missing evicted-value fails safe: 0 cascades despite dispatched_args != new_val")
+
+
+# ===========================================================================
 # Test 4: Cycle detection rejected at add_task time
 # ===========================================================================
 

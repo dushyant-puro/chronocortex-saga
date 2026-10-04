@@ -314,8 +314,11 @@ class TaskGraph:
                         if evicted_v is not None:
                             is_match = (actual_val == evicted_v)
                         else:
-                            new_val = changed_fields.get(up_field)
-                            is_match = (actual_val != new_val)
+                            # Missing evicted-value information must fail safe (no replan)
+                            # rather than fail loose (replan speculatively based on inequality).
+                            # Never replan without confirming the step's recorded value matches
+                            # the specific value that was actually evicted.
+                            is_match = False
 
                         if is_match:
                             if rewind_to is None or i < rewind_to:
