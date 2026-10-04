@@ -163,16 +163,19 @@ class TaskManager:
         saga: SpeculativeSagaManager,
         resolve_field: Callable[[str], Optional[str]],
         store: Optional[CheckpointStore] = None,
+        on_task_replanned: Optional[Callable[[str, dict[str, Any]], None]] = None,
     ) -> None:
         """
         Args:
             saga: the existing SpeculativeSagaManager instance
             resolve_field: typically GroundingGuard.resolve_current_value
             store: optional CheckpointStore for task persistence (default None)
+            on_task_replanned: optional callback invoked when a replan successfully completes
         """
         self._saga = saga
         self._resolve_field = resolve_field
         self.store = store
+        self.on_task_replanned = on_task_replanned
         self._tasks: dict[str, Task] = {}
         self._evicted_fields: set[str] = set()
 
@@ -185,6 +188,32 @@ class TaskManager:
         self._tasks[task_id] = task
         logger.info("created task %s (%s) with %d steps", task_id, name, len(steps))
         return task
+
+    def _build_replan_summary(self, task: Task, field_name: str = "") -> dict[str, Any]:
+        summary: dict[str, Any] = {}
+        if field_name:
+            val = self._resolve_field(field_name)
+            summary[field_name] = val
+        for f in getattr(task, "_replanning_fields", set()):
+            val = self._resolve_field(f)
+            summary[f] = val
+        for r in task.step_results:
+            if isinstance(r, dict):
+                summary.update(r)
+        for d in task.step_dispatched_args:
+            if isinstance(d, dict):
+                summary.update(d)
+        return summary
+
+    def _notify_task_replanned(self, task: Task, field_name: str = "") -> None:
+        if self.on_task_replanned is not None:
+            summary = self._build_replan_summary(task, field_name)
+            try:
+                res = self.on_task_replanned(task.task_id, summary)
+                if asyncio.iscoroutine(res):
+                    asyncio.create_task(res)
+            except Exception:
+                logger.exception("Error in on_task_replanned callback for task %s", task.task_id)
 
     # ---- eviction notification (wired from GroundingGuard) ---------------
 
@@ -225,6 +254,9 @@ class TaskManager:
                 # Compensate from the latest committed step down to rewind_to
                 # and mark them for redispatch.
                 task.state = TaskState.REPLANNING
+                if not hasattr(task, "_replanning_fields"):
+                    task._replanning_fields = set()
+                task._replanning_fields.add(field_name)
                 logger.info(
                     "task %s REPLANNING: committed step %d used evicted field %s=%r",
                     task.task_id, rewind_to, field_name, evicted_value,
@@ -309,6 +341,7 @@ class TaskManager:
         if self._check_fields_resolved(task.steps[rewind_to]):
             task.step_states[rewind_to] = StepState.PENDING
             task.state = TaskState.RUNNING
+            await self.run_task(task.task_id)
         else:
             task.step_states[rewind_to] = StepState.WAITING_FOR_GROUNDING
             task.state = TaskState.WAITING_FOR_GROUNDING
@@ -524,6 +557,9 @@ class TaskManager:
         task.completed_at = time.monotonic()
         self._save_checkpoint(task)
         logger.info("task %s completed: all %d steps committed", task.task_id, len(task.steps))
+        if getattr(task, "_replanning_fields", None):
+            self._notify_task_replanned(task)
+            task._replanning_fields.clear()
         return task
 
     async def resume_task(self, task_id: str) -> Task:
