@@ -50,7 +50,10 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Any, Awaitable, Callable, Optional
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
+
+if TYPE_CHECKING:
+    from runtime.policy_engine import AuthorizationContext, PolicyEngine
 
 from runtime.tool_contract import (
     InvalidToolKindError,
@@ -543,6 +546,9 @@ class SpeculativeSagaManager:
         timeout: float = 4.0,
         manifest: Optional[ToolManifest] = None,
         registry: Optional[ToolRegistry] = None,
+        policy_engine: Optional[PolicyEngine] = None,
+        auth_context: Optional[AuthorizationContext] = None,
+        confirmed: bool = False,
     ) -> Any:
         """
         Dispatch a staged write. Outcome classification:
@@ -597,6 +603,14 @@ class SpeculativeSagaManager:
                 f"commit_write requires a tool with kind='write', but '{action.tool_name}' "
                 f"is manifested as kind='{mf.kind}'"
             )
+
+        # Argument validation (if defined on manifest)
+        if mf is not None and mf.validate_args is not None:
+            mf.validate_args(action.args)
+
+        # Policy & authorization check (if policy_engine supplied)
+        if policy_engine is not None:
+            policy_engine.check(mf, auth_context, confirmed=confirmed)
 
         action.state = ActionState.IN_FLIGHT
 

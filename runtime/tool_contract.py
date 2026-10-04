@@ -60,8 +60,15 @@ Fields:
       depends_on=["query_telemetry"]).
 
   required_permissions : list[str]
-      Inert permission metadata for future authorization layers (New Phase 12).
-      Does not block or alter tool dispatch in this phase.
+      Permission strings required to execute this tool (Phase 12).
+      Enforced by PolicyEngine before dispatch.
+
+  requires_confirmation : bool
+      True iff this tool requires explicit operator/caller confirmation before execution (Phase 12).
+
+  validate_args : Optional[Callable[[dict], None]]
+      Optional argument validation callable that raises an exception if arguments
+      are invalid. Invoked before dispatch (Phase 12).
 """
 
 from __future__ import annotations
@@ -100,6 +107,8 @@ class ToolManifest:
     telemetry_category: str = "default"
     depends_on: list[str] = field(default_factory=list)
     required_permissions: list[str] = field(default_factory=list)
+    requires_confirmation: bool = False
+    validate_args: Optional[Callable[[dict], None]] = None
 
 
 class ToolRegistry:
