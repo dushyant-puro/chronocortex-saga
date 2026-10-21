@@ -57,6 +57,8 @@ class _HarnessTaskManager(TaskManager):
             step.tool_name,
             args,
             compensate=step.compensate,
+            owner_task_id=task.task_id, owner_step_index=idx,
+            owner_generation=task.step_generations[idx],
         )
         task.step_action_ids[idx] = action.action_id
         task.step_states[idx] = StepState.IN_FLIGHT

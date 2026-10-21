@@ -158,7 +158,8 @@ dependencies are not yet locked.
 
 ## Next stage and rollback
 
-Next: task-scoped operation generations and chain ownership, then explicit
+The stacked [task operation stage](task-operation-ownership.md) adds schema 2,
+task/step generations, chain boundaries and explicit offline migration. Next:
 worker ownership/leases and fencing against stale workers. Same-file SQLite CAS
 is useful local coordination, not distributed/provider fencing. Independent
 databases or direct provider clients are outside this protection. Reconciliation

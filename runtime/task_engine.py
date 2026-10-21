@@ -39,6 +39,7 @@ from runtime.action_journal import JournalError
 from runtime.policy_engine import ConfirmationRequiredError, PermissionDeniedError
 from runtime.speculative_saga import (
     ActionKind,
+    ActionOwnershipError,
     ActionState,
     CompensationState,
     DuplicateOperationError,
@@ -132,6 +133,8 @@ class Task:
     created_at: float = field(default_factory=time.monotonic)
     completed_at: Optional[float] = None
     error: Optional[str] = None
+    step_generations: list[int] = field(default_factory=list)
+    replan_from: Optional[int] = None
 
     def __post_init__(self) -> None:
         if not self.step_states:
@@ -142,6 +145,8 @@ class Task:
             self.step_action_ids = [None] * len(self.steps)
         if not self.step_dispatched_args:
             self.step_dispatched_args = [None] * len(self.steps)
+        if not self.step_generations:
+            self.step_generations = [0] * len(self.steps)
 
 
 # --------------------------------------------------------------------------
@@ -323,8 +328,17 @@ class TaskManager:
         (inclusive), reset them for redispatch, rewind current_step_index, and
         transition the task to WAITING_FOR_GROUNDING or RUNNING as appropriate.
         """
-        if task.state == TaskState.CANCELLED:
+        if task.state in (TaskState.CANCELLED, TaskState.FAILED):
             return
+        if type(rewind_to) is not int or not 0 <= rewind_to < len(task.steps):
+            raise ValueError("Replan index must identify an existing task step")
+        if field_name and evicted_value and task.step_dispatched_args[rewind_to] is not None:
+            if (field_name in task.step_dispatched_args[rewind_to] and
+                    task.step_dispatched_args[rewind_to][field_name] != evicted_value):
+                return  # a queued old correction cannot invalidate a fresh generation
+        task.state = TaskState.REPLANNING
+        task.replan_from = rewind_to if task.replan_from is None else min(task.replan_from, rewind_to)
+        self._save_checkpoint(task)
         upper_idx = (
             task.current_step_index
             if task.current_step_index < len(task.steps)
@@ -338,6 +352,9 @@ class TaskManager:
             if task.step_states[i] != StepState.COMMITTED:
                 continue
             action = self._saga._actions.get(task.step_action_ids[i])
+            if task.steps[i].kind == "write" and not self._owns_action(task, i, action):
+                self._park_step(task, i, "action ownership mismatch during replan")
+                return
             if task.steps[i].kind == "write" and action is not None and action.state == ActionState.COMMITTED:
                 # A semantic correction invalidates this intent even if the
                 # asynchronous epoch callback has not run yet.
@@ -354,6 +371,8 @@ class TaskManager:
             task.step_results[i] = None
             task.step_dispatched_args[i] = None
             task.step_action_ids[i] = None
+            task.step_generations[i] += 1
+            self._save_checkpoint(task)
 
         # Rewind
         task.current_step_index = rewind_to
@@ -366,6 +385,8 @@ class TaskManager:
         else:
             task.step_states[rewind_to] = StepState.WAITING_FOR_GROUNDING
             task.state = TaskState.WAITING_FOR_GROUNDING
+        task.replan_from = None
+        self._save_checkpoint(task)
 
         logger.info(
             "task %s rewound to step %d (state: %s)",
@@ -425,7 +446,7 @@ class TaskManager:
         task.step_states[idx] = StepState.NEEDS_RECONCILIATION
         task.current_step_index = min(task.current_step_index, idx)
         action = self._saga._actions.get(task.step_action_ids[idx])
-        if action is not None:
+        if action is not None and (task.steps[idx].kind == "read" or self._owns_action(task, idx, action)):
             task.step_results[idx] = action.result
         if task.state != TaskState.CANCELLED:
             task.state = TaskState.NEEDS_RECONCILIATION
@@ -437,6 +458,7 @@ class TaskManager:
         """A return value is not a commit receipt. Consult the action ledger."""
         action = self._saga._actions.get(task.step_action_ids[idx])
         if (self._saga._durability_fault is not None or
+                (task.steps[idx].kind == "write" and not self._owns_action(task, idx, action)) or
                 task.state == TaskState.CANCELLED or action is None or
                 action.state != ActionState.COMMITTED or
                 action.compensation_state != CompensationState.NOT_STARTED):
@@ -457,7 +479,7 @@ class TaskManager:
         if step.kind == "read" and step.compensate is None:
             return True  # invalidating a read has no remote effect to undo
         action = self._saga._actions.get(task.step_action_ids[idx])
-        if action is None:
+        if not self._owns_action(task, idx, action):
             self._park_step(task, idx, "missing original action evidence for compensation")
             return False
         try:
@@ -474,6 +496,12 @@ class TaskManager:
         task.step_states[idx] = StepState.COMPENSATED
         self._save_checkpoint(task)
         return True
+
+    @staticmethod
+    def _owns_action(task: Task, idx: int, action: Optional[StagedAction]) -> bool:
+        return (action is not None and action.owner_task_id == task.task_id and
+                action.owner_step_index == idx and action.owner_generation == task.step_generations[idx] and
+                action.tool_name == task.steps[idx].tool_name and action.chain_id == f"task:{task.task_id}")
 
     async def _run_task(self, task_id: str) -> Task:
         """
@@ -516,6 +544,9 @@ class TaskManager:
                 # Ensure action exists in saga so reconcile_write can be called on it
                 action = self._saga._actions.get(action_id)
                 if action is None:
+                    if self._saga.journal is not None:
+                        self._park_step(task, idx, "missing durable action identity")
+                        return task
                     action = StagedAction(
                         action_id=action_id,
                         kind=ActionKind.STAGED_WRITE,
@@ -531,9 +562,15 @@ class TaskManager:
                         # Legacy task snapshots cannot prove no compensation
                         # was dispatched before the crash. Never auto-repeat it.
                         compensation_state=CompensationState.UNKNOWN,
+                        owner_task_id=task.task_id, owner_step_index=idx,
+                        owner_generation=task.step_generations[idx], chain_id=f"task:{task.task_id}",
                     )
                     self._saga._actions[action_id] = action
                     self._saga._ikey_index[action.idempotency_key] = action_id
+
+                if step.kind == "write" and not self._owns_action(task, idx, action):
+                    self._park_step(task, idx, "action ownership mismatch during reconciliation")
+                    return task
 
                 try:
                     if (action.state in (ActionState.IN_FLIGHT_UNKNOWN, ActionState.COMMITTED_STALE)
@@ -599,6 +636,9 @@ class TaskManager:
                 # retains the last established dispatch fact.
                 self._park_step(task, idx, f"durability unavailable ({type(exc).__name__})")
                 raise
+            except ActionOwnershipError:
+                self._park_step(task, idx, "action ownership mismatch before dispatch")
+                return task
             except PermissionDeniedError as exc:
                 # Denial is not a provider failure and cannot justify undoing
                 # unrelated, previously authorized effects.
@@ -712,6 +752,8 @@ class TaskManager:
             return task
         task.state = TaskState.CANCELLED
         task.completed_at = time.monotonic()
+        self._saga.close_chain(f"task:{task.task_id}", owner_task_id=task.task_id)
+        self._save_checkpoint(task)
 
         # A dispatched descendant may still apply. Do not undo its ancestors
         # while pretending cancellation established a reverse execution order.
@@ -786,7 +828,10 @@ class TaskManager:
             if definitions is None or cp.get("step_definitions") != definitions:
                 raise JournalError("Journal task restore requires matching explicit step definitions")
             if (any(len(cp.get(key, [])) != len(steps) for key in (
-                    "step_states", "step_results", "step_action_ids", "step_dispatched_args")) or
+                    "step_states", "step_results", "step_action_ids", "step_dispatched_args", "step_generations")) or
+                    any(type(g) is not int or g < 0 for g in cp["step_generations"]) or
+                    (cp.get("replan_from") is not None and
+                     (type(cp["replan_from"]) is not int or not 0 <= cp["replan_from"] < len(steps))) or
                     type(cp.get("current_step_index")) is not int or
                     not 0 <= cp["current_step_index"] <= len(steps)):
                 raise JournalError("Invalid task checkpoint shape")
@@ -812,6 +857,8 @@ class TaskManager:
             step_dispatched_args=list(cp.get("step_dispatched_args", [None] * len(steps))),
             current_step_index=cp["current_step_index"],
             error=cp.get("error"),
+            step_generations=list(cp.get("step_generations", [0] * len(steps))),
+            replan_from=cp.get("replan_from"),
         )
 
         # CRITICAL CONSTRAINT: Mark any IN_FLIGHT or IN_FLIGHT_UNKNOWN steps as NEEDS_RECONCILIATION
@@ -830,6 +877,9 @@ class TaskManager:
             unresolved = []
             for action in self._saga._actions.values():
                 idx = action.owner_step_index
+                if action.owner_task_id == task_id and idx is not None and 0 <= idx < len(task.steps):
+                    if action.owner_generation > task.step_generations[idx]:
+                        task.step_generations[idx] = action.owner_generation
                 if (action.owner_task_id == task_id and idx is not None and
                         0 <= idx < len(task.steps) and action.recovered and
                         (action.state not in (ActionState.ABORTED, ActionState.COMPENSATED) or
@@ -838,9 +888,14 @@ class TaskManager:
                                                        CompensationState.NOT_APPLIED))):
                     task.step_action_ids[idx] = action.action_id
                     unresolved.append(idx)
+            if task.replan_from is not None:
+                unresolved.extend(range(task.replan_from, len(task.steps)))
             # Legacy committed step claims without a matching action are also
             # insufficient evidence. Never use them to unlock downstream work.
             for idx, step in enumerate(task.steps):
+                action = self._saga._actions.get(task.step_action_ids[idx])
+                if step.kind == "write" and action is not None and not self._owns_action(task, idx, action):
+                    unresolved.append(idx)
                 if step.kind == "write" and task.step_states[idx] in (
                         StepState.COMMITTED, StepState.IN_FLIGHT, StepState.NEEDS_RECONCILIATION):
                     action = self._saga._actions.get(task.step_action_ids[idx])
@@ -863,13 +918,20 @@ class TaskManager:
         """Stage and commit a write through the existing saga manager."""
         executor = self._get_executor(step)
         action = self._saga._actions.get(task.step_action_ids[idx])
+        if action is not None and not self._owns_action(task, idx, action):
+            raise ActionOwnershipError("Task action pointer belongs to a different operation")
         if action is not None and action.state == ActionState.PENDING:
             if action.args != args or action.tool_name != step.tool_name:
                 self._saga.abort_write(action.action_id)
-                action = None
+                action = self._saga._actions[action.action_id]
         if action is None or action.state == ActionState.ABORTED:
+            if action is not None:
+                task.step_generations[idx] += 1
+                task.step_action_ids[idx] = None
+                self._save_checkpoint(task)
             action = self._saga.stage_write(step.tool_name, args, compensate=step.compensate,
-                                            owner_task_id=task.task_id, owner_step_index=idx)
+                                            owner_task_id=task.task_id, owner_step_index=idx,
+                                            owner_generation=task.step_generations[idx])
         task.step_action_ids[idx] = action.action_id
         task.step_states[idx] = StepState.IN_FLIGHT
         result = await self._saga.commit_write(action.action_id, executor)
@@ -921,6 +983,7 @@ class TaskManager:
         Uses action-scoped ownership, never the manager-wide saga chain.
         Stop on an unresolved repair to preserve reverse dependency order.
         """
+        self._saga.close_chain(f"task:{task.task_id}", owner_task_id=task.task_id)
         for i in range(failed_idx - 1, -1, -1):
             if task.step_states[i] != StepState.COMMITTED:
                 continue
@@ -942,6 +1005,8 @@ class TaskManager:
                 "current_step": t.current_step_index,
                 "total_steps": len(t.steps),
                 "step_states": [s.name for s in t.step_states],
+                "step_generations": list(t.step_generations),
+                "replan_from": t.replan_from,
                 "error": t.error,
                 "age_ms": round((time.monotonic() - t.created_at) * 1000, 1),
             }
@@ -965,6 +1030,8 @@ class TaskManager:
             "step_dispatched_args": list(task.step_dispatched_args),
             "step_definitions": [{"tool_name": s.tool_name, "kind": s.kind} for s in task.steps],
             "error": task.error,
+            "step_generations": list(task.step_generations),
+            "replan_from": task.replan_from,
         }
 
     def restore_checkpoint(self, task_id: str, cp: dict[str, Any]) -> Task:
@@ -981,5 +1048,7 @@ class TaskManager:
         if "step_action_ids" in cp:
             task.step_action_ids = cp["step_action_ids"]
         task.step_dispatched_args = cp["step_dispatched_args"]
+        task.step_generations = list(cp.get("step_generations", [0] * len(task.steps)))
+        task.replan_from = cp.get("replan_from")
         task.error = cp["error"]
         return task

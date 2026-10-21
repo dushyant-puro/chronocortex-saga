@@ -95,6 +95,8 @@ class _HarnessTaskManager(TaskManager):
             step.tool_name,
             args,
             compensate=step.compensate,
+            owner_task_id=task.task_id, owner_step_index=idx,
+            owner_generation=task.step_generations[idx],
         )
         task.step_action_ids[idx] = action.action_id
         task.step_states[idx] = StepState.IN_FLIGHT
@@ -775,7 +777,7 @@ async def test_6h_in_flight_unknown_stalls_not_fails():
         async def _dispatch_write_step(self, task, idx, step, args):
             if step.tool_name == "step_timeout":
                 executor = self._test_executors.get(step.tool_name)
-                action = self._saga.stage_write(step.tool_name, args)
+                action = self._saga.stage_write(step.tool_name, args, owner_task_id=task.task_id, owner_step_index=idx, owner_generation=task.step_generations[idx])
                 task.step_action_ids[idx] = action.action_id
                 task.step_states[idx] = StepState.IN_FLIGHT
                 result = await self._saga.commit_write(

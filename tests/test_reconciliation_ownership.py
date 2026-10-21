@@ -173,18 +173,20 @@ async def test_concurrent_chain_unwinds_compensate_each_action_once():
         started.set()
         await release.wait()
 
-    action = saga.stage_write("mutate", {}, compensate=undo)
+    action = saga.stage_write("mutate", {}, compensate=undo, chain_id="test-chain")
 
     async def mutate(args):
         return {"operation_id": "remote-1"}
 
     await saga.commit_write(action.action_id, mutate)
-    first = asyncio.create_task(saga.abort_chain_from("downstream-failure"))
+    failed = saga.stage_write("failed", {}, chain_id=action.chain_id)
+    saga.abort_write(failed.action_id)
+    first = asyncio.create_task(saga.abort_chain_from(failed.action_id))
     await settle(started.wait())
 
     async def unwind():
         contender.set()
-        await saga.abort_chain_from("downstream-failure")
+        await saga.abort_chain_from(failed.action_id)
 
     second = asyncio.create_task(unwind())
     await settle(contender.wait())
@@ -306,7 +308,14 @@ async def test_current_action_with_unknown_compensation_cannot_complete_task():
         effects.append("undo may have applied")
         raise ConnectionError("undo response lost")
 
-    action = saga.stage_write("mutate", {}, compensate=undo, idempotency_key="op-1")
+    async def status(a):
+        status_calls.append(a.action_id)
+        return None
+
+    manager = TaskManager(saga, resolve_field=lambda _: "grounded")
+    task = manager.create_task("uncertain undo", [TaskStep("mutate", status_check=status)])
+    action = saga.stage_write("mutate", {}, compensate=undo, idempotency_key="op-1",
+                              owner_task_id=task.task_id, owner_step_index=0)
     await saga.commit_write(action.action_id, mutate)
     await saga.compensate_action(action.action_id)
     assert action.state == ActionState.COMMITTED
@@ -314,12 +323,6 @@ async def test_current_action_with_unknown_compensation_cannot_complete_task():
     with pytest.raises(DuplicateOperationError):
         saga.stage_write("mutate", {}, idempotency_key="op-1")
 
-    async def status(a):
-        status_calls.append(a.action_id)
-        return None
-
-    manager = TaskManager(saga, resolve_field=lambda _: "grounded")
-    task = manager.create_task("uncertain undo", [TaskStep("mutate", status_check=status)])
     task.state = TaskState.RUNNING
     task.step_states[0] = StepState.NEEDS_RECONCILIATION
     task.step_action_ids[0] = action.action_id
@@ -596,12 +599,14 @@ async def test_chain_unwind_stops_at_unknown_compensation_on_every_attempt():
         undos.append("downstream undo applied")
         raise ConnectionError("reply lost")
 
-    a = saga.stage_write("a", {}, compensate=undo_a)
-    b = saga.stage_write("b", {}, compensate=undo_b)
+    a = saga.stage_write("a", {}, compensate=undo_a, chain_id="test-chain")
+    b = saga.stage_write("b", {}, compensate=undo_b, chain_id="test-chain")
     await saga.commit_write(a.action_id, mutate)
     await saga.commit_write(b.action_id, mutate)
-    await saga.abort_chain_from("downstream-failure")
-    await saga.abort_chain_from("downstream-failure")
+    failed = saga.stage_write("failed", {}, chain_id=a.chain_id)
+    saga.abort_write(failed.action_id)
+    await saga.abort_chain_from(failed.action_id)
+    await saga.abort_chain_from(failed.action_id)
     assert saga._chain == [a, b]
     assert b.compensation_state == CompensationState.UNKNOWN
     assert a.compensation_state == CompensationState.NOT_STARTED
