@@ -380,7 +380,7 @@ class SpeculativeSagaManager:
             # Do not report task success if a returned effect cannot be recorded.
             if action.state != ActionState.PENDING:
                 action.state = ActionState.IN_FLIGHT_UNKNOWN
-            if action.compensation_state == CompensationState.IN_FLIGHT:
+            if action.compensation_state == CompensationState.IN_FLIGHT or event == "COMPENSATED":
                 action.compensation_state = CompensationState.UNKNOWN
             raise
 

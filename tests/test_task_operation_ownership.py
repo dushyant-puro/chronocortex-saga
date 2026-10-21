@@ -17,6 +17,7 @@ from runtime.speculative_saga import (
 )
 from runtime.task_engine import TaskManager, TaskStep, TaskState, StepState
 from runtime.tool_contract import ToolManifest, ToolRegistry
+from tests.lease_test_support import shared_test_journal
 
 
 def saga_at(path=None):
@@ -24,7 +25,7 @@ def saga_at(path=None):
     registry.register(ToolManifest("change", "write"))
     return SpeculativeSagaManager(TurnEpochClock(), registry=registry,
                                   auth_context=AuthorizationContext(),
-                                  journal=SQLiteActionJournal(path) if path else None,
+                                  journal=shared_test_journal(path) if path else None,
                                   simulation=path is None)
 
 
