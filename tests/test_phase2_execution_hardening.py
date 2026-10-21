@@ -33,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from runtime.speculative_saga import (
     ActionKind,
     ActionState,
+    CompensationState,
     DuplicateOperationError,
     SagaAbortedError,
     SpeculativeSagaManager,
@@ -563,34 +564,16 @@ async def test_3h_cancellation_during_compensation():
     # Wait for compensation to start
     await compensation_started.wait()
 
-    # Now cancel all pending tasks (simulating scope teardown)
-    # Find and cancel the compensation task
-    pending = [t for t in asyncio.all_tasks()
-               if not t.done() and t is not asyncio.current_task()]
-    for t in pending:
-        t.cancel()
-
-    # Let the cancellation propagate
-    await asyncio.sleep(0.1)
-
-    # The action must NOT be in COMPENSATED state (compensation was interrupted)
-    # It should remain COMMITTED_STALE. compensation_failed may or may not be
-    # set depending on whether the CancelledError was caught by _auto_compensate.
-    #
-    # DOCUMENTED GAP: _auto_compensate catches Exception but not CancelledError.
-    # If the task is cancelled, the CancelledError propagates uncaught, leaving
-    # the action in COMMITTED_STALE with compensation_failed=False. This means
-    # there is no programmatic signal that compensation was attempted and
-    # interrupted — a genuine gap requiring either:
-    #   (a) catching CancelledError in _auto_compensate and setting compensation_failed, or
-    #   (b) a separate "compensation_attempted" flag
-    # For now, we verify the state is at least safe (not silently COMPENSATED).
+    # Cancel precisely the tracked attempt, not unrelated test-runner tasks.
+    assert action._compensation_task is not None
+    action._compensation_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await action._compensation_task
     assert action.state == ActionState.COMMITTED_STALE, (
         f"Expected COMMITTED_STALE after cancelled compensation, got {action.state.name}"
     )
-    # The action is NOT marked COMPENSATED — safe. But compensation_failed
-    # may be False because CancelledError is not caught by _auto_compensate.
-    # This is a known gap documented in the Phase 2 audit report.
+    assert action.compensation_failed
+    assert action.compensation_state == CompensationState.UNKNOWN
 
 
 # ============================================================================

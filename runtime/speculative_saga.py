@@ -129,6 +129,20 @@ class ActionState(Enum):
         )
 
 
+class CompensationState(Enum):
+    """Outcome of the single automatic compensation attempt, not a retry policy."""
+    NOT_STARTED = auto()
+    IN_FLIGHT = auto()
+    UNKNOWN = auto()
+    NOT_APPLIED = auto()  # explicit adapter evidence; still no automatic retry
+    SUCCEEDED = auto()
+
+
+_BLOCKING_COMPENSATION_STATES = frozenset({
+    CompensationState.IN_FLIGHT, CompensationState.UNKNOWN, CompensationState.NOT_APPLIED,
+})
+
+
 # States that must block duplicate-idempotency-key staging
 _BLOCKING_STATES = frozenset({
     ActionState.PENDING,
@@ -160,6 +174,11 @@ class StagedAction:
     _task: Optional[asyncio.Task] = field(default=None, repr=False)
     created_at: float = field(default_factory=time.monotonic)
     not_applied_evidence: Optional[str] = None  # adapter-supplied redacted evidence reference
+    compensation_state: CompensationState = CompensationState.NOT_STARTED
+    compensation_error: Optional[BaseException] = field(default=None, repr=False)
+    compensation_not_applied_evidence: Optional[str] = None
+    _resolution_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
+    _compensation_task: Optional[asyncio.Task] = field(default=None, repr=False, compare=False)
 
     def _set_terminal(self, new_state: ActionState) -> bool:
         """
@@ -523,13 +542,17 @@ class SpeculativeSagaManager:
         ikey = idempotency_key or _compute_idempotency_key(tool_name, args)
 
         # Idempotency enforcement: reject if the key is already live.
-        existing_id = self._ikey_index.get(ikey)
-        if existing_id is not None:
-            existing = self._actions.get(existing_id)
-            if existing is not None and existing.state in _BLOCKING_STATES:
+        # A later completed operation may have replaced the index entry while
+        # an older operation's compensation is still unresolved. Check every
+        # retained write with this key, not only the most recent index entry.
+        for existing in self._actions.values():
+            if (existing.kind == ActionKind.STAGED_WRITE and existing.idempotency_key == ikey and
+                    (existing.state in _BLOCKING_STATES or
+                     existing.compensation_state in _BLOCKING_COMPENSATION_STATES)):
                 raise DuplicateOperationError(
                     f"stage_write rejected: idempotency_key {ikey!r} already exists for "
-                    f"action {existing_id} in state {existing.state.name}. "
+                    f"action {existing.action_id} in state {existing.state.name} "
+                    f"(compensation={existing.compensation_state.name}). "
                     f"Use reconcile_write to resolve IN_FLIGHT_UNKNOWN or COMMITTED_STALE "
                     f"before retrying."
                 )
@@ -711,7 +734,7 @@ class SpeculativeSagaManager:
                 action.action_id, action.tool_name,
                 action.capture_epoch, action.superseded_epoch,
             )
-            asyncio.create_task(self._auto_compensate(action))
+            action._compensation_task = asyncio.create_task(self._auto_compensate(action))
         else:
             logger.critical(
                 "COMMITTED_STALE: write %s (%s) succeeded after epoch advanced "
@@ -723,30 +746,54 @@ class SpeculativeSagaManager:
         return result
 
     async def _auto_compensate(self, action: StagedAction) -> None:
-        """
-        Run automatic compensation for a COMMITTED_STALE action.
+        """Background entry point sharing ownership with all saga repair paths."""
+        await self.compensate_action(action.action_id)
 
-        On success: action.state -> COMPENSATED.
-        On failure: logs CRITICAL and sets action.compensation_failed = True
-          so the failure is observable via snapshot()/inspection, not just in
-          log output. Mirrors the error-handling pattern of abort_chain_from().
+    async def compensate_action(self, action_id: str) -> None:
+        """Make at most one automatic compensation attempt in this process.
+
+        This is local serialization, not durable/distributed ownership. An
+        ambiguous or explicitly rejected attempt is never automatically repeated.
         """
-        assert action.compensate is not None
+        action = self._actions[action_id]
+        async with action._resolution_lock:
+            await self._compensate_locked(action)
+
+    async def _compensate_locked(self, action: StagedAction) -> None:
+        if action.state not in (ActionState.COMMITTED, ActionState.COMMITTED_STALE):
+            return
+        if action.compensate is None or action.compensation_state != CompensationState.NOT_STARTED:
+            return
+        action.compensation_state = CompensationState.IN_FLIGHT
         try:
             await action.compensate(action.result)
-            action.state = ActionState.COMPENSATED
-            logger.info(
-                "auto-compensation succeeded for COMMITTED_STALE action %s (%s)",
-                action.action_id, action.tool_name,
-            )
-        except Exception:
+        except asyncio.CancelledError as exc:
+            action.compensation_state = CompensationState.UNKNOWN
+            action.compensation_error = exc
             action.compensation_failed = True
             logger.critical(
-                "AUTO-COMPENSATION FAILED for COMMITTED_STALE action %s (%s) — "
-                "MANUAL RECONCILIATION REQUIRED; action.compensation_failed=True",
-                action.action_id, action.tool_name,
-                exc_info=True,
+                "AUTO-COMPENSATION FAILED for %s (%s): cancelled after possible dispatch; "
+                "outcome UNKNOWN, no automatic retry", action.action_id, action.tool_name,
             )
+            raise
+        except MutationNotAppliedError as exc:
+            action.compensation_state = CompensationState.NOT_APPLIED
+            action.compensation_error = exc
+            action.compensation_not_applied_evidence = exc.evidence
+            action.compensation_failed = True
+            logger.critical("AUTO-COMPENSATION FAILED for %s (%s): known not applied; repair required",
+                            action.action_id, action.tool_name)
+        except Exception as exc:
+            action.compensation_state = CompensationState.UNKNOWN
+            action.compensation_error = exc
+            action.compensation_failed = True
+            logger.critical("AUTO-COMPENSATION FAILED for %s (%s): %s; outcome UNKNOWN, no automatic retry",
+                            action.action_id, action.tool_name, type(exc).__name__)
+        else:
+            action.compensation_state = CompensationState.SUCCEEDED
+            action.state = ActionState.COMPENSATED
+            self._chain = [a for a in self._chain if a.state != ActionState.COMPENSATED]
+            logger.info("compensated %s (%s)", action.action_id, action.tool_name)
 
     # ---- reconciliation ---------------------------------------------------
 
@@ -755,6 +802,21 @@ class SpeculativeSagaManager:
         action_id: str,
         status_check: StatusCheck,
     ) -> None:
+        """Serialize status resolution and saga compensation for one action.
+
+        Repeated resolution of a resolved action is a no-op. Status callbacks
+        must return exactly True, False or None and must not re-enter resolution
+        for the same action. False requires authoritative absence, including no
+        delayed future application; an eventually consistent miss is insufficient.
+        """
+        action = self._actions[action_id]
+        async with action._resolution_lock:
+            if (action.state in (ActionState.COMMITTED, ActionState.ABORTED, ActionState.COMPENSATED)
+                    and action.compensation_state not in _BLOCKING_COMPENSATION_STATES):
+                return
+            await self._reconcile_write_locked(action, status_check)
+
+    async def _reconcile_write_locked(self, action: StagedAction, status_check: StatusCheck) -> None:
         """
         Deterministically resolve an IN_FLIGHT_UNKNOWN or unreconciled
         COMMITTED_STALE action by querying the remote system.
@@ -770,26 +832,25 @@ class SpeculativeSagaManager:
           False -> ABORTED
 
         For COMMITTED_STALE (unreconciled, not yet compensated):
-          True  -> remote confirms it happened; trigger compensation if available
+          True  -> remote confirms it happened; consider the first compensation
+                   attempt if available, never repeat an existing attempt
           False -> remote confirms it was rolled back; set COMPENSATED
 
         NEVER use reconcile_write to re-attempt the original executor.
         If you need to redo the operation, call stage_write + commit_write
         with the appropriate idempotency key cleared.
         """
-        action = self._actions.get(action_id)
-        if action is None:
-            raise KeyError(f"No action with id {action_id!r}")
-        if action.state not in (
-            ActionState.IN_FLIGHT_UNKNOWN,
-            ActionState.COMMITTED_STALE,
-        ):
+        action_id = action.action_id
+        if (action.state not in (ActionState.IN_FLIGHT_UNKNOWN, ActionState.COMMITTED_STALE)
+                and action.compensation_state not in _BLOCKING_COMPENSATION_STATES):
             raise SagaAbortedError(
                 f"reconcile_write only valid for IN_FLIGHT_UNKNOWN or COMMITTED_STALE; "
                 f"action {action_id} is in {action.state.name}"
             )
 
         outcome = await status_check(action)
+        if outcome is not None and type(outcome) is not bool:
+            raise TypeError("status_check must return exactly True, False, or None")
 
         if outcome is None:
             logger.info(
@@ -826,7 +887,7 @@ class SpeculativeSagaManager:
                         action.capture_epoch, self.epoch_clock.current,
                     )
                     if action.compensate is not None:
-                        await self._auto_compensate(action)
+                        await self._compensate_locked(action)
                     else:
                         logger.critical(
                             "COMMITTED_STALE via reconciliation for %s (%s): "
@@ -834,14 +895,14 @@ class SpeculativeSagaManager:
                             action_id, action.tool_name,
                         )
             else:
-                # Already COMMITTED_STALE; remote confirms it happened. Compensate.
+                # A known effect persists. Only a first repair attempt is allowed.
                 logger.warning(
-                    "reconcile_write %s (%s): COMMITTED_STALE confirmed by status_check; "
-                    "triggering compensation",
-                    action_id, action.tool_name,
+                    "reconcile_write %s (%s): effect confirmed, compensation=%s; "
+                    "existing attempts will not be retried",
+                    action_id, action.tool_name, action.compensation_state.name,
                 )
                 if action.compensate is not None:
-                    await self._auto_compensate(action)
+                    await self._compensate_locked(action)
                 else:
                     logger.critical(
                         "COMMITTED_STALE reconcile confirmed for %s (%s): "
@@ -852,10 +913,18 @@ class SpeculativeSagaManager:
         else:
             # outcome is False — remote confirms NOT executed / rolled back.
             # Direct assignment since we're the authorized resolver for these states.
-            action.state = ActionState.ABORTED
+            if action.state in (ActionState.IN_FLIGHT_UNKNOWN, ActionState.ABORTED):
+                action.state = ActionState.ABORTED
+            else:
+                # A known applied effect is now authoritatively absent; do not
+                # rewrite its history as if it had never happened.
+                action.state = ActionState.COMPENSATED
+                action.compensation_state = CompensationState.SUCCEEDED
+                action.compensation_failed = False
+                self._chain = [a for a in self._chain if a.state != ActionState.COMPENSATED]
             logger.info(
-                "reconcile_write %s (%s): confirmed NOT executed -> ABORTED",
-                action_id, action.tool_name,
+                "reconcile_write %s (%s): authoritative absence -> %s",
+                action_id, action.tool_name, action.state.name,
             )
 
     # ---- saga compensation ------------------------------------------------
@@ -871,20 +940,14 @@ class SpeculativeSagaManager:
         )
         to_unwind = self._chain if idx is None else self._chain[:idx]
         for action in reversed(to_unwind):
-            if action.state != ActionState.COMMITTED or action.compensate is None:
+            if action.state == ActionState.COMPENSATED:
                 continue
-            try:
-                await action.compensate(action.result)
-                action.state = ActionState.COMPENSATED
-                logger.info(
-                    "compensated %s (%s)", action.action_id, action.tool_name
-                )
-            except Exception:
-                logger.exception(
-                    "COMPENSATION FAILED for %s (%s) — manual reconciliation required",
-                    action.action_id, action.tool_name,
-                )
-        self._chain = [a for a in self._chain if a.state == ActionState.COMMITTED]
+            if action.state != ActionState.COMMITTED or action.compensate is None:
+                break
+            await self.compensate_action(action.action_id)
+            if action.state != ActionState.COMPENSATED:
+                break  # preserve reverse dependency order across uncertain repair
+        self._chain = [a for a in self._chain if a.state != ActionState.COMPENSATED]
 
     # ---- inspector (for the Round-2 live debug overlay) -------------------
 
@@ -899,6 +962,10 @@ class SpeculativeSagaManager:
                 "superseded_epoch": a.superseded_epoch,
                 "idempotency_key": a.idempotency_key,
                 "compensation_failed": a.compensation_failed,
+                "compensation_state": a.compensation_state.name,
+                "compensation_error_type": (type(a.compensation_error).__name__
+                                            if a.compensation_error is not None else None),
+                "compensation_not_applied_evidence": a.compensation_not_applied_evidence,
                 "not_applied_evidence": a.not_applied_evidence,
                 "dispatch_latency_ms": a.dispatch_latency_ms,
                 "age_ms": round((time.monotonic() - a.created_at) * 1000, 1),
