@@ -31,12 +31,12 @@ IMPORTANT — cancel behaviour per action kind:
      does NOT prove non-execution; for writes we forgo even that signal
      to give commit_write a deterministic view of the actual outcome.
 
-ASSUMPTION documented here (Phase 1):
-  For the ABORTED outcome (normal Exception path), we assume the executor
-  guarantees "exception raised implies no persisted remote effect." If an
-  executor cannot provide this guarantee (e.g., it raised after a partial
-  write), callers MUST use the IN_FLIGHT_UNKNOWN / reconcile_write path
-  instead, or supply a compensate() handler.
+Post-dispatch failures:
+  Ordinary exceptions do not establish whether a remote effect occurred.
+  They preserve IN_FLIGHT_UNKNOWN and block same-key retries. Only a trusted
+  adapter's MutationNotAppliedError, with an explicit evidence reference,
+  establishes no effect for this operation and permits ABORTED. A compensator
+  being available is not evidence of non-execution and does not resolve unknown.
 """
 
 from __future__ import annotations
@@ -159,6 +159,7 @@ class StagedAction:
     manifest: Optional[ToolManifest] = None     # manifested contract, if known at staging/call time
     _task: Optional[asyncio.Task] = field(default=None, repr=False)
     created_at: float = field(default_factory=time.monotonic)
+    not_applied_evidence: Optional[str] = None  # adapter-supplied redacted evidence reference
 
     def _set_terminal(self, new_state: ActionState) -> bool:
         """
@@ -184,6 +185,23 @@ class StaleEpochError(RuntimeError):
 
 class SagaAbortedError(RuntimeError):
     """Raised to unwind a chain when a downstream step fails."""
+
+
+class MutationNotAppliedError(RuntimeError):
+    """Trusted adapter asserts this operation made no persisted remote change.
+
+    ``evidence`` must identify a documented atomic rejection/no-dispatch fact
+    for this operation. Use a redacted code/reference, never a raw response or
+    secret. Do not wrap generic network/HTTP/decoding failures in this type.
+    The runtime validates presence, not provider truth; adapters remain a trust
+    boundary. Non-execution must also exclude a delayed future application.
+    """
+
+    def __init__(self, message: str, *, evidence: str) -> None:
+        if not isinstance(evidence, str) or not evidence.strip():
+            raise ValueError("MutationNotAppliedError requires a non-empty evidence reference")
+        super().__init__(message)
+        self.evidence = evidence.strip()
 
 
 class DuplicateOperationError(RuntimeError):
@@ -561,10 +579,13 @@ class SpeculativeSagaManager:
                otherwise log CRITICAL (manual reconciliation required —
                never silently dropped)
 
-        executor raises a normal Exception
-            -> ABORTED. ASSUMPTION: exception raised means no persisted
-               remote effect. Executors that cannot guarantee this must
-               handle reconciliation themselves before raising.
+        executor raises MutationNotAppliedError with adapter evidence
+            -> ABORTED; this operation is known not to have applied.
+
+        executor raises any other Exception
+            -> IN_FLIGHT_UNKNOWN. A network failure, malformed reply or other
+               exception is not evidence that the remote mutation failed.
+               The original exception propagates; callers must reconcile.
 
         asyncio.TimeoutError
             -> IN_FLIGHT_UNKNOWN; caller must use reconcile_write before
@@ -617,11 +638,12 @@ class SpeculativeSagaManager:
         try:
             result = await asyncio.wait_for(executor(action.args), timeout=timeout)
 
-        except asyncio.TimeoutError:
+        except asyncio.TimeoutError as exc:
             # We do NOT know whether the remote executed the call.
             # Do not retry without reconciliation.
             if not action._set_terminal(ActionState.IN_FLIGHT_UNKNOWN):
                 return action.result  # already resolved by another code path
+            action.error = exc
             logger.error(
                 "write %s (%s) timed out — IN_FLIGHT_UNKNOWN, requires reconciliation "
                 "before any retry",
@@ -629,12 +651,13 @@ class SpeculativeSagaManager:
             )
             raise
 
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as exc:
             # Cancellation is a local event only. The remote call may have
             # completed before the cancellation was processed. Classify as
             # IN_FLIGHT_UNKNOWN, not ABORTED.
             if not action._set_terminal(ActionState.IN_FLIGHT_UNKNOWN):
                 return action.result
+            action.error = exc
             logger.error(
                 "write %s (%s) was cancelled after dispatch — IN_FLIGHT_UNKNOWN, "
                 "requires reconciliation; do not retry blindly",
@@ -642,11 +665,24 @@ class SpeculativeSagaManager:
             )
             raise
 
-        except Exception:
-            # Normal exception. ASSUMPTION: executor guarantees no remote
-            # effect was persisted when it raises (see module docstring).
+        except MutationNotAppliedError as exc:
             if not action._set_terminal(ActionState.ABORTED):
                 return action.result
+            action.error = exc
+            action.not_applied_evidence = exc.evidence
+            raise
+
+        except Exception as exc:
+            # Even a local decoding error can follow an applied remote write.
+            # Preserve uncertainty and the original operation identity.
+            if not action._set_terminal(ActionState.IN_FLIGHT_UNKNOWN):
+                return action.result
+            action.error = exc
+            logger.error(
+                "write %s (%s) raised %s after dispatch — IN_FLIGHT_UNKNOWN; "
+                "requires reconciliation before retry",
+                action.action_id, action.tool_name, type(exc).__name__,
+            )
             raise
 
         # ----------------------------------------------------------------
@@ -863,6 +899,7 @@ class SpeculativeSagaManager:
                 "superseded_epoch": a.superseded_epoch,
                 "idempotency_key": a.idempotency_key,
                 "compensation_failed": a.compensation_failed,
+                "not_applied_evidence": a.not_applied_evidence,
                 "dispatch_latency_ms": a.dispatch_latency_ms,
                 "age_ms": round((time.monotonic() - a.created_at) * 1000, 1),
             }

@@ -282,13 +282,12 @@ async def test_06_committed_stale_no_compensate_flags_critical(caplog):
 
 
 # ---------------------------------------------------------------------------
-# Test 7 — Executor raises exception -> ABORTED regardless of superseded_epoch
+# Test 7 — Ordinary executor exception cannot establish non-execution
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_07_executor_exception_always_aborts():
-    """If the executor raises a normal exception, the action must be ABORTED
-    regardless of whether the epoch was superseded. The exception propagates."""
+async def test_07_executor_exception_preserves_unknown():
+    """An ordinary exception leaves an unknown outcome even after correction."""
     clock, saga = _make_saga()
     action = saga.stage_write("tool_g", {"x": 7})
 
@@ -315,8 +314,8 @@ async def test_07_executor_exception_always_aborts():
     with pytest.raises(ValueError, match="backend rejected"):
         await commit_task
 
-    assert action.state == ActionState.ABORTED, (
-        f"Expected ABORTED after exception, got {action.state.name}"
+    assert action.state == ActionState.IN_FLIGHT_UNKNOWN, (
+        f"Expected IN_FLIGHT_UNKNOWN after exception, got {action.state.name}"
     )
 
 

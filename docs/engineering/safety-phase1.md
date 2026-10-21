@@ -76,8 +76,9 @@ dependencies are not yet locked. Record installed versions when comparing runs.
 
 ## Remaining release blockers, in order
 
-1. Generic post-dispatch executor exceptions still assume no effect and become
-   ABORTED. Introduce explicit known-not-applied outcomes; otherwise preserve unknown.
+1. Generic post-dispatch exceptions were the next blocker at this PR's baseline.
+   The stacked change described in [ambiguous-write-outcomes.md](ambiguous-write-outcomes.md)
+   preserves unknown unless a trusted adapter supplies non-execution evidence.
 2. Saga reconciliation/compensation lacks exclusive ownership; concurrent direct
    reconcilers can compensate twice. Serialize and test these paths independently.
 3. Authorization remains optional/fail-open at the saga boundary. Make mutation

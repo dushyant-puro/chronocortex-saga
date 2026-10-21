@@ -213,8 +213,8 @@ async def test_3c_rapid_epoch_advances_multiple_in_flight_writes():
     # First advance was epoch 1, that's what should be recorded
     assert action_ok.superseded_epoch == 1
 
-    # ERROR write → ABORTED (exception guarantees no remote effect)
-    assert action_err.state == ActionState.ABORTED
+    # A generic exception supplies no evidence of non-execution.
+    assert action_err.state == ActionState.IN_FLIGHT_UNKNOWN
 
     # TIMEOUT write → IN_FLIGHT_UNKNOWN
     assert action_to.state == ActionState.IN_FLIGHT_UNKNOWN
