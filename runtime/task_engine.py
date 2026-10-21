@@ -34,7 +34,8 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any, Awaitable, Callable, Optional
 
-from runtime.persistence import CheckpointStore
+from runtime.persistence import CheckpointStore, SQLiteCheckpointStore
+from runtime.action_journal import JournalError
 from runtime.policy_engine import ConfirmationRequiredError, PermissionDeniedError
 from runtime.speculative_saga import (
     ActionKind,
@@ -176,7 +177,13 @@ class TaskManager:
         """
         self._saga = saga
         self._resolve_field = resolve_field
-        self.store = store
+        if saga.journal is not None:
+            if store is not None and (not isinstance(store, SQLiteCheckpointStore) or
+                                      store.journal.path != saga.journal.path):
+                raise ValueError("Journaled tasks require checkpoints in the same SQLite journal")
+            self.store = store if store is not None else SQLiteCheckpointStore(saga.journal)
+        else:
+            self.store = store
         self.on_task_replanned = on_task_replanned
         self._tasks: dict[str, Task] = {}
         self._evicted_fields: set[str] = set()
@@ -186,9 +193,11 @@ class TaskManager:
 
     def create_task(self, name: str, steps: list[TaskStep]) -> Task:
         """Create a new task with the given steps. Does NOT start execution."""
-        task_id = f"task-{uuid.uuid4().hex[:8]}"
+        task_id = f"task-{uuid.uuid4().hex}"
         task = Task(task_id=task_id, name=name, steps=steps)
         self._tasks[task_id] = task
+        if self._saga.journal is not None:
+            self._save_checkpoint(task)
         logger.info("created task %s (%s) with %d steps", task_id, name, len(steps))
         return task
 
@@ -333,6 +342,8 @@ class TaskManager:
                 # A semantic correction invalidates this intent even if the
                 # asynchronous epoch callback has not run yet.
                 action.state = ActionState.COMMITTED_STALE
+                if self._saga.journal is not None:
+                    self._saga._persist_action(action, "TASK_INTENT_INVALIDATED")
             if not await self._compensate_step(task, i):
                 return
             if task.state == TaskState.CANCELLED:
@@ -425,7 +436,8 @@ class TaskManager:
     def _accept_step_result(self, task: Task, idx: int) -> bool:
         """A return value is not a commit receipt. Consult the action ledger."""
         action = self._saga._actions.get(task.step_action_ids[idx])
-        if (task.state == TaskState.CANCELLED or action is None or
+        if (self._saga._durability_fault is not None or
+                task.state == TaskState.CANCELLED or action is None or
                 action.state != ActionState.COMMITTED or
                 action.compensation_state != CompensationState.NOT_STARTED):
             state = (f"{action.state.name}/compensation={action.compensation_state.name}"
@@ -453,6 +465,9 @@ class TaskManager:
         except asyncio.CancelledError:
             self._park_step(task, idx, "compensation interrupted; outcome unresolved")
             raise
+        except JournalError:
+            self._park_step(task, idx, "compensation durability unavailable")
+            raise
         if action.state != ActionState.COMPENSATED:
             self._park_step(task, idx, f"compensation {action.compensation_state.name}; repair required")
             return False
@@ -475,6 +490,8 @@ class TaskManager:
         task = self._tasks[task_id]
         if task.state in (TaskState.CANCELLED, TaskState.COMPLETED, TaskState.FAILED):
             return task
+        if self._saga._durability_fault is not None:
+            self._saga._require_journal()
         task.state = TaskState.RUNNING
 
         while task.current_step_index < len(task.steps):
@@ -576,6 +593,12 @@ class TaskManager:
                 task.state = TaskState.WAITING_FOR_AUTHORIZATION
                 self._save_checkpoint(task)
                 raise
+            except JournalError as exc:
+                # A storage failure cannot authorize task advancement or undo
+                # earlier effects. The action journal, not a legacy checkpoint,
+                # retains the last established dispatch fact.
+                self._park_step(task, idx, f"durability unavailable ({type(exc).__name__})")
+                raise
             except PermissionDeniedError as exc:
                 # Denial is not a provider failure and cannot justify undoing
                 # unrelated, previously authorized effects.
@@ -605,6 +628,9 @@ class TaskManager:
                 continue
 
             except (SagaAbortedError, DuplicateOperationError, asyncio.TimeoutError) as exc:
+                if self._saga.journal is not None and isinstance(exc, DuplicateOperationError):
+                    self._park_step(task, idx, "durable operation key is already claimed; inspect original intent")
+                    return task
                 action = self._saga._actions.get(task.step_action_ids[idx])
                 if action is not None and action.state in (
                         ActionState.IN_FLIGHT, ActionState.IN_FLIGHT_UNKNOWN,
@@ -718,8 +744,16 @@ class TaskManager:
             try:
                 cp = self.checkpoint(task.task_id)
                 self.store.save(task.task_id, cp)
-            except Exception:
+            except Exception as exc:
                 logger.exception("Failed to save checkpoint for task %s", task.task_id)
+                if self._saga.journal is not None:
+                    fault = JournalError("Task journal checkpoint failed; stop dispatch")
+                    self._saga._durability_fault = fault
+                    if task.state != TaskState.CANCELLED:
+                        task.state = TaskState.NEEDS_RECONCILIATION
+                        task.completed_at = None
+                    task.error = "Task checkpoint persistence unavailable"
+                    raise fault from exc
 
     def restore_task(
         self,
@@ -746,6 +780,16 @@ class TaskManager:
         if cp is None:
             logger.warning("No checkpoint found for task %s", task_id)
             return None
+
+        if self._saga.journal is not None:
+            definitions = [{"tool_name": s.tool_name, "kind": s.kind} for s in steps] if steps is not None else None
+            if definitions is None or cp.get("step_definitions") != definitions:
+                raise JournalError("Journal task restore requires matching explicit step definitions")
+            if (any(len(cp.get(key, [])) != len(steps) for key in (
+                    "step_states", "step_results", "step_action_ids", "step_dispatched_args")) or
+                    type(cp.get("current_step_index")) is not int or
+                    not 0 <= cp["current_step_index"] <= len(steps)):
+                raise JournalError("Invalid task checkpoint shape")
 
         if steps is None:
             num_steps = len(cp.get("step_states", []))
@@ -778,6 +822,32 @@ class TaskManager:
                     task.state = TaskState.RUNNING
 
         self._tasks[task_id] = task
+        if self._saga.journal is not None:
+            # Intent can be newer than the task projection (crash immediately
+            # after STAGED/DISPATCH_INTENT). Reattach by durable task/step owner.
+            # Any recovered effect still requires reconciliation, even when a
+            # stale checkpoint says COMPLETED or lacks the action ID entirely.
+            unresolved = []
+            for action in self._saga._actions.values():
+                idx = action.owner_step_index
+                if (action.owner_task_id == task_id and idx is not None and
+                        0 <= idx < len(task.steps) and action.recovered and
+                        (action.state not in (ActionState.ABORTED, ActionState.COMPENSATED) or
+                         action.compensation_state in (CompensationState.UNKNOWN,
+                                                       CompensationState.IN_FLIGHT,
+                                                       CompensationState.NOT_APPLIED))):
+                    task.step_action_ids[idx] = action.action_id
+                    unresolved.append(idx)
+            # Legacy committed step claims without a matching action are also
+            # insufficient evidence. Never use them to unlock downstream work.
+            for idx, step in enumerate(task.steps):
+                if step.kind == "write" and task.step_states[idx] in (
+                        StepState.COMMITTED, StepState.IN_FLIGHT, StepState.NEEDS_RECONCILIATION):
+                    action = self._saga._actions.get(task.step_action_ids[idx])
+                    if action is None or action.recovered:
+                        unresolved.append(idx)
+            for idx in sorted(set(unresolved), reverse=True):
+                self._park_step(task, idx, "recovered write evidence requires reconciliation")
         logger.info("restored task %s from checkpoint (state: %s)", task_id, task.state.name)
         return task
 
@@ -798,7 +868,8 @@ class TaskManager:
                 self._saga.abort_write(action.action_id)
                 action = None
         if action is None or action.state == ActionState.ABORTED:
-            action = self._saga.stage_write(step.tool_name, args, compensate=step.compensate)
+            action = self._saga.stage_write(step.tool_name, args, compensate=step.compensate,
+                                            owner_task_id=task.task_id, owner_step_index=idx)
         task.step_action_ids[idx] = action.action_id
         task.step_states[idx] = StepState.IN_FLIGHT
         result = await self._saga.commit_write(action.action_id, executor)
@@ -892,6 +963,7 @@ class TaskManager:
             "step_results": list(task.step_results),
             "step_action_ids": list(task.step_action_ids),
             "step_dispatched_args": list(task.step_dispatched_args),
+            "step_definitions": [{"tool_name": s.tool_name, "kind": s.kind} for s in task.steps],
             "error": task.error,
         }
 
@@ -899,6 +971,8 @@ class TaskManager:
         """
         Restore task state from a checkpoint dict. Overwrites in-place.
         """
+        if self._saga.journal is not None:
+            raise JournalError("Journaled tasks must restore from the versioned store, not caller snapshots")
         task = self._tasks[task_id]
         task.state = TaskState[cp["state"]]
         task.current_step_index = cp["current_step_index"]

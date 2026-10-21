@@ -36,7 +36,7 @@ from runtime.tool_contract import ToolManifest
 
 def _make_saga() -> tuple[TurnEpochClock, SpeculativeSagaManager]:
     clock = TurnEpochClock()
-    saga = SpeculativeSagaManager(clock)
+    saga = SpeculativeSagaManager(clock, simulation=True)  # Authorization isolated from disk tests.
     return clock, saga
 
 

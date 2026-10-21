@@ -216,7 +216,7 @@ async def test_voice_handler_does_not_unwind_chain_after_ambiguous_write(monkeyp
     registry = ToolRegistry()
     for name in ("prior", "mutate"):
         registry.register(ToolManifest(name, "write", required_permissions=["simulation:write"]))
-    ccs = CCSAgent(auth_context=AuthorizationContext(["simulation:write"]))
+    ccs = CCSAgent(auth_context=AuthorizationContext(["simulation:write"]), simulation=True)
     ccs.saga.set_tool_registry(registry)
     provider_ledger, compensations = [], []
 

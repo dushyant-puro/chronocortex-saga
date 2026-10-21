@@ -13,6 +13,8 @@ from runtime.tool_contract import ToolManifest
 class SimulatedAuthorizedSaga(ProductionSaga):
     def __init__(self, *args, **kwargs):
         kwargs.setdefault("auth_context", AuthorizationContext(["fleet:write"]))
+        if "journal" not in kwargs:
+            kwargs.setdefault("simulation", True)
         super().__init__(*args, **kwargs)
 
     def stage_write(self, tool_name, args, **kwargs):

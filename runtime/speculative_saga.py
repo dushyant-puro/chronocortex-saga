@@ -63,6 +63,7 @@ from runtime.policy_engine import (
     AuthorizationContext, ConfirmationRequiredError, PermissionDeniedError,
     PolicyEngine, payload_digest,
 )
+from runtime.action_journal import JournalError, JournalDuplicate, SQLiteActionJournal
 
 logger = logging.getLogger("ccs.saga")
 
@@ -110,7 +111,7 @@ class ActionKind(Enum):
 
 class ActionState(Enum):
     PENDING = auto()             # created, not yet dispatched
-    IN_FLIGHT = auto()           # dispatched, awaiting response
+    IN_FLIGHT = auto()           # dispatch intent recorded; call may have reached provider
     IN_FLIGHT_UNKNOWN = auto()   # dispatched; response lost / timed-out / cancelled after dispatch
     COMMITTED = auto()           # response received, effect is real and epoch is still current
     COMMITTED_STALE = auto()     # remote mutation succeeded, but the conversational epoch had
@@ -182,6 +183,12 @@ class StagedAction:
     _resolution_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
     _compensation_task: Optional[asyncio.Task] = field(default=None, repr=False, compare=False)
     _staged_digest: Optional[str] = field(default=None, repr=False, compare=False)
+    _journal_version: Optional[int] = field(default=None, repr=False, compare=False)
+    intent_session: Optional[str] = None
+    owner_task_id: Optional[str] = None
+    owner_step_index: Optional[int] = None
+    recovered: bool = False
+    durability_error: Optional[str] = None
 
     def _set_terminal(self, new_state: ActionState) -> bool:
         """
@@ -268,12 +275,21 @@ class SpeculativeSagaManager:
         epoch_clock: TurnEpochClock,
         registry: Optional[ToolRegistry] = None,
         auth_context: Optional[AuthorizationContext] = None,
+        *,
+        journal: Optional[SQLiteActionJournal] = None,
+        simulation: bool = False,
     ) -> None:
         self.epoch_clock = epoch_clock
         self.registry = registry
         # Trusted host credential injection only. No credentials inferred from args,
         # grounding, ASR or model output. Missing credentials deny mutation dispatch.
         self.auth_context = auth_context
+        if type(simulation) is not bool or (simulation and journal is not None):
+            raise ValueError("Simulation must be explicit and cannot bypass a configured journal")
+        self.journal = journal
+        self.simulation = simulation
+        self._session_id = uuid.uuid4().hex
+        self._durability_fault: Optional[JournalError] = None
         self._actions: dict[str, StagedAction] = {}
         self._ikey_index: dict[str, str] = {}  # idempotency_key -> action_id
         self._debounce: dict[str, tuple[str, float]] = {}  # entity_hash -> (action_id, ts)
@@ -282,6 +298,80 @@ class SpeculativeSagaManager:
         self._chain: list[StagedAction] = []  # committed order, for compensation unwind
         self._id_gen = itertools.count()
         self.epoch_clock.on_advance(self._on_epoch_advance)
+        if self.journal is not None:
+            self._load_journal()
+
+    def _load_journal(self) -> None:
+        """Hydrate evidence only. Never auto-bind compensators or revive old intent."""
+        for version, record in self.journal.records():
+            state = ActionState[record["state"]]
+            if state in (ActionState.PENDING, ActionState.IN_FLIGHT):
+                state = ActionState.IN_FLIGHT_UNKNOWN
+            elif state == ActionState.COMMITTED:
+                state = ActionState.COMMITTED_STALE
+            comp = CompensationState[record["compensation_state"]]
+            if comp == CompensationState.IN_FLIGHT:
+                comp = CompensationState.UNKNOWN
+            action = StagedAction(
+                action_id=record["action_id"], kind=ActionKind.STAGED_WRITE,
+                tool_name=record["tool_name"], args=record["args"],
+                capture_epoch=record["capture_epoch"], idempotency_key=record["idempotency_key"],
+                state=state, result=record["result"], compensation_state=comp,
+                compensation_failed=(record["compensation_failed"] or
+                                     comp in (CompensationState.UNKNOWN, CompensationState.NOT_APPLIED)),
+                not_applied_evidence=record["not_applied_evidence"],
+                compensation_not_applied_evidence=record["compensation_not_applied_evidence"],
+                superseded_epoch=record["superseded_epoch"],
+                _staged_digest=record["digest"], _journal_version=version,
+                intent_session=record["session_id"], owner_task_id=record["task_id"],
+                owner_step_index=record["step_index"], recovered=True,
+            )
+            self._actions[action.action_id] = action
+            self._ikey_index[action.idempotency_key] = action.action_id
+
+    def _journal_record(self, action: StagedAction) -> dict:
+        return {
+            "action_id": action.action_id, "tool_name": action.tool_name,
+            "args": action.args, "digest": action._staged_digest,
+            "idempotency_key": action.idempotency_key, "capture_epoch": action.capture_epoch,
+            "session_id": action.intent_session, "task_id": action.owner_task_id,
+            "step_index": action.owner_step_index, "state": action.state.name,
+            "compensation_state": action.compensation_state.name, "result": action.result,
+            "compensation_failed": action.compensation_failed,
+            "error_type": type(action.error).__name__ if action.error is not None else None,
+            "compensation_error_type": (type(action.compensation_error).__name__
+                                         if action.compensation_error is not None else None),
+            "not_applied_evidence": action.not_applied_evidence,
+            "compensation_not_applied_evidence": action.compensation_not_applied_evidence,
+            "superseded_epoch": action.superseded_epoch,
+        }
+
+    def _require_journal(self) -> None:
+        if self._durability_fault is not None:
+            raise JournalError("journal fault latched; stop dispatch and reopen for recovery") from self._durability_fault
+        if self.journal is None and not self.simulation:
+            raise JournalError("Durable journal required before mutation dispatch")
+
+    def _persist_action(self, action: StagedAction, event: str, *, create=False) -> None:
+        self._require_journal()
+        if self.journal is None:  # Explicit SIMULATED execution only.
+            return
+        try:
+            record = self._journal_record(action)
+            action._journal_version = (self.journal.create(record) if create else
+                                       self.journal.transition(record, action._journal_version, event))
+        except JournalDuplicate as exc:
+            raise DuplicateOperationError("Durable operation key remains claimed") from exc
+        except JournalError as exc:
+            self._durability_fault = exc
+            action.durability_error = type(exc).__name__
+            # The last committed dispatch marker remains the recovery authority.
+            # Do not report task success if a returned effect cannot be recorded.
+            if action.state != ActionState.PENDING:
+                action.state = ActionState.IN_FLIGHT_UNKNOWN
+            if action.compensation_state == CompensationState.IN_FLIGHT:
+                action.compensation_state = CompensationState.UNKNOWN
+            raise
 
     def set_tool_registry(self, registry: Optional[ToolRegistry]) -> None:
         """Assign or update the ToolRegistry used for tool manifest lookups."""
@@ -332,6 +422,8 @@ class SpeculativeSagaManager:
                 if action.state == ActionState.PENDING:
                     # Safe: nothing dispatched yet, no remote effect possible.
                     action.state = ActionState.ABORTED
+                    if action.kind == ActionKind.STAGED_WRITE and self.journal is not None:
+                        self._persist_action(action, "TURN_INVALIDATED")
                     logger.info(
                         "aborted stale PENDING action %s (%s) epoch %d < %d",
                         action.action_id, action.tool_name,
@@ -356,6 +448,8 @@ class SpeculativeSagaManager:
                         # preserving the exact epoch that first made this write stale.
                         if action.superseded_epoch is None:
                             action.superseded_epoch = new_epoch
+                        if self.journal is not None:
+                            self._persist_action(action, "TURN_SUPERSEDED")
                         logger.info(
                             "superseded IN_FLIGHT write %s (%s) epoch %d < %d — "
                             "executor allowed to complete; will resolve as COMMITTED_STALE",
@@ -528,6 +622,8 @@ class SpeculativeSagaManager:
         idempotency_key: Optional[str] = None,
         manifest: Optional[ToolManifest] = None,
         registry: Optional[ToolRegistry] = None,
+        owner_task_id: Optional[str] = None,
+        owner_step_index: Optional[int] = None,
     ) -> StagedAction:
         """
         Create a write in the uncommitted in-memory envelope. It is NOT
@@ -562,7 +658,7 @@ class SpeculativeSagaManager:
                     f"before retrying."
                 )
 
-        action_id = f"write-{next(self._id_gen)}-{uuid.uuid4().hex[:6]}"
+        action_id = f"write-{next(self._id_gen)}-{uuid.uuid4().hex}"
         action = StagedAction(
             action_id=action_id,
             kind=ActionKind.STAGED_WRITE,
@@ -574,7 +670,11 @@ class SpeculativeSagaManager:
             manifest=(replace(mf, required_permissions=list(mf.required_permissions),
                               depends_on=list(mf.depends_on)) if mf is not None else None),
             _staged_digest=digest,
+            intent_session=self._session_id,
+            owner_task_id=owner_task_id, owner_step_index=owner_step_index,
         )
+        if self.journal is not None:
+            self._persist_action(action, "STAGED", create=True)
         self._actions[action_id] = action
         self._ikey_index[ikey] = action_id
         return action
@@ -585,6 +685,8 @@ class SpeculativeSagaManager:
         action = self._actions.get(action_id)
         if action and action.state == ActionState.PENDING:
             action.state = ActionState.ABORTED
+            if self.journal is not None:
+                self._persist_action(action, "ABORTED_BEFORE_DISPATCH")
 
     async def commit_write(
         self,
@@ -630,6 +732,8 @@ class SpeculativeSagaManager:
         by a concurrent resolution (exactly-one terminal state guarantee).
         """
         action = self._actions[action_id]
+        if action.recovered:
+            raise JournalError("Recovered journal intent cannot be dispatched; reconciliation required")
         if action.state != ActionState.PENDING:
             raise SagaAbortedError(
                 f"write {action_id} not in PENDING state: {action.state}"
@@ -691,7 +795,9 @@ class SpeculativeSagaManager:
             action._set_terminal(ActionState.ABORTED)
             raise StaleEpochError("Epoch changed during pre-dispatch checks")
 
+        self._require_journal()
         action.state = ActionState.IN_FLIGHT
+        self._persist_action(action, "DISPATCH_INTENT")
 
         try:
             result = await asyncio.wait_for(executor(dispatch_args), timeout=timeout)
@@ -702,6 +808,7 @@ class SpeculativeSagaManager:
             if not action._set_terminal(ActionState.IN_FLIGHT_UNKNOWN):
                 return action.result  # already resolved by another code path
             action.error = exc
+            self._persist_action(action, "FORWARD_UNKNOWN")
             logger.error(
                 "write %s (%s) timed out — IN_FLIGHT_UNKNOWN, requires reconciliation "
                 "before any retry",
@@ -716,6 +823,7 @@ class SpeculativeSagaManager:
             if not action._set_terminal(ActionState.IN_FLIGHT_UNKNOWN):
                 return action.result
             action.error = exc
+            self._persist_action(action, "FORWARD_UNKNOWN")
             logger.error(
                 "write %s (%s) was cancelled after dispatch — IN_FLIGHT_UNKNOWN, "
                 "requires reconciliation; do not retry blindly",
@@ -728,6 +836,7 @@ class SpeculativeSagaManager:
                 return action.result
             action.error = exc
             action.not_applied_evidence = exc.evidence
+            self._persist_action(action, "FORWARD_NOT_APPLIED")
             raise
 
         except Exception as exc:
@@ -736,6 +845,7 @@ class SpeculativeSagaManager:
             if not action._set_terminal(ActionState.IN_FLIGHT_UNKNOWN):
                 return action.result
             action.error = exc
+            self._persist_action(action, "FORWARD_UNKNOWN")
             logger.error(
                 "write %s (%s) raised %s after dispatch — IN_FLIGHT_UNKNOWN; "
                 "requires reconciliation before retry",
@@ -747,11 +857,16 @@ class SpeculativeSagaManager:
         # Executor returned successfully. Classify: COMMITTED or STALE?
         # ----------------------------------------------------------------
         action.result = result
+        if self._durability_fault is not None:
+            action.state = ActionState.IN_FLIGHT_UNKNOWN
+            action.durability_error = type(self._durability_fault).__name__
+            self._require_journal()
 
         if action.superseded_epoch is None:
             # Epoch is still current — normal commit.
             if not action._set_terminal(ActionState.COMMITTED):
                 return action.result
+            self._persist_action(action, "FORWARD_COMMITTED")
             self._chain.append(action)
             return result
 
@@ -761,6 +876,7 @@ class SpeculativeSagaManager:
         # COMMITTED_STALE and trigger compensation.
         if not action._set_terminal(ActionState.COMMITTED_STALE):
             return action.result
+        self._persist_action(action, "FORWARD_COMMITTED_STALE")
 
         if action.compensate is not None:
             logger.warning(
@@ -799,13 +915,16 @@ class SpeculativeSagaManager:
             return
         if action.compensate is None or action.compensation_state != CompensationState.NOT_STARTED:
             return
+        self._require_journal()
         action.compensation_state = CompensationState.IN_FLIGHT
+        self._persist_action(action, "COMPENSATION_INTENT")
         try:
             await action.compensate(action.result)
         except asyncio.CancelledError as exc:
             action.compensation_state = CompensationState.UNKNOWN
             action.compensation_error = exc
             action.compensation_failed = True
+            self._persist_action(action, "COMPENSATION_UNKNOWN")
             logger.critical(
                 "AUTO-COMPENSATION FAILED for %s (%s): cancelled after possible dispatch; "
                 "outcome UNKNOWN, no automatic retry", action.action_id, action.tool_name,
@@ -816,17 +935,20 @@ class SpeculativeSagaManager:
             action.compensation_error = exc
             action.compensation_not_applied_evidence = exc.evidence
             action.compensation_failed = True
+            self._persist_action(action, "COMPENSATION_NOT_APPLIED")
             logger.critical("AUTO-COMPENSATION FAILED for %s (%s): known not applied; repair required",
                             action.action_id, action.tool_name)
         except Exception as exc:
             action.compensation_state = CompensationState.UNKNOWN
             action.compensation_error = exc
             action.compensation_failed = True
+            self._persist_action(action, "COMPENSATION_UNKNOWN")
             logger.critical("AUTO-COMPENSATION FAILED for %s (%s): %s; outcome UNKNOWN, no automatic retry",
                             action.action_id, action.tool_name, type(exc).__name__)
         else:
             action.compensation_state = CompensationState.SUCCEEDED
             action.state = ActionState.COMPENSATED
+            self._persist_action(action, "COMPENSATED")
             self._chain = [a for a in self._chain if a.state != ActionState.COMPENSATED]
             logger.info("compensated %s (%s)", action.action_id, action.tool_name)
 
@@ -846,6 +968,7 @@ class SpeculativeSagaManager:
         """
         action = self._actions[action_id]
         async with action._resolution_lock:
+            self._require_journal()
             if (action.state in (ActionState.COMMITTED, ActionState.ABORTED, ActionState.COMPENSATED)
                     and action.compensation_state not in _BLOCKING_COMPENSATION_STATES):
                 return
@@ -900,6 +1023,7 @@ class SpeculativeSagaManager:
             if action.state == ActionState.IN_FLIGHT_UNKNOWN:
                 # Classify based on current epoch vs capture epoch.
                 is_current = (
+                    not action.recovered and
                     action.superseded_epoch is None
                     and action.capture_epoch == self.epoch_clock.current
                 )
@@ -908,6 +1032,7 @@ class SpeculativeSagaManager:
                     # we bypass _set_terminal here because IN_FLIGHT_UNKNOWN is terminal
                     # by design, but reconciliation is its explicit resolution path.
                     action.state = ActionState.COMMITTED
+                    self._persist_action(action, "RECONCILED_PRESENT")
                     self._chain.append(action)
                     logger.info(
                         "reconcile_write %s (%s): confirmed executed -> COMMITTED",
@@ -915,6 +1040,7 @@ class SpeculativeSagaManager:
                     )
                 else:
                     action.state = ActionState.COMMITTED_STALE
+                    self._persist_action(action, "RECONCILED_PRESENT_STALE")
                     logger.warning(
                         "reconcile_write %s (%s): confirmed executed but epoch stale "
                         "(capture=%d, current=%d) -> COMMITTED_STALE",
@@ -931,6 +1057,7 @@ class SpeculativeSagaManager:
                         )
             else:
                 # A known effect persists. Only a first repair attempt is allowed.
+                self._persist_action(action, "RECONCILED_PRESENT_STALE")
                 logger.warning(
                     "reconcile_write %s (%s): effect confirmed, compensation=%s; "
                     "existing attempts will not be retried",
@@ -957,6 +1084,7 @@ class SpeculativeSagaManager:
                 action.compensation_state = CompensationState.SUCCEEDED
                 action.compensation_failed = False
                 self._chain = [a for a in self._chain if a.state != ActionState.COMPENSATED]
+            self._persist_action(action, "RECONCILED_ABSENT")
             logger.info(
                 "reconcile_write %s (%s): authoritative absence -> %s",
                 action_id, action.tool_name, action.state.name,
@@ -993,6 +1121,11 @@ class SpeculativeSagaManager:
                 "kind": a.kind.name,
                 "tool": a.tool_name,
                 "state": a.state.name,
+                "recovered": a.recovered,
+                "journal_version": a._journal_version,
+                "durability_error": a.durability_error,
+                "execution_mode": ("SIMULATED" if self.simulation else
+                                   "JOURNALED" if self.journal is not None else "DISPATCH_DISABLED"),
                 "epoch": a.capture_epoch,
                 "superseded_epoch": a.superseded_epoch,
                 "idempotency_key": a.idempotency_key,

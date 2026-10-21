@@ -14,6 +14,7 @@ import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Optional
+from runtime.action_journal import JournalError, SQLiteActionJournal
 
 logger = logging.getLogger("ccs.persistence")
 
@@ -35,6 +36,32 @@ class CheckpointStore(ABC):
     def delete(self, task_id: str) -> None:
         """Delete a task checkpoint by task_id."""
         pass
+
+
+class SQLiteCheckpointStore(CheckpointStore):
+    """Versioned task projections alongside the authoritative action journal.
+
+    A checkpoint is not provider evidence. Restore must still inspect action
+    records, including intent newer than the last saved task projection.
+    """
+
+    def __init__(self, journal: SQLiteActionJournal):
+        self.journal = journal
+        self._versions: dict[str, int] = {}
+
+    def save(self, task_id: str, checkpoint_dict: dict[str, Any]) -> None:
+        version = self.journal.save_task(task_id, checkpoint_dict, self._versions.get(task_id))
+        self._versions[task_id] = version
+
+    def load(self, task_id: str) -> Optional[dict[str, Any]]:
+        found = self.journal.load_task(task_id)
+        if found is None:
+            return None
+        self._versions[task_id], checkpoint = found
+        return checkpoint
+
+    def delete(self, task_id: str) -> None:
+        raise JournalError("Durable task retention requires explicit maintenance; no runtime deletion")
 
 
 class FileCheckpointStore(CheckpointStore):

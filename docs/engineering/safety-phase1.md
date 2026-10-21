@@ -85,9 +85,9 @@ dependencies are not yet locked. Record installed versions when comparing runs.
 3. Forward-write authorization is made mandatory by the stacked change in
    [mutation-authorization.md](mutation-authorization.md), with exact-action approval.
    Authentication, durable approvals and protected operator APIs remain required.
-4. Intent is not durably saved before dispatch; checkpoint errors are suppressed;
-   action identity/validity is not a transactional journal. Implement the store
-   protocol before claiming crash-safe mutation execution.
+4. The stacked [durable-intent stage](durable-action-intent.md) persists dispatch
+   and repair intent before execution, with local CAS and fail-closed storage
+   errors. Distributed fencing and automatic restart completion remain required.
 5. Replanning and cancellation compensation need their own durable lifecycle,
    per-task chain boundaries, evidence, and unknown-compensation handling.
 6. Distributed leases/CAS/fencing, real providers, ASR revision/confidence wiring,
