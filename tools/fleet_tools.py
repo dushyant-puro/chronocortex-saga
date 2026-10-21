@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from runtime.tool_contract import ToolManifest, ToolRegistry
+from runtime.speculative_saga import MutationNotAppliedError
 
 
 # ---- mock backing store (stands in for a real fleet telematics API) -------
@@ -89,12 +90,14 @@ class DockReservationResult:
 
 
 async def reserve_dock(args: dict[str, Any]) -> DockReservationResult:
-    """Forward: reserve a loading dock slot. Rejects if already taken —
-    caller (saga manager) treats a raised exception as abort-worthy."""
+    """SIMULATED reservation. An occupied dock is rejected before insertion."""
     await _simulated_network()
     dock_id = args["dock_id"]
     if any(r["dock_id"] == dock_id for r in _DOCK_RESERVATIONS.values()):
-        raise RuntimeError(f"dock {dock_id} already reserved")
+        raise MutationNotAppliedError(
+            f"dock {dock_id} already reserved",
+            evidence="simulated:dock-conflict-before-insert",
+        )
     reservation_id = f"dock-{dock_id}-{random.randint(1000, 9999)}"
     _DOCK_RESERVATIONS[reservation_id] = {"dock_id": dock_id, "truck_id": args["truck_id"]}
     return DockReservationResult(reservation_id=reservation_id, dock_id=dock_id, truck_id=args["truck_id"])

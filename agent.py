@@ -14,7 +14,7 @@ try:
 except ImportError:
     openai = None
 
-from runtime.speculative_saga import SpeculativeSagaManager, TurnEpochClock, StaleEpochError
+from runtime.speculative_saga import ActionState, SpeculativeSagaManager, TurnEpochClock, StaleEpochError
 from runtime.grounding_guard import GroundingGuard, zero_hop_repair, RepairOutcome
 from runtime.task_engine import TaskManager
 from tools.fleet_tools import READ_TOOLS, WRITE_TOOLS, TOOL_REGISTRY
@@ -216,8 +216,12 @@ class CCSAgent:
             except asyncio.TimeoutError:
                 logger.error("write %s IN_FLIGHT_UNKNOWN — awaiting reconciliation", tool_name)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("write %s failed (%s) — unwinding chain", tool_name, exc)
-                await self.saga.abort_chain_from(action.action_id)
+                if action.state == ActionState.IN_FLIGHT_UNKNOWN:
+                    logger.error("write %s IN_FLIGHT_UNKNOWN after %s — awaiting reconciliation",
+                                 tool_name, type(exc).__name__)
+                else:
+                    logger.warning("write %s failed (%s) — unwinding chain", tool_name, type(exc).__name__)
+                    await self.saga.abort_chain_from(action.action_id)
 
         self._pending_slots.clear()
 
