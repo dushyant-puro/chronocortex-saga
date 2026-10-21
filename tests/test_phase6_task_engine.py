@@ -29,7 +29,6 @@ import pytest_asyncio
 from runtime.speculative_saga import (
     ActionState,
     SagaAbortedError,
-    SpeculativeSagaManager,
     StaleEpochError,
     TurnEpochClock,
 )
@@ -41,6 +40,8 @@ from runtime.task_engine import (
     TaskStep,
     StepState,
 )
+
+from saga_test_support import SimulatedAuthorizedSaga as SpeculativeSagaManager
 
 
 # ---------------------------------------------------------------------------

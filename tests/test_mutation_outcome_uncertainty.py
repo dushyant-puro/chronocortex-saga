@@ -11,6 +11,8 @@ from runtime.speculative_saga import (
 from runtime.task_engine import StepState, TaskManager, TaskState, TaskStep
 from runtime.tool_contract import ToolManifest
 
+from saga_test_support import SimulatedAuthorizedSaga as SpeculativeSagaManager
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("corrected", [False, True])
@@ -209,7 +211,13 @@ async def test_pre_dispatch_validation_failure_never_dispatches_or_becomes_unkno
 async def test_voice_handler_does_not_unwind_chain_after_ambiguous_write(monkeypatch):
     from agent import CCSAgent, PendingSlot
 
-    ccs = CCSAgent()
+    from runtime.policy_engine import AuthorizationContext
+    from runtime.tool_contract import ToolRegistry
+    registry = ToolRegistry()
+    for name in ("prior", "mutate"):
+        registry.register(ToolManifest(name, "write", required_permissions=["simulation:write"]))
+    ccs = CCSAgent(auth_context=AuthorizationContext(["simulation:write"]))
+    ccs.saga.set_tool_registry(registry)
     provider_ledger, compensations = [], []
 
     async def prior_mutation(args):

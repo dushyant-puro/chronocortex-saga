@@ -14,6 +14,8 @@ Core safety principle:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
+import json
 from typing import Iterable, Optional
 
 from runtime.tool_contract import ToolManifest
@@ -31,10 +33,52 @@ class PermissionDeniedError(PolicyError):
 
 
 class ConfirmationRequiredError(PolicyError):
+    """Explicit caller confirmation is missing or does not match the operation."""
+
+
+def payload_digest(tool_name: str, args: dict) -> str:
+    """Canonical JSON only: reject NaN/non-JSON objects rather than signing ambiguity."""
+    if type(tool_name) is not str or not tool_name or type(args) is not dict:
+        raise ValueError("Mutation payload requires a tool name and JSON object")
+
+    def validate(value):
+        if type(value) is dict:
+            for key, child in value.items():
+                if type(key) is not str:
+                    raise ValueError("JSON object keys must be strings")
+                validate(child)
+        elif type(value) is list:
+            for child in value:
+                validate(child)
+        elif value is not None and type(value) not in (str, int, float, bool):
+            raise ValueError("Mutation arguments must contain only JSON values")
+
+    validate(args)
+    payload = json.dumps({"tool": tool_name, "args": args}, sort_keys=True,
+                         separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True)
+class MutationApproval:
+    """Trusted caller's in-process approval, bound to one staged action and payload.
+
+    This is not authentication or a signed network credential. Only a trusted
+    operator boundary may construct it; never derive it from model/ASR text.
     """
-    Raised when an operation requires explicit operator/caller confirmation
-    and neither the call-time confirmed flag nor context.confirmed is True.
-    """
+    action_id: str
+    capture_epoch: int
+    digest: str
+
+    @classmethod
+    def for_action(cls, action) -> MutationApproval:
+        return cls(action.action_id, action.capture_epoch,
+                   payload_digest(action.tool_name, action.args))
+
+    def matches(self, action) -> bool:
+        return (self.action_id == action.action_id and
+                self.capture_epoch == action.capture_epoch and
+                self.digest == payload_digest(action.tool_name, action.args))
 
 
 @dataclass
@@ -44,18 +88,31 @@ class AuthorizationContext:
 
     Attributes:
         granted_permissions: Set of permissions granted to this execution context.
-        confirmed: Whether caller/operator confirmation has been explicitly provided.
+        confirmed: Legacy exact-bool confirmation signal. Insufficient for dispatch
+            of a manifest requiring confirmation; an action-bound approval is required.
+        approval: Trusted approval bound to one staged action, epoch and payload.
     """
     granted_permissions: set[str] = field(default_factory=set)
     confirmed: bool = False
+    approval: Optional[MutationApproval] = None
 
     def __init__(
         self,
         granted_permissions: Optional[Iterable[str]] = None,
         confirmed: bool = False,
+        approval: Optional[MutationApproval] = None,
     ) -> None:
+        if type(confirmed) is not bool:
+            raise TypeError("confirmed must be an exact bool")
+        if isinstance(granted_permissions, str):
+            raise TypeError("granted_permissions must be a collection, not a string")
         self.granted_permissions = set(granted_permissions) if granted_permissions is not None else set()
-        self.confirmed = bool(confirmed)
+        if any(not isinstance(p, str) or not p.strip() for p in self.granted_permissions):
+            raise TypeError("permissions must be non-empty strings")
+        if approval is not None and not isinstance(approval, MutationApproval):
+            raise TypeError("approval must be a MutationApproval")
+        self.confirmed = confirmed
+        self.approval = approval
 
 
 class PolicyEngine:
@@ -63,15 +120,13 @@ class PolicyEngine:
     Evaluates execution requests against tool manifests and authorization contexts.
     """
 
-    def __init__(self, *, default_deny: bool = False) -> None:
+    def __init__(self, *, default_deny: bool = True) -> None:
         """
         Args:
-            default_deny: If False (default), absent context (context=None)
-                is treated as 'no enforcement' of permissions (opt-in-via-absence,
-                consistent with Phase 5 tool contract checks). If True, absent
-                context denies any tool that requires permissions.
+            default_deny: Legacy argument retained for source compatibility.
+                False cannot disable mandatory authorization.
         """
-        self.default_deny = default_deny
+        self.default_deny = True
 
     def check(
         self,
@@ -88,28 +143,28 @@ class PolicyEngine:
                 neither the call-time argument nor context.confirmed is True.
         """
         if manifest is None:
-            return
+            raise PermissionDeniedError("No tool manifest supplied")
+        if not isinstance(context, AuthorizationContext):
+            raise PermissionDeniedError("Explicit AuthorizationContext required")
+        if type(confirmed) is not bool or type(context.confirmed) is not bool:
+            raise PermissionDeniedError("Confirmation must be an exact bool")
+        if context.approval is not None and not isinstance(context.approval, MutationApproval):
+            raise PermissionDeniedError("Invalid approval object")
+        if (type(context.granted_permissions) not in (set, frozenset) or
+                any(type(p) is not str or not p.strip() for p in context.granted_permissions)):
+            raise PermissionDeniedError("Invalid permission collection")
 
         # 1. Permission check
         if manifest.required_permissions:
-            if context is None:
-                if self.default_deny:
-                    raise PermissionDeniedError(
-                        f"Permission denied for tool '{manifest.tool_name}': "
-                        f"No AuthorizationContext supplied and default_deny is True."
-                    )
-                # Opt-in-via-absence pattern: unauthenticated callers without
-                # context bypass permission checks for backward compatibility.
-            else:
-                missing = [p for p in manifest.required_permissions if p not in context.granted_permissions]
-                if missing:
-                    raise PermissionDeniedError(
-                        f"Permission denied for tool '{manifest.tool_name}'. "
-                        f"Missing required permissions: {sorted(missing)}"
-                    )
+            missing = [p for p in manifest.required_permissions if p not in context.granted_permissions]
+            if missing:
+                raise PermissionDeniedError(
+                    f"Permission denied for tool '{manifest.tool_name}'. "
+                    f"Missing required permissions: {sorted(missing)}"
+                )
 
         # 2. Confirmation check
-        is_confirmed = confirmed or (context is not None and context.confirmed)
+        is_confirmed = confirmed or context.confirmed or context.approval is not None
         if manifest.requires_confirmation and not is_confirmed:
             raise ConfirmationRequiredError(
                 f"Tool '{manifest.tool_name}' requires explicit confirmation before execution."

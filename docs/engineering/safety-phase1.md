@@ -82,8 +82,9 @@ dependencies are not yet locked. Record installed versions when comparing runs.
 2. Process-local repair ownership is addressed by the stacked change in
    [reconciliation-ownership.md](reconciliation-ownership.md). Distributed ownership
    and durable compensation intent are still required.
-3. Authorization remains optional/fail-open at the saga boundary. Make mutation
-   policy mandatory, fail closed, and bind approval to immutable arguments.
+3. Forward-write authorization is made mandatory by the stacked change in
+   [mutation-authorization.md](mutation-authorization.md), with exact-action approval.
+   Authentication, durable approvals and protected operator APIs remain required.
 4. Intent is not durably saved before dispatch; checkpoint errors are suppressed;
    action identity/validity is not a transactional journal. Implement the store
    protocol before claiming crash-safe mutation execution.

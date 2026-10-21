@@ -1,7 +1,9 @@
 import pytest
 import asyncio
 from runtime.grounding_guard import GroundingGuard
-from runtime.speculative_saga import TurnEpochClock, SpeculativeSagaManager
+from runtime.speculative_saga import TurnEpochClock
+
+from saga_test_support import SimulatedAuthorizedSaga as SpeculativeSagaManager
 
 def ingest_tokens(guard: GroundingGuard, tokens: list[str]) -> list[int]:
     """Helper to ingest tokens with a dummy clock."""

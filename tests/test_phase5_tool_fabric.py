@@ -26,7 +26,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from runtime.grounding_guard import GroundingGuard
 from runtime.speculative_saga import (
     ActionState,
-    SpeculativeSagaManager,
     TurnEpochClock,
 )
 from runtime.tool_contract import (
@@ -43,8 +42,10 @@ from tools.fleet_tools import (
     WRITE_TOOLS,
 )
 
+from saga_test_support import SimulatedAuthorizedSaga as SpeculativeSagaManager
 
-def _make_env() -> tuple[TurnEpochClock, SpeculativeSagaManager, GroundingGuard]:
+
+def _make_env() -> tuple[TurnEpochClock, GroundingGuard]:
     clock = TurnEpochClock()
     saga = SpeculativeSagaManager(clock, registry=TOOL_REGISTRY)
     guard = GroundingGuard(epoch_clock=clock)
@@ -249,14 +250,12 @@ def test_06_topological_order_is_deterministic():
 
 
 # ============================================================================
-# 7. REQUIRED_PERMISSIONS FIELD IS INERT (METADATA ONLY)
+# 7. REQUIRED_PERMISSIONS ENFORCED FOR MUTATIONS
 # ============================================================================
 
 @pytest.mark.asyncio
-async def test_07_required_permissions_inert():
-    """Declaring required_permissions on a tool does NOT block, filter, or alter
-    its dispatch capability. Calls succeed identically before and after permissions
-    are attached."""
+async def test_07_required_permissions_enforced_for_writes():
+    """Read authorization is separate; mutation permissions are mandatory."""
     clock = TurnEpochClock()
     reg = ToolRegistry()
     saga = SpeculativeSagaManager(clock, registry=reg)
@@ -324,9 +323,14 @@ async def test_07_required_permissions_inert():
     assert a_r2.state == ActionState.COMMITTED
     assert a_r2.result == {"result": "ok", "args": {"truck": "t-8"}}
 
-    # Calling secure_dispatch must commit successfully without being blocked
+    # Missing mutation grants deny dispatch; an explicit grant allows it.
     a_w2 = saga_restricted.stage_write("secure_dispatch", {"route": "R-9"})
-    res_w2 = await saga_restricted.commit_write(a_w2.action_id, echo_executor)
+    from runtime.policy_engine import AuthorizationContext, PermissionDeniedError
+    with pytest.raises(PermissionDeniedError):
+        await saga_restricted.commit_write(a_w2.action_id, echo_executor)
+    assert a_w2.state == ActionState.PENDING
+    res_w2 = await saga_restricted.commit_write(
+        a_w2.action_id, echo_executor, auth_context=AuthorizationContext(mf_write_perm.required_permissions))
     assert a_w2.state == ActionState.COMMITTED
     assert res_w2 == {"result": "ok", "args": {"route": "R-9"}}
 

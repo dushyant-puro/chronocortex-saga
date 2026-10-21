@@ -36,11 +36,12 @@ from runtime.speculative_saga import (
     CompensationState,
     DuplicateOperationError,
     SagaAbortedError,
-    SpeculativeSagaManager,
     StaleEpochError,
     TurnEpochClock,
 )
 from runtime.grounding_guard import GroundingGuard
+
+from saga_test_support import SimulatedAuthorizedSaga as SpeculativeSagaManager
 
 
 # ============================================================================

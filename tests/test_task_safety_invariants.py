@@ -4,10 +4,12 @@ import asyncio
 
 import pytest
 
-from runtime.speculative_saga import ActionState, SpeculativeSagaManager, TurnEpochClock
+from runtime.speculative_saga import ActionState, TurnEpochClock
 from runtime.task_engine import StepState, TaskManager, TaskState, TaskStep
-from runtime.policy_engine import ConfirmationRequiredError, PolicyEngine
+from runtime.policy_engine import AuthorizationContext, MutationApproval, ConfirmationRequiredError, PolicyEngine
 from runtime.tool_contract import ToolManifest
+
+from saga_test_support import SimulatedAuthorizedSaga as SpeculativeSagaManager
 
 
 class ExecutorBindings(TaskManager):
@@ -259,7 +261,10 @@ async def test_pending_confirmation_preserves_prior_progress_and_reuses_action(m
 
     async def with_policy(action_id, executor, **kwargs):
         return await original_commit(action_id, executor, manifest=manifest,
-                                     policy_engine=PolicyEngine(), **approval)
+                                     policy_engine=PolicyEngine(),
+                                     auth_context=AuthorizationContext(
+                                         approval=MutationApproval.for_action(saga._actions[action_id])
+                                         if approval["confirmed"] else None), **approval)
 
     monkeypatch.setattr(saga, "commit_write", with_policy)
 

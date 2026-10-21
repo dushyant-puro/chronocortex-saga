@@ -7,8 +7,8 @@ Verifies:
   1. Permission enforcement: missing permission raises PermissionDeniedError, executor never called.
   2. Permission grant: valid permission in AuthorizationContext permits dispatch and commit.
   3. Confirmation enforcement: requires_confirmation=True without confirmation raises ConfirmationRequiredError, executor never called.
-  4. Confirmation grant: confirmed=True permits dispatch and commit.
-  5. Backward compatibility: existing commit_write calls without policy args dispatch identically.
+  4. Action-bound confirmation permits dispatch and commit.
+  5. Omitting policy arguments fails closed.
   6. Determinism: identical (manifest, context) pairs evaluate identically across multiple invocations.
   7. Negative case: tool arguments and resolved GroundingGuard field values cannot grant permissions or confirmation.
   8. Argument validation: validate_args callable raises and blocks dispatch before execution.
@@ -21,6 +21,7 @@ import pytest
 
 from runtime.policy_engine import (
     AuthorizationContext,
+    MutationApproval,
     ConfirmationRequiredError,
     PermissionDeniedError,
     PolicyEngine,
@@ -149,6 +150,7 @@ async def test_03_unconfirmed_write_raises_confirmation_required_executor_never_
             manifest=manifest,
             policy_engine=engine,
             confirmed=False,
+            auth_context=AuthorizationContext(),
         )
     assert not executor_called, "Executor must never be called when unconfirmed"
 
@@ -159,6 +161,7 @@ async def test_03_unconfirmed_write_raises_confirmation_required_executor_never_
             mock_executor,
             manifest=manifest,
             policy_engine=engine,
+            auth_context=AuthorizationContext(),
         )
     assert not executor_called, "Executor must never be called when confirmed is omitted"
     print("\n[TEST 3 VERIFICATION] Unconfirmed write raised ConfirmationRequiredError, executor was never called.")
@@ -194,6 +197,7 @@ async def test_04_confirmed_write_dispatches_normally():
         manifest=manifest,
         policy_engine=engine,
         confirmed=True,
+        auth_context=AuthorizationContext(approval=MutationApproval.for_action(action)),
     )
 
     assert executor_called
@@ -207,7 +211,7 @@ async def test_04_confirmed_write_dispatches_normally():
 # ===========================================================================
 
 @pytest.mark.asyncio
-async def test_05_backward_compatibility_no_policy_args_behaves_identically():
+async def test_05_omitted_policy_args_fail_closed():
     clock, saga = _make_saga()
 
     # Manifest with permissions and confirmation configured
@@ -228,16 +232,10 @@ async def test_05_backward_compatibility_no_policy_args_behaves_identically():
     action = saga.stage_write("legacy_write", {"data": 123})
 
     # Existing Phase 1/2 style call: no policy_engine, no auth_context, no confirmed
-    res = await saga.commit_write(
-        action.action_id,
-        mock_executor,
-        manifest=manifest,
-    )
-
-    assert executor_called
-    assert res == {"legacy": "ok"}
-    assert action.state == ActionState.COMMITTED
-    print("\n[TEST 5 VERIFICATION] Backward compatibility verified: commit_write without policy_engine bypasses checks identically to Phases 1-10.")
+    with pytest.raises(PermissionDeniedError):
+        await saga.commit_write(action.action_id, mock_executor, manifest=manifest)
+    assert not executor_called
+    assert action.state == ActionState.PENDING
 
 
 # ===========================================================================
@@ -398,13 +396,15 @@ async def test_08_validate_args_blocks_dispatch_before_execution():
     # Case A: Invalid args -> validate_args raises ValueError, executor never called
     action_bad = saga.stage_write("load_cargo", {"truck_id": "BAD-TRUCK", "payload_kg": 5000})
     with pytest.raises(ValueError) as exc_info:
-        await saga.commit_write(action_bad.action_id, mock_executor, manifest=manifest_validated)
+        await saga.commit_write(action_bad.action_id, mock_executor, manifest=manifest_validated,
+                                auth_context=AuthorizationContext())
     assert "must start with TRK-" in str(exc_info.value)
     assert not executor_called, "Executor must not be called when validate_args fails"
 
     # Case B: Valid args -> succeeds
     action_good = saga.stage_write("load_cargo", {"truck_id": "TRK-900", "payload_kg": 5000})
-    res = await saga.commit_write(action_good.action_id, mock_executor, manifest=manifest_validated)
+    res = await saga.commit_write(action_good.action_id, mock_executor, manifest=manifest_validated,
+                                  auth_context=AuthorizationContext())
     assert executor_called
     assert res == {"loaded": True}
     assert action_good.state == ActionState.COMMITTED
@@ -412,7 +412,8 @@ async def test_08_validate_args_blocks_dispatch_before_execution():
     # Case C: Manifest without validate_args is completely unaffected
     executor_called = False
     action_raw = saga.stage_write("load_cargo_raw", {"truck_id": "ANYTHING", "payload_kg": 999999})
-    res_raw = await saga.commit_write(action_raw.action_id, mock_executor, manifest=manifest_unvalidated)
+    res_raw = await saga.commit_write(action_raw.action_id, mock_executor, manifest=manifest_unvalidated,
+                                      auth_context=AuthorizationContext())
     assert executor_called
     assert res_raw == {"loaded": True}
     assert action_raw.state == ActionState.COMMITTED
@@ -480,6 +481,7 @@ async def test_09_placement_verification_denied_action_remains_pending():
             manifest=manifest_conf,
             policy_engine=engine,
             confirmed=False,
+            auth_context=AuthorizationContext(),
         )
     assert action_conf.state == ActionState.PENDING, (
         f"Action state after ConfirmationRequiredError must remain PENDING, got {action_conf.state.name}"
@@ -496,6 +498,7 @@ async def test_09_placement_verification_denied_action_remains_pending():
             mock_executor,
             manifest=manifest_val,
             policy_engine=engine,
+            auth_context=AuthorizationContext(),
         )
     assert action_val.state == ActionState.PENDING, (
         f"Action state after validate_args failure must remain PENDING, got {action_val.state.name}"

@@ -106,8 +106,9 @@ Use the clean-checkout PowerShell setup in [safety-phase1.md](safety-phase1.md):
 
 Locks and attempt metadata are process-local. Durable dispatch intent, transactional
 events/CAS, ownership leases/fencing and provider-enforced operation identities
-remain required before multi-process deployment. Authorization is still optional
-and fail-open in the saga boundary. The legacy manager-wide chain still needs
+remain required before multi-process deployment. The stacked change in
+[mutation-authorization.md](mutation-authorization.md) closes optional forward-write
+authorization; authenticated operator APIs remain required. The legacy manager-wide chain still needs
 explicit task boundaries; task repair now addresses action IDs individually.
 The bool status callback needs a richer provider-specific evidence contract before
 real-provider release. Real voice confidence/revision handling and operations

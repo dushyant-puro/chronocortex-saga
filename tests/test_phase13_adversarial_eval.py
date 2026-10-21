@@ -25,6 +25,7 @@ from runtime.grounding_guard import GroundingGuard
 from runtime.persistence import FileCheckpointStore
 from runtime.policy_engine import (
     AuthorizationContext,
+    MutationApproval,
     ConfirmationRequiredError,
     PermissionDeniedError,
     PolicyEngine,
@@ -34,7 +35,6 @@ from runtime.speculative_saga import (
     ActionKind,
     ActionState,
     SagaAbortedError,
-    SpeculativeSagaManager,
     StagedAction,
     StaleEpochError,
     TurnEpochClock,
@@ -48,6 +48,8 @@ from runtime.task_engine import (
 )
 from runtime.task_graph import GraphState, TaskGraph
 from runtime.tool_contract import ToolManifest
+
+from saga_test_support import SimulatedAuthorizedSaga as SpeculativeSagaManager
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +110,10 @@ class AdversarialTaskManager(TaskManager):
             executor,
             manifest=manifest,
             policy_engine=self.policy_engine,
-            auth_context=self.auth_context,
+            auth_context=(AuthorizationContext(
+                self.auth_context.granted_permissions if self.auth_context else [],
+                approval=MutationApproval.for_action(action),
+            ) if self.confirmed else self.auth_context),
             confirmed=self.confirmed,
         )
         task.step_states[idx] = StepState.IN_FLIGHT
