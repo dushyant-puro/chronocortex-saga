@@ -94,7 +94,8 @@ class TaskGraph:
             return GraphState.COMPLETED
         if any(s == TaskState.COMPLETED for s in states):
             return GraphState.PARTIALLY_COMPLETED
-        if any(s in (TaskState.RUNNING, TaskState.WAITING_FOR_GROUNDING, TaskState.REPLANNING) for s in states):
+        if any(s in (TaskState.RUNNING, TaskState.WAITING_FOR_GROUNDING, TaskState.REPLANNING,
+                     TaskState.NEEDS_RECONCILIATION, TaskState.WAITING_FOR_AUTHORIZATION) for s in states):
             return GraphState.RUNNING
         return GraphState.CREATED
 

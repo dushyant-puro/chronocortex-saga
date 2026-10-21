@@ -739,10 +739,8 @@ async def test_6g_checkpoint_round_trip():
 async def test_6h_in_flight_unknown_stalls_not_fails():
     """
     When a step's executor times out (producing IN_FLIGHT_UNKNOWN in the
-    saga), the task should become FAILED with appropriate error — the task
-    engine propagates TimeoutError as a step failure, which is correct
-    because IN_FLIGHT_UNKNOWN means we don't know if the mutation happened
-    and cannot safely advance to the next step.
+    saga), the task must park without claiming failure or compensating
+    prior progress: the remote mutation may already have happened.
     """
     clock = TurnEpochClock()
     saga = SpeculativeSagaManager(clock)
@@ -794,11 +792,9 @@ async def test_6h_in_flight_unknown_stalls_not_fails():
     task2 = tm2.create_task("timeout_test2", steps)
     result = await tm2.run_task(task2.task_id)
 
-    # Task should be FAILED (TimeoutError caught) — not COMPLETED
-    assert result.state == TaskState.FAILED
+    assert result.state == TaskState.NEEDS_RECONCILIATION
     assert result.step_states[0] == StepState.COMMITTED  # step_a succeeded
-    # Step 1 should be FAILED (TimeoutError)
-    assert result.step_states[1] == StepState.FAILED
+    assert result.step_states[1] == StepState.NEEDS_RECONCILIATION
     assert "step_timeout" in result.error
 
 

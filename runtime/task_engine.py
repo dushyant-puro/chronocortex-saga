@@ -5,12 +5,10 @@ Uninterruptible Task Engine (Phase 6).
 
 Core principle: "voice turn != task."
 A task is a multi-step unit of work that can span many conversational turns
-and many epoch advances. An epoch advance (barge-in, self-correction) must
-NEVER by itself cancel, pause, or corrupt a running task. Only three things
-may change a task's lifecycle:
-  1. Explicit user cancellation ("stop", "cancel that")
-  2. Normal task completion (all steps committed)
-  3. Unrecoverable failure (step failure after compensation)
+and many epoch advances. An epoch advance must not erase task identity or
+discard remote-effect evidence. Tasks may wait for grounding, authorization,
+or reconciliation before continuing. Completion requires committed action
+evidence; explicit cancellation records user intent, not remote rollback.
 
 Every task step dispatches through the EXISTING SpeculativeSagaManager.
 The task engine is purely an orchestration layer on top — it is NOT a
@@ -37,6 +35,7 @@ from enum import Enum, auto
 from typing import Any, Awaitable, Callable, Optional
 
 from runtime.persistence import CheckpointStore
+from runtime.policy_engine import ConfirmationRequiredError, PermissionDeniedError
 from runtime.speculative_saga import (
     ActionKind,
     ActionState,
@@ -64,6 +63,8 @@ class TaskState(Enum):
     COMPLETED = auto()               # all steps successfully committed
     FAILED = auto()                  # unrecoverable step failure (after compensation)
     CANCELLED = auto()               # user explicitly cancelled
+    NEEDS_RECONCILIATION = auto()    # remote effect or stale intent still needs resolution
+    WAITING_FOR_AUTHORIZATION = auto()  # no dispatch until caller supplies confirmation
 
 
 class StepState(Enum):
@@ -178,6 +179,7 @@ class TaskManager:
         self.on_task_replanned = on_task_replanned
         self._tasks: dict[str, Task] = {}
         self._evicted_fields: set[str] = set()
+        self._run_locks: dict[str, asyncio.Lock] = {}
 
     # ---- task creation --------------------------------------------------
 
@@ -279,7 +281,8 @@ class TaskManager:
             idx = task.current_step_index
             if idx < len(task.steps):
                 step = task.steps[idx]
-                if field_name in step.required_fields:
+                if (field_name in step.required_fields and task.step_states[idx] in
+                        (StepState.PENDING, StepState.WAITING_FOR_GROUNDING)):
                     task.step_states[idx] = StepState.WAITING_FOR_GROUNDING
                     task.state = TaskState.WAITING_FOR_GROUNDING
                     logger.info(
@@ -383,6 +386,8 @@ class TaskManager:
             idx = task.current_step_index
             if idx >= len(task.steps):
                 continue
+            if task.step_states[idx] != StepState.WAITING_FOR_GROUNDING:
+                continue
             step = task.steps[idx]
             if self._check_fields_resolved(step):
                 task.step_states[idx] = StepState.PENDING
@@ -400,6 +405,39 @@ class TaskManager:
     # ---- task execution -------------------------------------------------
 
     async def run_task(self, task_id: str) -> Task:
+        """Serialize run/resume for one task within this process (not a lease)."""
+        lock = self._run_locks.setdefault(task_id, asyncio.Lock())
+        async with lock:
+            return await self._run_task(task_id)
+
+    def _park_step(self, task: Task, idx: int, reason: str) -> None:
+        """Preserve operation identity and prior progress; never guess remote failure."""
+        task.step_states[idx] = StepState.NEEDS_RECONCILIATION
+        action = self._saga._actions.get(task.step_action_ids[idx])
+        if action is not None:
+            task.step_results[idx] = action.result
+        if task.state != TaskState.CANCELLED:
+            task.state = TaskState.NEEDS_RECONCILIATION
+            task.completed_at = None
+        task.error = f"step {idx} ({task.steps[idx].tool_name}): {reason}"
+        self._save_checkpoint(task)
+
+    def _accept_step_result(self, task: Task, idx: int) -> bool:
+        """A return value is not a commit receipt. Consult the action ledger."""
+        action = self._saga._actions.get(task.step_action_ids[idx])
+        if (task.state == TaskState.CANCELLED or action is None or
+                action.state != ActionState.COMMITTED):
+            state = action.state.name if action is not None else "MISSING_ACTION"
+            self._park_step(task, idx, f"action outcome {state}; reconciliation or repair required")
+            return False
+        task.step_results[idx] = action.result
+        task.step_states[idx] = StepState.COMMITTED
+        task.current_step_index += 1
+        task.error = None
+        self._save_checkpoint(task)
+        return True
+
+    async def _run_task(self, task_id: str) -> Task:
         """
         Execute a task's steps sequentially. Each step dispatches through
         the existing SpeculativeSagaManager.
@@ -408,11 +446,11 @@ class TaskManager:
         at WAITING_FOR_GROUNDING and returns. The caller should call
         resume_task() after re-grounding.
 
-        On step failure: compensates all previously committed steps in reverse
-        order (via saga.abort_chain_from) and sets task state to FAILED.
+        Known failures use the existing task compensation path. Uncertain or
+        stale action outcomes park without automatically undoing prior work.
         """
         task = self._tasks[task_id]
-        if task.state == TaskState.CANCELLED:
+        if task.state in (TaskState.CANCELLED, TaskState.COMPLETED, TaskState.FAILED):
             return task
         task.state = TaskState.RUNNING
 
@@ -431,12 +469,8 @@ class TaskManager:
                 action_id = task.step_action_ids[idx]
                 status_check = step.status_check
 
-                if action_id is None or status_check is None:
-                    task.step_states[idx] = StepState.FAILED
-                    task.state = TaskState.FAILED
-                    task.error = f"step {idx} ({step.tool_name}) NEEDS_RECONCILIATION but action_id or status_check is missing"
-                    task.completed_at = time.monotonic()
-                    self._save_checkpoint(task)
+                if action_id is None:
+                    self._park_step(task, idx, "missing original action identity")
                     return task
 
                 # Ensure action exists in saga so reconcile_write can be called on it
@@ -447,36 +481,31 @@ class TaskManager:
                         kind=ActionKind.STAGED_WRITE,
                         tool_name=step.tool_name,
                         args=task.step_dispatched_args[idx] or {},
-                        capture_epoch=self._saga.epoch_clock.current,
+                        # A restored process's clock does not establish the original
+                        # intent's validity. Legacy checkpoints lack that evidence.
+                        capture_epoch=-1,
+                        superseded_epoch=-1,
                         idempotency_key=action_id,
                         compensate=step.compensate,
                         state=ActionState.IN_FLIGHT_UNKNOWN,
                     )
                     self._saga._actions[action_id] = action
+                    self._saga._ikey_index[action.idempotency_key] = action_id
 
                 try:
-                    await self._saga.reconcile_write(action_id, status_check)
-                    action = self._saga._actions.get(action_id)
-                    if action and action.state in (ActionState.COMMITTED, ActionState.COMMITTED_STALE):
-                        task.step_states[idx] = StepState.COMMITTED
-                        task.step_results[idx] = action.result
-                        task.current_step_index += 1
-                        self._save_checkpoint(task)
-                        logger.info("reconciled step %d (%s) -> COMMITTED", idx, step.tool_name)
+                    if action.state in (ActionState.IN_FLIGHT_UNKNOWN, ActionState.COMMITTED_STALE):
+                        if status_check is None:
+                            self._park_step(task, idx, "status checker unavailable")
+                            return task
+                        await self._saga.reconcile_write(action_id, status_check)
+                    if self._accept_step_result(task, idx):
                         continue
-                    else:
-                        task.step_states[idx] = StepState.FAILED
-                        task.state = TaskState.FAILED
-                        task.error = f"reconciliation for step {idx} ({step.tool_name}) failed"
-                        task.completed_at = time.monotonic()
-                        self._save_checkpoint(task)
-                        return task
+                    return task
+                except asyncio.CancelledError:
+                    self._park_step(task, idx, "reconciliation cancelled; outcome unresolved")
+                    raise
                 except Exception as exc:
-                    task.step_states[idx] = StepState.FAILED
-                    task.state = TaskState.FAILED
-                    task.error = f"reconciliation error for step {idx} ({step.tool_name}): {exc}"
-                    task.completed_at = time.monotonic()
-                    self._save_checkpoint(task)
+                    self._park_step(task, idx, f"status check failed ({type(exc).__name__})")
                     return task
 
             # Check required fields are grounded
@@ -503,19 +532,34 @@ class TaskManager:
             # Dispatch through saga
             try:
                 if step.kind == "write":
-                    result = await self._dispatch_write_step(task, idx, step, args)
+                    await self._dispatch_write_step(task, idx, step, args)
                 else:
-                    result = await self._dispatch_read_step(task, idx, step, args)
+                    await self._dispatch_read_step(task, idx, step, args)
 
-                task.step_results[idx] = result
-                task.step_states[idx] = StepState.COMMITTED
-                task.current_step_index += 1
-                self._save_checkpoint(task)
+                if not self._accept_step_result(task, idx):
+                    return task
                 logger.info(
                     "task %s step %d (%s) committed",
                     task.task_id, idx, step.tool_name,
                 )
 
+            except ConfirmationRequiredError:
+                task.step_states[idx] = StepState.PENDING
+                task.state = TaskState.WAITING_FOR_AUTHORIZATION
+                self._save_checkpoint(task)
+                raise
+            except PermissionDeniedError as exc:
+                # Denial is not a provider failure and cannot justify undoing
+                # unrelated, previously authorized effects.
+                task.step_states[idx] = StepState.FAILED
+                task.state = TaskState.FAILED
+                task.error = str(exc)
+                self._save_checkpoint(task)
+                raise
+            except asyncio.CancelledError:
+                if step.kind == "write" and task.step_action_ids[idx] is not None:
+                    self._park_step(task, idx, "runner cancelled after possible dispatch")
+                raise
             except StaleEpochError:
                 # Epoch advanced before dispatch — NOT a task failure.
                 # Re-check grounding and retry the same step.
@@ -533,6 +577,12 @@ class TaskManager:
                 continue
 
             except (SagaAbortedError, DuplicateOperationError, asyncio.TimeoutError) as exc:
+                action = self._saga._actions.get(task.step_action_ids[idx])
+                if action is not None and action.state in (
+                        ActionState.IN_FLIGHT, ActionState.IN_FLIGHT_UNKNOWN,
+                        ActionState.COMMITTED_STALE, ActionState.COMPENSATED):
+                    self._park_step(task, idx, f"unresolved action ({type(exc).__name__})")
+                    return task
                 # Unrecoverable step failure
                 task.step_states[idx] = StepState.FAILED
                 task.state = TaskState.FAILED
@@ -548,6 +598,10 @@ class TaskManager:
                 return task
 
             except Exception as exc:  # noqa: BLE001
+                action = self._saga._actions.get(task.step_action_ids[idx])
+                if action is not None and action.state == ActionState.IN_FLIGHT_UNKNOWN:
+                    self._park_step(task, idx, f"unresolved action ({type(exc).__name__})")
+                    return task
                 task.step_states[idx] = StepState.FAILED
                 task.state = TaskState.FAILED
                 task.error = f"step {idx} ({step.tool_name}): {exc}"
@@ -572,19 +626,18 @@ class TaskManager:
 
     async def resume_task(self, task_id: str) -> Task:
         """
-        Resume a WAITING_FOR_GROUNDING task. Delegates to run_task().
+        Resume a parked task without resetting its step/action evidence.
         """
         task = self._tasks[task_id]
-        if task.state not in (TaskState.WAITING_FOR_GROUNDING, TaskState.RUNNING):
+        if task.state not in (TaskState.WAITING_FOR_GROUNDING, TaskState.RUNNING,
+                              TaskState.NEEDS_RECONCILIATION, TaskState.WAITING_FOR_AUTHORIZATION):
             logger.warning(
                 "resume_task called on task %s in state %s — no-op",
                 task_id, task.state.name,
             )
             return task
-        task.state = TaskState.RUNNING
-        idx = task.current_step_index
-        if idx < len(task.steps):
-            task.step_states[idx] = StepState.PENDING
+        # run_task owns serialization and must see the original step/action
+        # state. In particular, never reset NEEDS_RECONCILIATION or IN_FLIGHT.
         return await self.run_task(task_id)
 
     # ---- cancellation ---------------------------------------------------
@@ -716,14 +769,17 @@ class TaskManager:
         args: dict[str, Any],
     ) -> Any:
         """Stage and commit a write through the existing saga manager."""
-        action = self._saga.stage_write(
-            step.tool_name,
-            args,
-            compensate=step.compensate,
-        )
+        executor = self._get_executor(step)
+        action = self._saga._actions.get(task.step_action_ids[idx])
+        if action is not None and action.state == ActionState.PENDING:
+            if action.args != args or action.tool_name != step.tool_name:
+                self._saga.abort_write(action.action_id)
+                action = None
+        if action is None or action.state == ActionState.ABORTED:
+            action = self._saga.stage_write(step.tool_name, args, compensate=step.compensate)
         task.step_action_ids[idx] = action.action_id
         task.step_states[idx] = StepState.IN_FLIGHT
-        result = await self._saga.commit_write(action.action_id, self._get_executor(step))
+        result = await self._saga.commit_write(action.action_id, executor)
         return result
 
     async def _dispatch_read_step(

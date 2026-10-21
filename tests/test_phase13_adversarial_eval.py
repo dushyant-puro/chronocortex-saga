@@ -133,121 +133,6 @@ class AdversarialTaskManager(TaskManager):
             return action.result
         raise SagaAbortedError(f"read {step.tool_name} did not commit")
 
-    async def run_task(self, task_id: str) -> Task:
-        task = self._tasks[task_id]
-        if task.state == TaskState.CANCELLED:
-            return task
-        task.state = TaskState.RUNNING
-
-        while task.current_step_index < len(task.steps):
-            if task.state == TaskState.CANCELLED:
-                for i in range(task.current_step_index, len(task.steps)):
-                    task.step_states[i] = StepState.SKIPPED
-                return task
-
-            idx = task.current_step_index
-            step = task.steps[idx]
-
-            # NEEDS_RECONCILIATION check
-            if task.step_states[idx] == StepState.NEEDS_RECONCILIATION:
-                action_id = task.step_action_ids[idx]
-                status_check = step.status_check
-                if action_id is None or status_check is None:
-                    task.step_states[idx] = StepState.FAILED
-                    task.state = TaskState.FAILED
-                    task.error = f"step {idx} ({step.tool_name}) NEEDS_RECONCILIATION missing status_check"
-                    self._save_checkpoint(task)
-                    return task
-
-                # Ensure action exists in saga so reconcile_write can be called on it
-                action = self._saga._actions.get(action_id)
-                if action is None:
-                    action = StagedAction(
-                        action_id=action_id,
-                        kind=ActionKind.STAGED_WRITE,
-                        tool_name=step.tool_name,
-                        args=task.step_dispatched_args[idx] or {},
-                        capture_epoch=self._saga.epoch_clock.current,
-                        idempotency_key=action_id,
-                        compensate=step.compensate,
-                        state=ActionState.IN_FLIGHT_UNKNOWN,
-                    )
-                    self._saga._actions[action_id] = action
-
-                await self._saga.reconcile_write(action_id, status_check)
-                action = self._saga._actions.get(action_id)
-                if action and action.state in (ActionState.COMMITTED, ActionState.COMMITTED_STALE):
-                    task.step_states[idx] = StepState.COMMITTED
-                    task.step_results[idx] = action.result
-                    task.current_step_index += 1
-                    self._save_checkpoint(task)
-                    continue
-                else:
-                    task.step_states[idx] = StepState.FAILED
-                    task.state = TaskState.FAILED
-                    self._save_checkpoint(task)
-                    return task
-
-            # Grounding check
-            if not self._check_fields_resolved(step):
-                task.step_states[idx] = StepState.WAITING_FOR_GROUNDING
-                task.state = TaskState.WAITING_FOR_GROUNDING
-                self._save_checkpoint(task)
-                return task
-
-            args = step.build_args(task, idx) if step.build_args else {}
-            task.step_dispatched_args[idx] = dict(args)
-
-            try:
-                if step.kind == "write":
-                    result = await self._dispatch_write_step(task, idx, step, args)
-                else:
-                    result = await self._dispatch_read_step(task, idx, step, args)
-                task.step_results[idx] = result
-                task.step_states[idx] = StepState.COMMITTED
-                task.current_step_index += 1
-                self._save_checkpoint(task)
-
-            except ConfirmationRequiredError:
-                # Confirmation requirement: action remains PENDING.
-                # Task remains RUNNING / resumable pending operator confirmation.
-                # Prior committed steps are preserved (NOT compensated).
-                task.step_states[idx] = StepState.PENDING
-                self._save_checkpoint(task)
-                raise
-
-            except PermissionDeniedError as exc:
-                # Permission denial: security violation halts the task.
-                task.step_states[idx] = StepState.FAILED
-                task.state = TaskState.FAILED
-                task.error = str(exc)
-                self._save_checkpoint(task)
-                raise
-
-            except StaleEpochError:
-                if not self._check_fields_resolved(step):
-                    task.step_states[idx] = StepState.WAITING_FOR_GROUNDING
-                    task.state = TaskState.WAITING_FOR_GROUNDING
-                    self._save_checkpoint(task)
-                    return task
-                continue
-
-            except Exception as exc:
-                task.step_states[idx] = StepState.FAILED
-                task.state = TaskState.FAILED
-                task.error = f"step {idx} ({step.tool_name}): {exc}"
-                task.completed_at = time.monotonic()
-                await self._compensate_committed_steps(task, idx)
-                self._save_checkpoint(task)
-                return task
-
-        task.state = TaskState.COMPLETED
-        task.completed_at = time.monotonic()
-        self._save_checkpoint(task)
-        if getattr(task, "_replanning_fields", None):
-            self._notify_task_replanned(task)
-            task._replanning_fields.clear()
-        return task
 
 
 # ===========================================================================
@@ -268,7 +153,7 @@ async def test_1a_full_fleet_scenario_with_policy_gate():
     1. Dispatch with confirmed=False:
        - ConfirmationRequiredError surfaces cleanly.
        - Action remains PENDING (Phase 12 placement guarantee).
-       - Steps 0-2 remain COMMITTED; step 3 remains PENDING; task remains RUNNING.
+           - Steps 0-2 remain COMMITTED; step 3 remains PENDING; task waits for authorization.
        - Reroute executor was called 0 times.
     2. Re-dispatch with confirmed=True:
        - Task resumes and completes all 5 steps to COMPLETED.
@@ -340,7 +225,7 @@ async def test_1a_full_fleet_scenario_with_policy_gate():
         await tm.run_task(task.task_id)
 
     # Verify task state is NOT corrupted:
-    assert task.state == TaskState.RUNNING, f"Task should remain RUNNING, got {task.state.name}"
+    assert task.state == TaskState.WAITING_FOR_AUTHORIZATION
     assert task.step_states[0] == StepState.COMMITTED
     assert task.step_states[1] == StepState.COMMITTED
     assert task.step_states[2] == StepState.COMMITTED
@@ -579,7 +464,8 @@ async def test_1d_in_flight_unknown_across_restart_inside_graph():
     After restore from FileCheckpointStore:
       - Task A's step is NEEDS_RECONCILIATION.
       - Graph does NOT auto-retry without reconciliation.
-      - Explicit reconcile_write resolves it, after which graph proceeds to COMPLETED.
+          - A positive status establishes the effect, not the validity of the
+            restored intent. Downstream tasks stay blocked pending repair.
     """
     with tempfile.TemporaryDirectory() as tmpdir:
         store = FileCheckpointStore(tmpdir)
@@ -672,9 +558,10 @@ async def test_1d_in_flight_unknown_across_restart_inside_graph():
         final_state = await graph2.run(tm2)
 
         assert reconcile_called, "Explicit status_check reconciliation must have been called"
-        assert restored_a.state == TaskState.COMPLETED
-        assert restored_a.step_states[0] == StepState.COMMITTED
-        assert restored_b.state == TaskState.COMPLETED
-        assert b_executed, "Downstream Task B must have dispatched after Task A reconciled"
-        assert final_state == GraphState.COMPLETED
-        print("\n[SCENARIO 1d VERIFICATION] Process restart verified: NEEDS_RECONCILIATION -> explicit reconcile_write -> Graph COMPLETED.")
+        assert restored_a.state == TaskState.NEEDS_RECONCILIATION
+        assert restored_a.step_states[0] == StepState.NEEDS_RECONCILIATION
+        assert restored_a.step_action_ids[0] == "write-action-proc1"
+        assert restored_a.step_results[0] == {"verified": True}
+        assert restored_b.state == TaskState.PENDING
+        assert not b_executed, "No dependent dispatch without verified current intent"
+        assert final_state == GraphState.RUNNING
