@@ -18,6 +18,7 @@ from runtime.speculative_saga import (
 from runtime.task_engine import TaskManager, TaskStep, TaskState, StepState
 from runtime.tool_contract import ToolManifest, ToolRegistry
 from tests.lease_test_support import shared_test_journal
+from tests.workflow_test_support import VersionedTestTasks
 
 
 def saga_at(path=None):
@@ -29,7 +30,7 @@ def saga_at(path=None):
                                   simulation=path is None)
 
 
-class Tasks(TaskManager):
+class Tasks(VersionedTestTasks, TaskManager):
     def _get_executor(self, step):
         async def execute(args):
             return dict(args)
@@ -420,8 +421,9 @@ def test_v1_migration_is_explicit_preserves_keys_and_fences_old_versions(tmp_pat
         assert [record["generation"] for _, record in records] == [0, 1]
         assert journal.load_task(owner)[1]["step_generations"] == [1]
         saga = saga_at(path)
-        restored = Tasks(saga, lambda _: None).restore_task(owner, steps=[TaskStep("change")])
-        assert restored.step_generations == [1] and restored.state == TaskState.NEEDS_RECONCILIATION
+        with pytest.raises(JournalError, match="workflow"):
+            Tasks(saga, lambda _: None).restore_task(owner, steps=[TaskStep("change")])
+        assert saga.journal.load_task(owner)[1]["step_generations"] == [1]
     else:
         assert records[0][1]["chain_id"] == "legacy:legacy-0"
         assert records[0][1]["generation"] is None
@@ -489,7 +491,9 @@ async def test_process_exit_during_replan_never_completes_or_replays(tmp_path, w
     saga = saga_at(path)
     record = saga.journal.records()[0][1]
     tasks = Tasks(saga, lambda _: pytest.fail("replayed"))
-    task = tasks.restore_task(record["task_id"], steps=[TaskStep("change")])
+    async def matching_undo(result):
+        pytest.fail("recovered compensation must not replay")
+    task = tasks.restore_task(record["task_id"], steps=[TaskStep("change", compensate=matching_undo)])
     assert task.state == TaskState.NEEDS_RECONCILIATION
     assert task.step_generations == [generation]
     await tasks.resume_task(task.task_id)

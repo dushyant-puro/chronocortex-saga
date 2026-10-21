@@ -16,6 +16,7 @@ from runtime.policy_engine import AuthorizationContext
 from runtime.speculative_saga import ActionState, CompensationState, SpeculativeSagaManager, TurnEpochClock
 from runtime.tool_contract import ToolManifest, ToolRegistry
 from runtime.task_engine import TaskManager, TaskStep, TaskState
+from tests.workflow_test_support import VersionedTestTasks
 
 
 class Clock:
@@ -68,7 +69,7 @@ async def test_task_parks_when_lease_expires_after_effect(tmp_path):
         clock.now += 10
         return {"id": "SIMULATED:applied"}
 
-    class Tasks(TaskManager):
+    class Tasks(VersionedTestTasks, TaskManager):
         def _get_executor(self, step):
             return execute
 
@@ -374,7 +375,7 @@ def test_schema2_migration_is_explicit_and_preserves_unresolved_claims(tmp_path)
     assert journal.records() == before and journal.worker_events() == []
     with closing(sqlite3.connect(path)) as db:
         assert db.execute("SELECT count(*) FROM key_claims").fetchone()[0] == 1
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 4
     with pytest.raises(JournalLeaseError):
         journal.close_chain(before[0][1]["chain_id"])
     journal.acquire_lease("new")

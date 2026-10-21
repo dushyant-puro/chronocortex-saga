@@ -12,6 +12,7 @@ from runtime.speculative_saga import SpeculativeSagaManager, TurnEpochClock
 from runtime.tool_contract import ToolManifest, ToolRegistry
 from runtime.task_engine import TaskManager, TaskStep
 from tests.lease_test_support import shared_test_journal
+from tests.workflow_test_support import VersionedTestTasks
 
 
 async def run():
@@ -58,7 +59,7 @@ async def run():
     saga = SpeculativeSagaManager(TurnEpochClock(), auth_context=AuthorizationContext(),
                                   journal=shared_test_journal(path, CrashJournal), registry=registry)
     if window.startswith("replan_"):
-        class Tasks(TaskManager):
+        class Tasks(VersionedTestTasks, TaskManager):
             def _get_executor(self, step):
                 return execute
 
