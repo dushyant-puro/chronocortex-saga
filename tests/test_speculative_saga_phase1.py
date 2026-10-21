@@ -427,14 +427,14 @@ async def test_11_two_step_chain_compensation_order():
     comp2 = await make_compensate("step2")
 
     # Step 1: commit successfully
-    action1 = saga.stage_write("tool_k1", {"step": 1}, compensate=comp1, idempotency_key="k11")
+    action1 = saga.stage_write("tool_k1", {"step": 1}, compensate=comp1, idempotency_key="k11", chain_id="test-chain")
     result1 = await saga.commit_write(action1.action_id, _instant_executor)
     assert action1.state == ActionState.COMMITTED
 
-    # Step 2: commit successfully
-    action2 = saga.stage_write("tool_k2", {"step": 2}, compensate=comp2, idempotency_key="k12")
-    result2 = await saga.commit_write(action2.action_id, _instant_executor)
-    assert action2.state == ActionState.COMMITTED
+    # Step 2: abort before dispatch; an applied descendant cannot be skipped.
+    action2 = saga.stage_write("tool_k2", {"step": 2}, compensate=comp2, idempotency_key="k12", chain_id="test-chain")
+    saga.abort_write(action2.action_id)
+    assert action2.state == ActionState.ABORTED
 
     # Simulate a downstream failure — unwind the chain from step 2
     await saga.abort_chain_from(action2.action_id)

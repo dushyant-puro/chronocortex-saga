@@ -23,9 +23,9 @@ class JournalDuplicate(JournalError):
 
 
 _APP_ID = 0x43435341
-_VERSION = 1
+_VERSION = 2
 _IDENTITY = ("action_id", "tool_name", "args", "digest", "idempotency_key",
-             "capture_epoch", "session_id", "task_id", "step_index")
+             "capture_epoch", "session_id", "task_id", "step_index", "generation", "chain_id")
 _TRANSITIONS = {
     "PENDING": {"PENDING", "IN_FLIGHT", "IN_FLIGHT_UNKNOWN", "COMMITTED_STALE", "ABORTED"},
     "IN_FLIGHT": {"IN_FLIGHT", "IN_FLIGHT_UNKNOWN", "COMMITTED", "COMMITTED_STALE", "ABORTED"},
@@ -52,14 +52,14 @@ def _json(value: Any) -> str:
 
 
 class SQLiteActionJournal:
-    """Schema v1; rollback journal + synchronous EXTRA on every connection.
+    """Schema v2; rollback journal + synchronous EXTRA on every connection.
 
     Use a local disk with reliable locking/flush semantics and protect its ACLs.
     The database contains request/result data. Do not place it on a share or
     delete its sidecars. Connections/transactions never span provider awaits.
     """
 
-    def __init__(self, path: str | Path, *, timeout: float = 0.25):
+    def __init__(self, path: str | Path, *, timeout: float = 0.25, migrate: bool = False):
         if not str(path) or str(path) == ":memory:" or str(path).startswith("file:"):
             raise JournalError("A file-backed journal path is required")
         self.path = Path(path).resolve()
@@ -75,18 +75,105 @@ class SQLiteActionJournal:
                     db.execute("CREATE TABLE events (seq INTEGER PRIMARY KEY AUTOINCREMENT, action_id TEXT NOT NULL REFERENCES actions(action_id), version INTEGER NOT NULL, kind TEXT NOT NULL, record TEXT NOT NULL, created_utc TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), UNIQUE(action_id,version))")
                     db.execute("CREATE TABLE task_checkpoints (task_id TEXT PRIMARY KEY, version INTEGER NOT NULL, checkpoint TEXT NOT NULL)")
                     db.execute("CREATE TABLE task_events (seq INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL REFERENCES task_checkpoints(task_id), version INTEGER NOT NULL, checkpoint TEXT NOT NULL, UNIQUE(task_id,version))")
+                    self._create_ownership_tables(db)
                     db.execute(f"PRAGMA application_id={_APP_ID}")
                     db.execute(f"PRAGMA user_version={_VERSION}")
+                elif version == 1 and app_id == _APP_ID and migrate is True:
+                    self._migrate_v1(db)
                 elif version != _VERSION or app_id != _APP_ID:
                     raise JournalError("Unsupported or foreign journal schema; explicit migration required")
                 if db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
                     raise JournalError("Journal integrity check failed")
-                required = {"actions", "key_claims", "events", "task_checkpoints", "task_events"}
+                required = {"actions", "key_claims", "events", "task_checkpoints", "task_events",
+                            "chains", "operation_slots", "chain_events"}
                 present = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
                 if not required <= present:
                     raise JournalError("Journal schema tables are missing")
         except sqlite3.Error as exc:
             raise JournalError("Cannot initialize journal") from exc
+
+    @staticmethod
+    def _create_ownership_tables(db):
+        db.execute("CREATE TABLE chains (chain_id TEXT PRIMARY KEY, task_id TEXT, status TEXT NOT NULL CHECK(status IN ('OPEN','CLOSED')))")
+        db.execute("CREATE TABLE operation_slots (task_id TEXT NOT NULL, step_index INTEGER NOT NULL, generation INTEGER NOT NULL, action_id TEXT NOT NULL UNIQUE REFERENCES actions(action_id), PRIMARY KEY(task_id,step_index,generation))")
+        db.execute("CREATE TABLE chain_events (seq INTEGER PRIMARY KEY AUTOINCREMENT, chain_id TEXT NOT NULL REFERENCES chains(chain_id), kind TEXT NOT NULL)")
+
+    @staticmethod
+    def _resolved(record):
+        return (record["state"] in {"ABORTED", "COMPENSATED"} and
+                record["compensation_state"] in {"NOT_STARTED", "SUCCEEDED"})
+
+    @staticmethod
+    def _validate_ownership(record):
+        try:
+            owner, idx, generation, chain = (record[key] for key in
+                                             ("task_id", "step_index", "generation", "chain_id"))
+            if type(chain) is not str or not chain:
+                raise JournalError("Invalid chain identity")
+            if owner is None:
+                if idx is not None or generation is not None or chain.startswith("task:"):
+                    raise JournalError("Partial or reserved task ownership")
+            elif (type(owner) is not str or not owner or type(idx) is not int or idx < 0 or
+                  type(generation) is not int or generation < 0 or chain != f"task:{owner}"):
+                raise JournalError("Invalid task operation identity")
+        except KeyError as exc:
+            raise JournalError("Missing ownership fields") from exc
+
+    @staticmethod
+    def _precedes(before, before_position, after, after_position):
+        if before["task_id"] is not None:
+            return (before["step_index"], before["generation"]) < (after["step_index"], after["generation"])
+        return before_position < after_position
+
+    @staticmethod
+    def _task_projection_guard(db, record):
+        if record["task_id"] is None:
+            return
+        row = db.execute("SELECT checkpoint FROM task_checkpoints WHERE task_id=?", (record["task_id"],)).fetchone()
+        if row is not None:
+            cp = json.loads(row[0])
+            idx = record["step_index"]
+            if (cp["state"] in {"CANCELLED", "FAILED", "COMPLETED"} or
+                    not 0 <= idx < len(cp["step_generations"]) or
+                    cp["step_generations"][idx] != record["generation"]):
+                raise JournalError("Task projection does not authorize this active generation")
+
+    def _migrate_v1(self, db):
+        """Offline, opt-in migration; preserve old events/keys and fence old versions."""
+        self._create_ownership_tables(db)
+        previous = {}
+        for action_id, version, payload in db.execute("SELECT action_id,version,record FROM actions ORDER BY rowid").fetchall():
+            record = json.loads(payload)
+            owner = record["task_id"]
+            slot = (owner, record["step_index"])
+            if owner is not None:
+                if (type(owner) is not str or not owner or
+                        type(record["step_index"]) is not int or record["step_index"] < 0):
+                    raise JournalError("Legacy action has invalid task ownership")
+                prior = previous.get(slot)
+                if prior is not None and not self._resolved(prior):
+                    raise JournalError("Legacy task slot has unresolved overlapping operations; manual audit required")
+                record["generation"] = 0 if prior is None else prior["generation"] + 1
+                record["chain_id"] = f"task:{owner}"
+                previous[slot] = record
+            else:
+                record["generation"] = None
+                record["chain_id"] = f"legacy:{action_id}"
+            db.execute("INSERT OR IGNORE INTO chains VALUES (?,?, 'OPEN')", (record["chain_id"], owner))
+            if owner is not None:
+                db.execute("INSERT INTO operation_slots VALUES (?,?,?,?)", (*slot, record["generation"], action_id))
+            updated = _json(record)
+            db.execute("UPDATE actions SET version=?,record=? WHERE action_id=?", (version + 1, updated, action_id))
+            db.execute("INSERT INTO events(action_id,version,kind,record) VALUES (?,?,?,?)", (action_id, version + 1, "SCHEMA_V2_IDENTITY", updated))
+        for task_id, version, payload in db.execute("SELECT task_id,version,checkpoint FROM task_checkpoints").fetchall():
+            cp = json.loads(payload)
+            cp["step_generations"] = [previous.get((task_id, idx), {}).get("generation", 0)
+                                      for idx in range(len(cp["step_states"]))]
+            cp["replan_from"] = 0 if cp["state"] == "REPLANNING" else None
+            updated = _json(cp)
+            db.execute("UPDATE task_checkpoints SET version=?,checkpoint=? WHERE task_id=?", (version + 1, updated, task_id))
+            db.execute("INSERT INTO task_events(task_id,version,checkpoint) VALUES (?,?,?)", (task_id, version + 1, updated))
+        db.execute(f"PRAGMA user_version={_VERSION}")
 
     @contextmanager
     def _transaction(self, *, initialize=False):
@@ -119,21 +206,71 @@ class SQLiteActionJournal:
                     db.close()
 
     def create(self, record: dict) -> int:
+        self._validate_ownership(record)
         payload = _json(record)
         if record["state"] != "PENDING" or record["compensation_state"] != "NOT_STARTED":
             raise JournalError("New intent must be pending with no compensation attempt")
         with self._transaction() as db:
+            self._task_projection_guard(db, record)
+            chain = db.execute("SELECT task_id,status FROM chains WHERE chain_id=?", (record["chain_id"],)).fetchone()
+            if chain is not None and (chain[0] != record["task_id"] or chain[1] != "OPEN"):
+                raise JournalError("Chain ownership mismatch or chain is closed")
+            for (member_json,) in db.execute("SELECT record FROM actions"):
+                member = json.loads(member_json)
+                if (member["chain_id"] == record["chain_id"] and
+                        member["compensation_state"] in {"IN_FLIGHT", "UNKNOWN", "NOT_APPLIED"}):
+                    raise JournalDuplicate("Chain repair is unresolved")
+            if record["task_id"] is not None:
+                slot = (record["task_id"], record["step_index"])
+                prior = db.execute("SELECT s.generation,a.record FROM operation_slots s JOIN actions a ON a.action_id=s.action_id WHERE s.task_id=? AND s.step_index=? ORDER BY s.generation DESC LIMIT 1", slot).fetchone()
+                if prior is not None:
+                    if record["generation"] <= prior[0]:
+                        raise JournalDuplicate("Task step generation already has an operation")
+                    if record["generation"] != prior[0] + 1 or not self._resolved(json.loads(prior[1])):
+                        raise JournalDuplicate("Prior task generation must be resolved before advancing")
+                elif record["generation"] != 0:
+                    raise JournalError("First task generation must be zero")
             if db.execute("SELECT 1 FROM key_claims WHERE operation_key=?", (record["idempotency_key"],)).fetchone():
                 raise JournalDuplicate("Operation key is already durably claimed")
             db.execute("INSERT INTO actions VALUES (?,?,?)", (record["action_id"], 0, payload))
+            if chain is None:
+                db.execute("INSERT INTO chains VALUES (?,?, 'OPEN')", (record["chain_id"], record["task_id"]))
+            if record["task_id"] is not None:
+                db.execute("INSERT INTO operation_slots VALUES (?,?,?,?)", (record["task_id"], record["step_index"], record["generation"], record["action_id"]))
             db.execute("INSERT INTO key_claims VALUES (?,?)", (record["idempotency_key"], record["action_id"]))
             db.execute("INSERT INTO events(action_id,version,kind,record) VALUES (?,?,?,?)",
                        (record["action_id"], 0, "STAGED", payload))
         return 0
 
     def transition(self, record: dict, expected_version: int, kind: str) -> int:
+        self._validate_ownership(record)
         payload = _json(record)
         with self._transaction() as db:
+            if kind in {"DISPATCH_INTENT", "FORWARD_COMMITTED", "RECONCILED_PRESENT"}:
+                chain = db.execute("SELECT status FROM chains WHERE chain_id=?", (record["chain_id"],)).fetchone()
+                if chain is None or chain[0] != "OPEN":
+                    raise JournalError("Chain is closed; dispatch denied")
+            if kind == "DISPATCH_INTENT":
+                self._task_projection_guard(db, record)
+                position = db.execute("SELECT rowid FROM actions WHERE action_id=?", (record["action_id"],)).fetchone()
+                if position is None:
+                    raise JournalError("Unknown dispatch action")
+                for rowid, member_json in db.execute("SELECT rowid,record FROM actions"):
+                    member = json.loads(member_json)
+                    if member["chain_id"] == record["chain_id"] and (
+                            member["compensation_state"] in {"IN_FLIGHT", "UNKNOWN", "NOT_APPLIED"} or
+                            (self._precedes(member, rowid, record, position[0]) and
+                             member["state"] not in {"COMMITTED", "ABORTED", "COMPENSATED"})):
+                        raise JournalConflict("Chain predecessor or repair is unresolved")
+            if kind == "COMPENSATION_INTENT":
+                position = db.execute("SELECT rowid FROM actions WHERE action_id=?", (record["action_id"],)).fetchone()
+                if position is None:
+                    raise JournalError("Unknown compensation action")
+                for rowid, descendant_json in db.execute("SELECT rowid,record FROM actions"):
+                    descendant = json.loads(descendant_json)
+                    if (descendant["chain_id"] == record["chain_id"] and
+                            self._precedes(record, position[0], descendant, rowid) and not self._resolved(descendant)):
+                        raise JournalConflict("Descendant operation must resolve before ancestor repair")
             row = db.execute("SELECT version,record FROM actions WHERE action_id=?", (record["action_id"],)).fetchone()
             if row is None or row[0] != expected_version:
                 raise JournalConflict("Action version changed; no dispatch or automatic retry")
@@ -153,10 +290,25 @@ class SQLiteActionJournal:
                 db.execute("DELETE FROM key_claims WHERE action_id=?", (record["action_id"],))
         return version
 
+    def close_chain(self, chain_id: str, owner_task_id: str | None = None) -> None:
+        with self._transaction() as db:
+            row = db.execute("SELECT status,task_id FROM chains WHERE chain_id=?", (chain_id,)).fetchone()
+            if row is None:
+                db.execute("INSERT INTO chains VALUES (?,?, 'CLOSED')", (chain_id, owner_task_id))
+            elif row[1] != owner_task_id:
+                raise JournalError("Chain owner mismatch")
+            if row is None or row[0] == "OPEN":
+                db.execute("UPDATE chains SET status='CLOSED' WHERE chain_id=?", (chain_id,))
+                db.execute("INSERT INTO chain_events(chain_id,kind) VALUES (?, 'CLOSED_FOR_UNWIND')", (chain_id,))
+
     def records(self) -> list[tuple[int, dict]]:
         with self._transaction() as db:
             rows = db.execute("SELECT version,record FROM actions ORDER BY rowid").fetchall()
             return [(version, json.loads(record)) for version, record in rows]
+
+    def closed_chains(self) -> set[str]:
+        with self._transaction() as db:
+            return {row[0] for row in db.execute("SELECT chain_id FROM chains WHERE status='CLOSED'")}
 
     def events(self, action_id: str) -> list[dict]:
         with self._transaction() as db:

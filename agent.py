@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -201,6 +202,7 @@ class CCSAgent:
                 continue
             by_tool.setdefault(slot.tool_name, {})[slot.field_name] = resolved_value
 
+        chain_id = f"voice:{uuid.uuid4().hex}"
         for tool_name, args in by_tool.items():
             if tool_name not in WRITE_TOOLS:
                 continue
@@ -211,21 +213,25 @@ class CCSAgent:
                 continue
                 
             forward, compensate = WRITE_TOOLS[tool_name]
-            action = self.saga.stage_write(tool_name, args, compensate=compensate)
+            action = self.saga.stage_write(tool_name, args, compensate=compensate, chain_id=chain_id)
             try:
                 result = await self.saga.commit_write(action.action_id, forward)
                 logger.info("committed %s -> %s", tool_name, result)
             except StaleEpochError:
                 logger.info("write %s superseded before dispatch — no-op", tool_name)
+                break
             except asyncio.TimeoutError:
                 logger.error("write %s IN_FLIGHT_UNKNOWN — awaiting reconciliation", tool_name)
+                break
             except PolicyError:
                 # A pre-dispatch denial is not a remote failure and never
                 # authorizes compensation of previously committed actions.
                 logger.warning("write %s awaits trusted authorization; action=%s",
                                tool_name, action.action_id)
+                break
             except JournalError:
                 logger.error("write %s requires durable recovery; action=%s", tool_name, action.action_id)
+                break
             except Exception as exc:  # noqa: BLE001
                 if action.state == ActionState.IN_FLIGHT_UNKNOWN:
                     logger.error("write %s IN_FLIGHT_UNKNOWN after %s — awaiting reconciliation",
@@ -233,6 +239,7 @@ class CCSAgent:
                 else:
                     logger.warning("write %s failed (%s) — unwinding chain", tool_name, type(exc).__name__)
                     await self.saga.abort_chain_from(action.action_id)
+                break
 
         self._pending_slots.clear()
 

@@ -9,7 +9,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from runtime.action_journal import SQLiteActionJournal
 from runtime.policy_engine import AuthorizationContext
 from runtime.speculative_saga import SpeculativeSagaManager, TurnEpochClock
-from runtime.tool_contract import ToolManifest
+from runtime.tool_contract import ToolManifest, ToolRegistry
+from runtime.task_engine import TaskManager, TaskStep
 
 
 async def run():
@@ -21,7 +22,15 @@ async def run():
             if (window, kind) in {("intent", "DISPATCH_INTENT"),
                                   ("committed", "FORWARD_COMMITTED"),
                                   ("compensation_intent", "COMPENSATION_INTENT"),
-                                  ("compensated", "COMPENSATED")}:
+                                  ("compensated", "COMPENSATED"),
+                                  ("replan_compensated", "COMPENSATED")}:
+                os._exit(23)
+            return result
+
+        def save_task(self, task_id, checkpoint, version):
+            result = super().save_task(task_id, checkpoint, version)
+            if (window == "replan_generation" and checkpoint["step_generations"] == [1]
+                    and checkpoint["replan_from"] is not None):
                 os._exit(23)
             return result
 
@@ -43,8 +52,20 @@ async def run():
         if window == "compensation_applied":
             os._exit(23)
 
+    registry = ToolRegistry()
+    registry.register(ToolManifest("change", "write"))
     saga = SpeculativeSagaManager(TurnEpochClock(), auth_context=AuthorizationContext(),
-                                  journal=CrashJournal(path))
+                                  journal=CrashJournal(path), registry=registry)
+    if window.startswith("replan_"):
+        class Tasks(TaskManager):
+            def _get_executor(self, step):
+                return execute
+
+        tasks = Tasks(saga, lambda _: None)
+        task = tasks.create_task("crash during replan", [TaskStep("change", compensate=undo)])
+        await tasks.run_task(task.task_id)
+        await tasks._replan_from_step(task, 0)
+        raise AssertionError("Replan crash window was not reached")
     action = saga.stage_write("change", {}, compensate=undo, manifest=ToolManifest("change", "write"))
     if window == "staged":
         os._exit(23)

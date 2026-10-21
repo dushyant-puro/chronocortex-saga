@@ -88,7 +88,8 @@ async def test_resume_keeps_unknown_identity_without_redispatch_or_compensation(
     task.step_states[0] = StepState.COMMITTED
     task.step_results[0] = {"prior_effect": "still valid"}
     task.current_step_index = 1
-    action = saga.stage_write("mutate", {"destination": "Chennai"})
+    action = saga.stage_write("mutate", {"destination": "Chennai"},
+                              owner_task_id=task.task_id, owner_step_index=1)
     action.state = ActionState.IN_FLIGHT_UNKNOWN
     task.state = TaskState.RUNNING
     task.step_states[1] = StepState.NEEDS_RECONCILIATION
@@ -239,7 +240,7 @@ async def test_reconciled_current_success_advances_without_repeating_mutation():
 
     manager = ExecutorBindings(saga, {"mutate": mutate})
     task = manager.create_task("resolved", [TaskStep("mutate", status_check=status)])
-    action = saga.stage_write("mutate", {})
+    action = saga.stage_write("mutate", {}, owner_task_id=task.task_id, owner_step_index=0)
     action.state = ActionState.IN_FLIGHT_UNKNOWN
     task.state = TaskState.RUNNING
     task.step_states[0] = StepState.NEEDS_RECONCILIATION
@@ -364,7 +365,7 @@ async def test_correction_during_status_check_cannot_become_current_success():
 
     manager = ExecutorBindings(saga, {})
     task = manager.create_task("status race", [TaskStep("mutate", status_check=status)])
-    action = saga.stage_write("mutate", {})
+    action = saga.stage_write("mutate", {}, owner_task_id=task.task_id, owner_step_index=0)
     action.state = ActionState.IN_FLIGHT_UNKNOWN
     task.state = TaskState.RUNNING
     task.step_states[0] = StepState.NEEDS_RECONCILIATION

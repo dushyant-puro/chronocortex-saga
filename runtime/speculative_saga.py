@@ -187,6 +187,8 @@ class StagedAction:
     intent_session: Optional[str] = None
     owner_task_id: Optional[str] = None
     owner_step_index: Optional[int] = None
+    owner_generation: Optional[int] = None
+    chain_id: Optional[str] = None
     recovered: bool = False
     durability_error: Optional[str] = None
 
@@ -210,6 +212,10 @@ class StagedAction:
 
 class StaleEpochError(RuntimeError):
     """Raised when an action attempts to commit against a superseded epoch."""
+
+
+class ActionOwnershipError(ValueError):
+    """An action is not owned by the requested task/step/generation or chain."""
 
 
 class SagaAbortedError(RuntimeError):
@@ -296,6 +302,8 @@ class SpeculativeSagaManager:
         self._read_dedup_cache: dict[tuple[str, str, int], str] = {}  # (tool_name, canon_args, epoch) -> action_id
         self._prediction_hook: Optional[Callable[[StagedAction, Any], None]] = None
         self._chain: list[StagedAction] = []  # committed order, for compensation unwind
+        self._closed_chains: set[str] = set()
+        self._chain_unwind_locks: dict[str, asyncio.Lock] = {}
         self._id_gen = itertools.count()
         self.epoch_clock.on_advance(self._on_epoch_advance)
         if self.journal is not None:
@@ -303,6 +311,7 @@ class SpeculativeSagaManager:
 
     def _load_journal(self) -> None:
         """Hydrate evidence only. Never auto-bind compensators or revive old intent."""
+        self._closed_chains.update(self.journal.closed_chains())
         for version, record in self.journal.records():
             state = ActionState[record["state"]]
             if state in (ActionState.PENDING, ActionState.IN_FLIGHT):
@@ -325,6 +334,7 @@ class SpeculativeSagaManager:
                 _staged_digest=record["digest"], _journal_version=version,
                 intent_session=record["session_id"], owner_task_id=record["task_id"],
                 owner_step_index=record["step_index"], recovered=True,
+                owner_generation=record["generation"], chain_id=record["chain_id"],
             )
             self._actions[action.action_id] = action
             self._ikey_index[action.idempotency_key] = action.action_id
@@ -336,6 +346,7 @@ class SpeculativeSagaManager:
             "idempotency_key": action.idempotency_key, "capture_epoch": action.capture_epoch,
             "session_id": action.intent_session, "task_id": action.owner_task_id,
             "step_index": action.owner_step_index, "state": action.state.name,
+            "generation": action.owner_generation, "chain_id": action.chain_id,
             "compensation_state": action.compensation_state.name, "result": action.result,
             "compensation_failed": action.compensation_failed,
             "error_type": type(action.error).__name__ if action.error is not None else None,
@@ -613,6 +624,12 @@ class SpeculativeSagaManager:
 
     # ---- staged writes ------------------------------------------------
 
+    def _ordered_chain_members(self, chain_id: str) -> list[StagedAction]:
+        members = [a for a in self._actions.values() if a.kind == ActionKind.STAGED_WRITE and a.chain_id == chain_id]
+        if members and members[0].owner_task_id is not None:
+            members.sort(key=lambda a: (a.owner_step_index, a.owner_generation))
+        return members
+
     def stage_write(
         self,
         tool_name: str,
@@ -624,6 +641,8 @@ class SpeculativeSagaManager:
         registry: Optional[ToolRegistry] = None,
         owner_task_id: Optional[str] = None,
         owner_step_index: Optional[int] = None,
+        owner_generation: Optional[int] = None,
+        chain_id: Optional[str] = None,
     ) -> StagedAction:
         """
         Create a write in the uncommitted in-memory envelope. It is NOT
@@ -636,11 +655,48 @@ class SpeculativeSagaManager:
         IN_FLIGHT_UNKNOWN, or unreconciled COMMITTED_STALE),
         DuplicateOperationError is raised.
         """
+        if owner_task_id is None:
+            if owner_step_index is not None or owner_generation is not None:
+                raise ActionOwnershipError("Partial task ownership is not valid")
+            if chain_id is not None and (type(chain_id) is not str or chain_id.startswith("task:")):
+                raise ActionOwnershipError("Task chain IDs are reserved for their task owner")
+            chain_id = chain_id or f"action:{uuid.uuid4().hex}"
+        else:
+            owner_generation = 0 if owner_generation is None else owner_generation
+            if (type(owner_task_id) is not str or not owner_task_id or
+                    type(owner_step_index) is not int or owner_step_index < 0 or
+                    type(owner_generation) is not int or owner_generation < 0):
+                raise ActionOwnershipError("Task ownership requires task ID, step index and generation")
+            expected_chain = f"task:{owner_task_id}"
+            if chain_id is not None and chain_id != expected_chain:
+                raise ActionOwnershipError("Task action cannot join a different chain")
+            chain_id = expected_chain
+        if type(chain_id) is not str or not chain_id:
+            raise ActionOwnershipError("Chain ID must be a non-empty string")
+        if chain_id in self._closed_chains:
+            raise ActionOwnershipError("Chain is closed for unwind")
+        if any(a.chain_id == chain_id and a.compensation_state in _BLOCKING_COMPENSATION_STATES
+               for a in self._actions.values() if a.kind == ActionKind.STAGED_WRITE):
+            raise DuplicateOperationError("Chain repair is unresolved")
+        if owner_task_id is not None:
+            prior = [a for a in self._actions.values() if a.kind == ActionKind.STAGED_WRITE and
+                     a.owner_task_id == owner_task_id and a.owner_step_index == owner_step_index]
+            if prior:
+                latest = max(prior, key=lambda a: a.owner_generation)
+                if (owner_generation != latest.owner_generation + 1 or
+                        latest.state not in (ActionState.ABORTED, ActionState.COMPENSATED) or
+                        latest.compensation_state not in (CompensationState.NOT_STARTED, CompensationState.SUCCEEDED)):
+                    raise DuplicateOperationError("Task slot generation exists or prior operation/repair is unresolved")
+            elif owner_generation != 0:
+                raise ActionOwnershipError("First task generation must be zero")
         reg = self.registry or registry
         mf = manifest if manifest is not None else (reg.get(tool_name) if reg is not None else None)
         args = copy.deepcopy(args)
         digest = payload_digest(tool_name, args)
-        ikey = idempotency_key or _compute_idempotency_key(tool_name, args)
+        ikey = idempotency_key or (
+            "task-op:" + hashlib.sha256(json.dumps([owner_task_id, owner_step_index, owner_generation],
+                                                   separators=(",", ":")).encode()).hexdigest()
+            if owner_task_id is not None else _compute_idempotency_key(tool_name, args))
 
         # Idempotency enforcement: reject if the key is already live.
         # A later completed operation may have replaced the index entry while
@@ -672,6 +728,7 @@ class SpeculativeSagaManager:
             _staged_digest=digest,
             intent_session=self._session_id,
             owner_task_id=owner_task_id, owner_step_index=owner_step_index,
+            owner_generation=owner_generation, chain_id=chain_id,
         )
         if self.journal is not None:
             self._persist_action(action, "STAGED", create=True)
@@ -734,6 +791,13 @@ class SpeculativeSagaManager:
         action = self._actions[action_id]
         if action.recovered:
             raise JournalError("Recovered journal intent cannot be dispatched; reconciliation required")
+        if action.chain_id in self._closed_chains:
+            raise ActionOwnershipError("Chain is closed; dispatch denied")
+        chain_members = self._ordered_chain_members(action.chain_id)
+        if (any(a.compensation_state in _BLOCKING_COMPENSATION_STATES for a in chain_members) or
+                any(a.state not in (ActionState.COMMITTED, ActionState.ABORTED, ActionState.COMPENSATED)
+                    for a in chain_members[:chain_members.index(action)])):
+            raise DuplicateOperationError("Chain predecessor or repair is unresolved; dispatch denied")
         if action.state != ActionState.PENDING:
             raise SagaAbortedError(
                 f"write {action_id} not in PENDING state: {action.state}"
@@ -862,7 +926,7 @@ class SpeculativeSagaManager:
             action.durability_error = type(self._durability_fault).__name__
             self._require_journal()
 
-        if action.superseded_epoch is None:
+        if action.superseded_epoch is None and action.chain_id not in self._closed_chains:
             # Epoch is still current — normal commit.
             if not action._set_terminal(ActionState.COMMITTED):
                 return action.result
@@ -878,10 +942,10 @@ class SpeculativeSagaManager:
             return action.result
         self._persist_action(action, "FORWARD_COMMITTED_STALE")
 
-        if action.compensate is not None:
+        if action.compensate is not None and action.chain_id not in self._closed_chains:
             logger.warning(
                 "COMMITTED_STALE: write %s (%s) succeeded after epoch advanced "
-                "(capture=%d, superseded_by=%d) — auto-compensating now",
+                "(capture=%d, superseded_by=%s) — auto-compensating now",
                 action.action_id, action.tool_name,
                 action.capture_epoch, action.superseded_epoch,
             )
@@ -889,7 +953,7 @@ class SpeculativeSagaManager:
         else:
             logger.critical(
                 "COMMITTED_STALE: write %s (%s) succeeded after epoch advanced "
-                "(capture=%d, superseded_by=%d) and has NO compensate() handler — "
+                "(capture=%d, superseded_by=%s); automatic repair unavailable or chain closed — "
                 "MANUAL RECONCILIATION REQUIRED; remote side-effect is unresolved",
                 action.action_id, action.tool_name,
                 action.capture_epoch, action.superseded_epoch,
@@ -915,6 +979,13 @@ class SpeculativeSagaManager:
             return
         if action.compensate is None or action.compensation_state != CompensationState.NOT_STARTED:
             return
+        members = self._ordered_chain_members(action.chain_id)
+        if action in members:
+            if any(a.chain_id == action.chain_id and
+                   (a.state not in (ActionState.ABORTED, ActionState.COMPENSATED) or
+                    a.compensation_state in _BLOCKING_COMPENSATION_STATES)
+                   for a in members[members.index(action) + 1:]):
+                return  # never undo an ancestor while a descendant can still apply
         self._require_journal()
         action.compensation_state = CompensationState.IN_FLIGHT
         self._persist_action(action, "COMPENSATION_INTENT")
@@ -1024,6 +1095,7 @@ class SpeculativeSagaManager:
                 # Classify based on current epoch vs capture epoch.
                 is_current = (
                     not action.recovered and
+                    action.chain_id not in self._closed_chains and
                     action.superseded_epoch is None
                     and action.capture_epoch == self.epoch_clock.current
                 )
@@ -1092,25 +1164,69 @@ class SpeculativeSagaManager:
 
     # ---- saga compensation ------------------------------------------------
 
-    async def abort_chain_from(self, failed_action_id: str) -> None:
+    def close_chain(self, chain_id: str, *, owner_task_id: Optional[str] = None) -> None:
+        """Persist stop intent before repair; never reopen or imply remote rollback."""
+        if (owner_task_id is not None and chain_id != f"task:{owner_task_id}") or (
+                owner_task_id is None and chain_id.startswith("task:")):
+            raise ActionOwnershipError("Chain closure must identify its task owner")
+        if self.journal is not None:
+            try:
+                self._require_journal()
+                self.journal.close_chain(chain_id, owner_task_id)
+            except JournalError as exc:
+                self._durability_fault = exc
+                raise
+        self._closed_chains.add(chain_id)
+        for action in list(self._actions.values()):
+            if action.kind == ActionKind.STAGED_WRITE and action.chain_id == chain_id:
+                self.abort_write(action.action_id)
+
+    async def abort_chain_from(self, failed_action_id: str) -> bool:
+        """Close one known chain and unwind only proven-safe predecessors.
+
+        Unknown IDs never imply a global chain. Closing prevents new forward
+        dispatch; unknown effects/repair or changed journal versions stop unwind.
+        False means manual reconciliation is needed, not successful rollback.
         """
-        A downstream step failed. Unwind every previously committed step
-        in this chain, in reverse order, via its compensate() handler.
-        """
-        idx = next(
-            (i for i, a in enumerate(self._chain) if a.action_id == failed_action_id),
-            None,
-        )
-        to_unwind = self._chain if idx is None else self._chain[:idx]
-        for action in reversed(to_unwind):
-            if action.state == ActionState.COMPENSATED:
-                continue
-            if action.state != ActionState.COMMITTED or action.compensate is None:
-                break
-            await self.compensate_action(action.action_id)
-            if action.state != ActionState.COMPENSATED:
-                break  # preserve reverse dependency order across uncertain repair
-        self._chain = [a for a in self._chain if a.state != ActionState.COMPENSATED]
+        failed = self._actions.get(failed_action_id)
+        if failed is None or failed.kind != ActionKind.STAGED_WRITE or failed.chain_id is None:
+            raise ActionOwnershipError("A recorded failed write and chain owner are required")
+        lock = self._chain_unwind_locks.setdefault(failed.chain_id, asyncio.Lock())
+        async with lock:
+            self.close_chain(failed.chain_id, owner_task_id=failed.owner_task_id)
+            if self.journal is not None:
+                try:
+                    for version, record in self.journal.records():
+                        if record["chain_id"] == failed.chain_id:
+                            local = self._actions.get(record["action_id"])
+                            if local is None or local._journal_version != version:
+                                return False
+                except JournalError as exc:
+                    self._durability_fault = exc
+                    raise
+            if failed.recovered or failed.state not in (ActionState.PENDING, ActionState.ABORTED):
+                return False
+            members = self._ordered_chain_members(failed.chain_id)
+            idx = members.index(failed)
+            if any(a.recovered or a.state in (ActionState.IN_FLIGHT, ActionState.IN_FLIGHT_UNKNOWN,
+                                              ActionState.COMMITTED_STALE) or
+                   a.compensation_state in _BLOCKING_COMPENSATION_STATES for a in members):
+                return False
+            if any(a.state not in (ActionState.PENDING, ActionState.ABORTED, ActionState.COMPENSATED)
+                   for a in members[idx + 1:]):
+                return False
+            for action in members:
+                if action.state == ActionState.PENDING:
+                    self.abort_write(action.action_id)
+            for action in reversed(members[:idx]):
+                if action.state in (ActionState.ABORTED, ActionState.COMPENSATED):
+                    continue
+                if action.state != ActionState.COMMITTED or action.compensate is None:
+                    return False
+                await self.compensate_action(action.action_id)
+                if action.state != ActionState.COMPENSATED:
+                    return False
+            return True
 
     # ---- inspector (for the Round-2 live debug overlay) -------------------
 
@@ -1129,6 +1245,10 @@ class SpeculativeSagaManager:
                 "epoch": a.capture_epoch,
                 "superseded_epoch": a.superseded_epoch,
                 "idempotency_key": a.idempotency_key,
+                "chain_id": a.chain_id,
+                "owner_task_id": a.owner_task_id,
+                "owner_step_index": a.owner_step_index,
+                "owner_generation": a.owner_generation,
                 "compensation_failed": a.compensation_failed,
                 "compensation_state": a.compensation_state.name,
                 "compensation_error_type": (type(a.compensation_error).__name__

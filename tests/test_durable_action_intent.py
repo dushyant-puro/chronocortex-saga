@@ -510,7 +510,6 @@ def test_simulation_cannot_silently_override_configured_journal(tmp_path):
 @pytest.mark.asyncio
 async def test_duplicate_durable_key_parks_task_without_unwinding_prior_effect(tmp_path):
     saga = manager(tmp_path / "journal.db")
-    saga.stage_write("change", {"key": "occupied"})
     effects, undos = [], []
 
     async def execute(args):
@@ -525,6 +524,7 @@ async def test_duplicate_durable_key_parks_task_without_unwinding_prior_effect(t
         TaskStep("change", build_args=lambda task, idx: {"key": "prior"}, compensate=undo),
         TaskStep("change", build_args=lambda task, idx: {"key": "occupied"}),
     ])
+    saga.stage_write("change", {"key": "occupied"}, owner_task_id=task.task_id, owner_step_index=1)
     await tasks.run_task(task.task_id)
     assert task.state == TaskState.NEEDS_RECONCILIATION
     assert task.step_states[0] == StepState.COMMITTED
