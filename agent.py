@@ -18,6 +18,7 @@ from runtime.speculative_saga import ActionState, SpeculativeSagaManager, TurnEp
 from runtime.grounding_guard import GroundingGuard, zero_hop_repair, RepairOutcome
 from runtime.task_engine import TaskManager
 from runtime.policy_engine import AuthorizationContext, PolicyError
+from runtime.action_journal import JournalError, SQLiteActionJournal
 from tools.fleet_tools import READ_TOOLS, WRITE_TOOLS, TOOL_REGISTRY
 
 logger = logging.getLogger("ccs.agent")
@@ -35,10 +36,11 @@ class PendingSlot:
 
 
 class CCSAgent:
-    def __init__(self, *, auth_context: Optional[AuthorizationContext] = None) -> None:
+    def __init__(self, *, auth_context: Optional[AuthorizationContext] = None,
+                 journal: Optional[SQLiteActionJournal] = None, simulation: bool = False) -> None:
         self.epoch_clock = TurnEpochClock()
         self.saga = SpeculativeSagaManager(self.epoch_clock, registry=TOOL_REGISTRY,
-                                           auth_context=auth_context)
+                                           auth_context=auth_context, journal=journal, simulation=simulation)
 
         # TaskManager must be created before GroundingGuard so we can wire
         # the on_eviction callback. resolve_field is bound to guard after
@@ -222,6 +224,8 @@ class CCSAgent:
                 # authorizes compensation of previously committed actions.
                 logger.warning("write %s awaits trusted authorization; action=%s",
                                tool_name, action.action_id)
+            except JournalError:
+                logger.error("write %s requires durable recovery; action=%s", tool_name, action.action_id)
             except Exception as exc:  # noqa: BLE001
                 if action.state == ActionState.IN_FLIGHT_UNKNOWN:
                     logger.error("write %s IN_FLIGHT_UNKNOWN after %s — awaiting reconciliation",
@@ -240,7 +244,8 @@ class CCSAgent:
 async def entrypoint(ctx: JobContext) -> None:
     await ctx.connect()
 
-    ccs = CCSAgent()
+    journal_path = os.environ.get("CCS_ACTION_JOURNAL")
+    ccs = CCSAgent(journal=SQLiteActionJournal(journal_path) if journal_path else None)
 
     has_openai = bool(os.environ.get("OPENAI_API_KEY"))
     if not has_openai:

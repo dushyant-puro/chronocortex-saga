@@ -1,4 +1,8 @@
-"""Production boundary tests: no test authorization defaults or synthetic manifests."""
+"""Real authorization boundary; explicit simulation isolates it from disk tests.
+
+No default grants or synthetic manifests. Durable defaults/crash behavior are
+tested separately with the real manager in test_durable_action_intent.py.
+"""
 import asyncio
 
 import pytest
@@ -14,7 +18,7 @@ from runtime.tool_contract import ToolManifest, ToolRegistry
 @pytest.mark.asyncio
 @pytest.mark.parametrize("with_engine", [False, True])
 async def test_omitted_context_never_dispatches(with_engine):
-    saga = SpeculativeSagaManager(TurnEpochClock())
+    saga = SpeculativeSagaManager(TurnEpochClock(), simulation=True)
     action = saga.stage_write("change", {}, manifest=ToolManifest("change", "write"))
     calls = []
 
@@ -30,7 +34,7 @@ async def test_omitted_context_never_dispatches(with_engine):
 
 @pytest.mark.asyncio
 async def test_omitting_engine_cannot_bypass_permissions():
-    saga = SpeculativeSagaManager(TurnEpochClock())
+    saga = SpeculativeSagaManager(TurnEpochClock(), simulation=True)
     action = saga.stage_write("change", {}, manifest=ToolManifest(
         "change", "write", required_permissions=["admin"]))
     with pytest.raises(PermissionDeniedError):
@@ -43,7 +47,7 @@ async def test_omitting_engine_cannot_bypass_permissions():
 async def test_call_manifest_cannot_downgrade_registry():
     registry = ToolRegistry()
     registry.register(ToolManifest("change", "write", required_permissions=["admin"]))
-    saga = SpeculativeSagaManager(TurnEpochClock(), registry=registry)
+    saga = SpeculativeSagaManager(TurnEpochClock(), registry=registry, simulation=True)
     action = saga.stage_write("change", {})
     with pytest.raises(PermissionDeniedError):
         await saga.commit_write(action.action_id, lambda _: asyncio.sleep(0),
@@ -54,7 +58,7 @@ async def test_call_manifest_cannot_downgrade_registry():
 
 @pytest.mark.asyncio
 async def test_unmanifested_write_denied_even_with_context():
-    saga = SpeculativeSagaManager(TurnEpochClock())
+    saga = SpeculativeSagaManager(TurnEpochClock(), simulation=True)
     action = saga.stage_write("unknown", {})
     with pytest.raises(PermissionDeniedError):
         await saga.commit_write(action.action_id, lambda _: asyncio.sleep(0),
@@ -74,7 +78,7 @@ async def test_permissive_custom_engine_and_legacy_option_cannot_bypass_baseline
         def check(self, *args, **kwargs):
             pass
 
-    saga = SpeculativeSagaManager(TurnEpochClock())
+    saga = SpeculativeSagaManager(TurnEpochClock(), simulation=True)
     action = saga.stage_write("change", {}, manifest=ToolManifest(
         "change", "write", required_permissions=["admin"]))
     for engine in (AllowAll(), PolicyEngine(default_deny=False)):
@@ -86,7 +90,7 @@ async def test_permissive_custom_engine_and_legacy_option_cannot_bypass_baseline
 
 @pytest.mark.asyncio
 async def test_bare_confirmation_bool_does_not_approve_any_payload():
-    saga = SpeculativeSagaManager(TurnEpochClock())
+    saga = SpeculativeSagaManager(TurnEpochClock(), simulation=True)
     action = saga.stage_write("change", {}, manifest=ToolManifest(
         "change", "write", requires_confirmation=True))
     with pytest.raises(ConfirmationRequiredError):
@@ -97,7 +101,7 @@ async def test_bare_confirmation_bool_does_not_approve_any_payload():
 
 @pytest.mark.asyncio
 async def test_approval_cannot_be_replayed_on_another_action():
-    saga = SpeculativeSagaManager(TurnEpochClock())
+    saga = SpeculativeSagaManager(TurnEpochClock(), simulation=True)
     manifest = ToolManifest("change", "write", requires_confirmation=True)
     first = saga.stage_write("change", {}, manifest=manifest)
     context = AuthorizationContext(approval=MutationApproval.for_action(first))
@@ -111,7 +115,7 @@ async def test_approval_cannot_be_replayed_on_another_action():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("field", ["args", "tool_name", "capture_epoch"])
 async def test_approval_rejects_altered_identity_or_payload(field):
-    saga = SpeculativeSagaManager(TurnEpochClock())
+    saga = SpeculativeSagaManager(TurnEpochClock(), simulation=True)
     action = saga.stage_write("change", {"nested": ["original"]}, manifest=ToolManifest(
         "change", "write", requires_confirmation=True))
     context = AuthorizationContext(approval=MutationApproval.for_action(action))
@@ -130,7 +134,7 @@ async def test_approval_rejects_altered_identity_or_payload(field):
 
 @pytest.mark.asyncio
 async def test_authorized_exact_payload_dispatches_once():
-    saga = SpeculativeSagaManager(TurnEpochClock())
+    saga = SpeculativeSagaManager(TurnEpochClock(), simulation=True)
     action = saga.stage_write("change", {"destination": "Chennai"}, manifest=ToolManifest(
         "change", "write", required_permissions=["fleet:write"], requires_confirmation=True))
     context = AuthorizationContext(["fleet:write"], approval=MutationApproval.for_action(action))
@@ -148,7 +152,7 @@ async def test_authorized_exact_payload_dispatches_once():
 @pytest.mark.asyncio
 async def test_staging_and_dispatch_detach_nested_payloads():
     args = {"nested": ["approved"]}
-    saga = SpeculativeSagaManager(TurnEpochClock(), auth_context=AuthorizationContext())
+    saga = SpeculativeSagaManager(TurnEpochClock(), auth_context=AuthorizationContext(), simulation=True)
     action = saga.stage_write("change", args, manifest=ToolManifest("change", "write"))
     args["nested"][0] = "changed by caller"
     started, release = asyncio.Event(), asyncio.Event()
@@ -169,7 +173,7 @@ async def test_staging_and_dispatch_detach_nested_payloads():
 
 @pytest.mark.asyncio
 async def test_changed_pending_payload_denied_without_confirmation_requirement():
-    saga = SpeculativeSagaManager(TurnEpochClock(), auth_context=AuthorizationContext())
+    saga = SpeculativeSagaManager(TurnEpochClock(), auth_context=AuthorizationContext(), simulation=True)
     action = saga.stage_write("change", {"value": 1}, manifest=ToolManifest("change", "write"))
     action.args["value"] = 2
     with pytest.raises(PermissionDeniedError):
@@ -182,7 +186,7 @@ async def test_registry_update_cannot_erase_staged_policy_and_can_revoke_grants(
     registry = ToolRegistry()
     manifest = ToolManifest("change", "write", required_permissions=["old"])
     registry.register(manifest)
-    saga = SpeculativeSagaManager(TurnEpochClock(), registry=registry)
+    saga = SpeculativeSagaManager(TurnEpochClock(), registry=registry, simulation=True)
     action = saga.stage_write("change", {})
     # Even mutation of the original list cannot weaken the staging snapshot.
     manifest.required_permissions.clear()
@@ -208,7 +212,7 @@ async def test_task_manager_default_denial_retains_progress_without_unwind():
 
     registry = ToolRegistry()
     registry.register(ToolManifest("change", "write"))
-    saga = SpeculativeSagaManager(TurnEpochClock(), registry=registry)
+    saga = SpeculativeSagaManager(TurnEpochClock(), registry=registry, simulation=True)
     manager = Manager(saga, lambda _: None)
     task = manager.create_task("unauthorized", [TaskStep("change")])
     with pytest.raises(PermissionDeniedError):
@@ -223,7 +227,7 @@ async def test_task_manager_default_denial_retains_progress_without_unwind():
 @pytest.mark.asyncio
 async def test_voice_policy_denial_never_unwinds_prior_effect(monkeypatch):
     from agent import CCSAgent, PendingSlot
-    ccs = CCSAgent()
+    ccs = CCSAgent(simulation=True)
     compensations = []
 
     async def compensate(result):
@@ -246,7 +250,7 @@ async def test_voice_policy_denial_never_unwinds_prior_effect(monkeypatch):
 
 @pytest.mark.parametrize("args", [{1: "value"}, {"value": float("nan")}, {"value": (1, 2)}])
 def test_ambiguous_non_json_arguments_never_stage(args):
-    saga = SpeculativeSagaManager(TurnEpochClock())
+    saga = SpeculativeSagaManager(TurnEpochClock(), simulation=True)
     with pytest.raises(ValueError):
         saga.stage_write("change", args, manifest=ToolManifest("change", "write"))
     assert saga.snapshot() == []
@@ -256,7 +260,7 @@ def test_ambiguous_non_json_arguments_never_stage(args):
 async def test_mutated_context_cannot_turn_permission_check_into_substring_search():
     context = AuthorizationContext()
     context.granted_permissions = "not-admin-but-contains-admin"
-    saga = SpeculativeSagaManager(TurnEpochClock(), auth_context=context)
+    saga = SpeculativeSagaManager(TurnEpochClock(), auth_context=context, simulation=True)
     action = saga.stage_write("change", {}, manifest=ToolManifest(
         "change", "write", required_permissions=["admin"]))
     with pytest.raises(PermissionDeniedError):
@@ -267,7 +271,7 @@ async def test_mutated_context_cannot_turn_permission_check_into_substring_searc
 @pytest.mark.asyncio
 async def test_validator_cannot_resurrect_an_aborted_action():
     from runtime.speculative_saga import SagaAbortedError
-    saga = SpeculativeSagaManager(TurnEpochClock(), auth_context=AuthorizationContext())
+    saga = SpeculativeSagaManager(TurnEpochClock(), auth_context=AuthorizationContext(), simulation=True)
 
     def validate(args):
         saga.abort_write(action.action_id)
@@ -283,7 +287,7 @@ async def test_validator_cannot_rewrite_the_payload_passed_to_executor():
     def validate(args):
         args["nested"][0] = "validator replacement"
 
-    saga = SpeculativeSagaManager(TurnEpochClock(), auth_context=AuthorizationContext())
+    saga = SpeculativeSagaManager(TurnEpochClock(), auth_context=AuthorizationContext(), simulation=True)
     action = saga.stage_write("change", {"nested": ["original"]}, manifest=ToolManifest(
         "change", "write", validate_args=validate))
     result = await saga.commit_write(action.action_id, lambda args: asyncio.sleep(0, result=args))
@@ -295,7 +299,7 @@ async def test_call_registry_cannot_replace_host_registry():
     host, override = ToolRegistry(), ToolRegistry()
     host.register(ToolManifest("change", "write", required_permissions=["admin"]))
     override.register(ToolManifest("change", "write"))
-    saga = SpeculativeSagaManager(TurnEpochClock(), registry=host, auth_context=AuthorizationContext())
+    saga = SpeculativeSagaManager(TurnEpochClock(), registry=host, auth_context=AuthorizationContext(), simulation=True)
     action = saga.stage_write("change", {}, registry=override)
     with pytest.raises(PermissionDeniedError):
         await saga.commit_write(action.action_id, lambda _: asyncio.sleep(0), registry=override)

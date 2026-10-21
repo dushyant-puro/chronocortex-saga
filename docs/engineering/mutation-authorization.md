@@ -116,8 +116,9 @@ not yet locked.
 
 ## Remaining blockers and rollback
 
-Next: transactional durable task/action/dispatch intent, events, migrations and
-CAS, with crash-window tests and fail-closed persistence errors. Process-local
+The stacked [durable-intent stage](durable-action-intent.md) adds a local SQLite
+dispatch journal, versioned task projections, CAS and process-crash tests.
+Distributed ownership and automatic restart completion remain unverified. Process-local
 locks, mutable in-memory objects and legacy checkpoints do not establish durable
 authorization, crash recovery or distributed ownership. Principal/tenant identity,
 approval expiry/revocation and a protected operator endpoint remain required.

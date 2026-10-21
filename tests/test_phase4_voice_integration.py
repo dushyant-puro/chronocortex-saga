@@ -46,7 +46,7 @@ def ccs_setup(monkeypatch):
         pass
     monkeypatch.setattr("tools.fleet_tools._simulated_network", fast_network)
     
-    ccs = CCSAgent(auth_context=AuthorizationContext(["fleet:write"]))
+    ccs = CCSAgent(auth_context=AuthorizationContext(["fleet:write"]), simulation=True)
     session = MockSession()
     ccs.session = session
     
