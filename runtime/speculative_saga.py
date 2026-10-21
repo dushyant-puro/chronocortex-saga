@@ -42,24 +42,26 @@ Post-dispatch failures:
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import itertools
 import json
 import logging
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum, auto
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
-
-if TYPE_CHECKING:
-    from runtime.policy_engine import AuthorizationContext, PolicyEngine
+from typing import Any, Awaitable, Callable, Optional
 
 from runtime.tool_contract import (
     InvalidToolKindError,
     ToolContractError,
     ToolManifest,
     ToolRegistry,
+)
+from runtime.policy_engine import (
+    AuthorizationContext, ConfirmationRequiredError, PermissionDeniedError,
+    PolicyEngine, payload_digest,
 )
 
 logger = logging.getLogger("ccs.saga")
@@ -179,6 +181,7 @@ class StagedAction:
     compensation_not_applied_evidence: Optional[str] = None
     _resolution_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
     _compensation_task: Optional[asyncio.Task] = field(default=None, repr=False, compare=False)
+    _staged_digest: Optional[str] = field(default=None, repr=False, compare=False)
 
     def _set_terminal(self, new_state: ActionState) -> bool:
         """
@@ -264,9 +267,13 @@ class SpeculativeSagaManager:
         self,
         epoch_clock: TurnEpochClock,
         registry: Optional[ToolRegistry] = None,
+        auth_context: Optional[AuthorizationContext] = None,
     ) -> None:
         self.epoch_clock = epoch_clock
         self.registry = registry
+        # Trusted host credential injection only. No credentials inferred from args,
+        # grounding, ASR or model output. Missing credentials deny mutation dispatch.
+        self.auth_context = auth_context
         self._actions: dict[str, StagedAction] = {}
         self._ikey_index: dict[str, str] = {}  # idempotency_key -> action_id
         self._debounce: dict[str, tuple[str, float]] = {}  # entity_hash -> (action_id, ts)
@@ -533,12 +540,10 @@ class SpeculativeSagaManager:
         IN_FLIGHT_UNKNOWN, or unreconciled COMMITTED_STALE),
         DuplicateOperationError is raised.
         """
-        mf = manifest
-        if mf is None:
-            reg = registry or self.registry
-            if reg is not None:
-                mf = reg.get(tool_name)
-
+        reg = self.registry or registry
+        mf = manifest if manifest is not None else (reg.get(tool_name) if reg is not None else None)
+        args = copy.deepcopy(args)
+        digest = payload_digest(tool_name, args)
         ikey = idempotency_key or _compute_idempotency_key(tool_name, args)
 
         # Idempotency enforcement: reject if the key is already live.
@@ -566,7 +571,9 @@ class SpeculativeSagaManager:
             capture_epoch=self.epoch_clock.current,
             idempotency_key=ikey,
             compensate=compensate,
-            manifest=mf,
+            manifest=(replace(mf, required_permissions=list(mf.required_permissions),
+                              depends_on=list(mf.depends_on)) if mf is not None else None),
+            _staged_digest=digest,
         )
         self._actions[action_id] = action
         self._ikey_index[ikey] = action_id
@@ -633,33 +640,61 @@ class SpeculativeSagaManager:
                 f"write {action_id} epoch stale: {action.capture_epoch}"
             )
 
-        # Kind enforcement: verify tool is manifested with kind="write" before dispatching
-        mf = manifest
-        if mf is None:
-            reg = registry or self.registry
-            if reg is not None:
-                mf = reg.get(action.tool_name)
-        if mf is None:
-            mf = action.manifest
+        def check_payload_seal():
+            try:
+                unchanged = action._staged_digest == payload_digest(action.tool_name, action.args)
+            except (ValueError, TypeError) as exc:
+                raise PermissionDeniedError("Invalid staged payload") from exc
+            if not unchanged:
+                raise PermissionDeniedError("Staged payload changed; abort and stage a new action")
 
-        if mf is not None and mf.kind != "write":
-            raise InvalidToolKindError(
-                f"commit_write requires a tool with kind='write', but '{action.tool_name}' "
-                f"is manifested as kind='{mf.kind}'"
-            )
+        check_payload_seal()
 
-        # Argument validation (if defined on manifest)
-        if mf is not None and mf.validate_args is not None:
-            mf.validate_args(action.args)
-
-        # Policy & authorization check (if policy_engine supplied)
-        if policy_engine is not None:
-            policy_engine.check(mf, auth_context, confirmed=confirmed)
+        # Registry policies and the staging snapshot both apply. Call-time
+        # metadata may tighten policy but cannot weaken either authority.
+        reg = self.registry or registry
+        registered = reg.get(action.tool_name) if reg is not None else None
+        if reg is not None and registered is None:
+            raise PermissionDeniedError("Tool is absent from the trusted registry")
+        manifests = []
+        for candidate in (registered, action.manifest, manifest):
+            if candidate is not None and candidate not in manifests:
+                manifests.append(candidate)
+        if not manifests:
+            raise PermissionDeniedError("A write requires an explicit tool manifest")
+        context = auth_context if auth_context is not None else self.auth_context
+        baseline = PolicyEngine()
+        for mf in manifests:
+            if mf.tool_name != action.tool_name:
+                raise PermissionDeniedError("Manifest tool name does not match staged action")
+            if mf.kind != "write":
+                raise InvalidToolKindError(
+                    f"commit_write requires a tool with kind='write', but '{action.tool_name}' "
+                    f"is manifested as kind='{mf.kind}'"
+                )
+            baseline.check(mf, context, confirmed=confirmed)
+            if mf.requires_confirmation:
+                if context.approval is None or not context.approval.matches(action):
+                    raise ConfirmationRequiredError("Approval must match staged action, epoch and payload")
+            # Validation receives a detached payload; it cannot mutate the approved request.
+            if mf.validate_args is not None:
+                mf.validate_args(copy.deepcopy(action.args))
+            if policy_engine is not None:
+                policy_engine.check(mf, context, confirmed=confirmed)
+        # No await between authorization and IN_FLIGHT. Seal the executor's
+        # payload before scheduling; edits to action.args cannot change the request.
+        check_payload_seal()
+        dispatch_args = copy.deepcopy(action.args)
+        if action.state != ActionState.PENDING:
+            raise SagaAbortedError("Action left PENDING during pre-dispatch checks")
+        if action.capture_epoch != self.epoch_clock.current:
+            action._set_terminal(ActionState.ABORTED)
+            raise StaleEpochError("Epoch changed during pre-dispatch checks")
 
         action.state = ActionState.IN_FLIGHT
 
         try:
-            result = await asyncio.wait_for(executor(action.args), timeout=timeout)
+            result = await asyncio.wait_for(executor(dispatch_args), timeout=timeout)
 
         except asyncio.TimeoutError as exc:
             # We do NOT know whether the remote executed the call.

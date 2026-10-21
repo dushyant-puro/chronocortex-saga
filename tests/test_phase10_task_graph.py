@@ -29,6 +29,8 @@ from runtime.speculative_saga import SpeculativeSagaManager, TurnEpochClock
 from runtime.task_engine import StepState, Task, TaskManager, TaskState, TaskStep
 from runtime.task_graph import GraphState, TaskGraph, TaskGraphCycleError
 
+from saga_test_support import SimulatedAuthorizedSaga as SpeculativeSagaManager
+
 
 def _simple_executor(result: Any):
     async def _exec(args: dict[str, Any]) -> Any:

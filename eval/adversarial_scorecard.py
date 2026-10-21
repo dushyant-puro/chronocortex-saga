@@ -35,7 +35,6 @@ from runtime.policy_engine import (
 from runtime.speculative_saga import (
     ActionKind,
     ActionState,
-    SpeculativeSagaManager,
     StagedAction,
     TurnEpochClock,
 )
@@ -49,6 +48,7 @@ from runtime.task_engine import (
 from runtime.task_graph import GraphState, TaskGraph
 from runtime.tool_contract import ToolManifest
 from test_phase13_adversarial_eval import AdversarialTaskManager
+from saga_test_support import SimulatedAuthorizedSaga as SpeculativeSagaManager
 
 
 @dataclass

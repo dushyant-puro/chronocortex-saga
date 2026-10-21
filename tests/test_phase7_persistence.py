@@ -23,7 +23,6 @@ import pytest_asyncio
 from runtime.persistence import FileCheckpointStore
 from runtime.speculative_saga import (
     ActionState,
-    SpeculativeSagaManager,
     TurnEpochClock,
 )
 from runtime.task_engine import (
@@ -33,6 +32,8 @@ from runtime.task_engine import (
     TaskState,
     TaskStep,
 )
+
+from saga_test_support import SimulatedAuthorizedSaga as SpeculativeSagaManager
 def _simple_executor(result: Any):
     """Return an executor that resolves to `result` after a tiny delay."""
     async def _exec(args: dict[str, Any]) -> Any:

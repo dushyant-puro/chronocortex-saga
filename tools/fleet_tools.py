@@ -174,6 +174,7 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
     "reroute_truck": ToolManifest(
         tool_name="reroute_truck",
         kind="write",
+        required_permissions=["fleet:write"],
         idempotent=False,          # each call creates a new route record
         cancellable=False,         # write; cancellation after dispatch ≠ non-execution
         requires_authoritative_commit=True,
@@ -185,6 +186,7 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
     "reserve_dock": ToolManifest(
         tool_name="reserve_dock",
         kind="write",
+        required_permissions=["fleet:write"],
         idempotent=False,          # reserving an already-reserved dock raises
         cancellable=False,
         requires_authoritative_commit=True,

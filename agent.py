@@ -17,6 +17,7 @@ except ImportError:
 from runtime.speculative_saga import ActionState, SpeculativeSagaManager, TurnEpochClock, StaleEpochError
 from runtime.grounding_guard import GroundingGuard, zero_hop_repair, RepairOutcome
 from runtime.task_engine import TaskManager
+from runtime.policy_engine import AuthorizationContext, PolicyError
 from tools.fleet_tools import READ_TOOLS, WRITE_TOOLS, TOOL_REGISTRY
 
 logger = logging.getLogger("ccs.agent")
@@ -34,9 +35,10 @@ class PendingSlot:
 
 
 class CCSAgent:
-    def __init__(self) -> None:
+    def __init__(self, *, auth_context: Optional[AuthorizationContext] = None) -> None:
         self.epoch_clock = TurnEpochClock()
-        self.saga = SpeculativeSagaManager(self.epoch_clock, registry=TOOL_REGISTRY)
+        self.saga = SpeculativeSagaManager(self.epoch_clock, registry=TOOL_REGISTRY,
+                                           auth_context=auth_context)
 
         # TaskManager must be created before GroundingGuard so we can wire
         # the on_eviction callback. resolve_field is bound to guard after
@@ -215,6 +217,11 @@ class CCSAgent:
                 logger.info("write %s superseded before dispatch — no-op", tool_name)
             except asyncio.TimeoutError:
                 logger.error("write %s IN_FLIGHT_UNKNOWN — awaiting reconciliation", tool_name)
+            except PolicyError:
+                # A pre-dispatch denial is not a remote failure and never
+                # authorizes compensation of previously committed actions.
+                logger.warning("write %s awaits trusted authorization; action=%s",
+                               tool_name, action.action_id)
             except Exception as exc:  # noqa: BLE001
                 if action.state == ActionState.IN_FLIGHT_UNKNOWN:
                     logger.error("write %s IN_FLIGHT_UNKNOWN after %s — awaiting reconciliation",

@@ -9,7 +9,9 @@ import asyncio
 import pytest
 
 from runtime.grounding_guard import GroundingGuard
-from runtime.speculative_saga import TurnEpochClock, SpeculativeSagaManager, ActionState, StaleEpochError, SagaAbortedError
+from runtime.speculative_saga import TurnEpochClock, ActionState, StaleEpochError, SagaAbortedError
+
+from saga_test_support import SimulatedAuthorizedSaga as SpeculativeSagaManager
 
 
 def _make_saga_and_guard():

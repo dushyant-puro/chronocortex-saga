@@ -10,6 +10,8 @@ from runtime.speculative_saga import (
 )
 from runtime.task_engine import StepState, TaskManager, TaskState, TaskStep
 
+from saga_test_support import SimulatedAuthorizedSaga as SpeculativeSagaManager
+
 
 class ExecutorBindings(TaskManager):
     def __init__(self, saga, executors, resolve_field=lambda _: "grounded"):

@@ -23,11 +23,12 @@ from runtime.speculative_saga import (
     ActionState,
     DuplicateOperationError,
     SagaAbortedError,
-    SpeculativeSagaManager,
     StaleEpochError,
     TurnEpochClock,
 )
 from tools.fleet_tools import TOOL_MANIFEST, READ_TOOLS, WRITE_TOOLS
+
+from saga_test_support import SimulatedAuthorizedSaga as SpeculativeSagaManager
 
 
 # ---------------------------------------------------------------------------

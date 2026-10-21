@@ -2,6 +2,7 @@ import pytest
 import asyncio
 from runtime.speculative_saga import ActionState
 from agent import CCSAgent, PendingSlot
+from runtime.policy_engine import AuthorizationContext
 
 class MockUserInputTranscribedEvent:
     def __init__(self, transcript: str, is_final: bool = False):
@@ -45,7 +46,7 @@ def ccs_setup(monkeypatch):
         pass
     monkeypatch.setattr("tools.fleet_tools._simulated_network", fast_network)
     
-    ccs = CCSAgent()
+    ccs = CCSAgent(auth_context=AuthorizationContext(["fleet:write"]))
     session = MockSession()
     ccs.session = session
     

@@ -29,10 +29,11 @@ from runtime.grounding_guard import GroundingGuard
 from runtime.speculative_saga import (
     ActionKind,
     ActionState,
-    SpeculativeSagaManager,
     TurnEpochClock,
 )
 from tools.fleet_tools import READ_TOOLS
+
+from saga_test_support import SimulatedAuthorizedSaga as SpeculativeSagaManager
 
 
 def _make_env() -> tuple[TurnEpochClock, SpeculativeSagaManager, GroundingGuard]:
