@@ -27,6 +27,7 @@ Re-grounding on epoch advance:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 import uuid
@@ -37,6 +38,9 @@ from typing import Any, Awaitable, Callable, Optional
 from runtime.persistence import CheckpointStore, SQLiteCheckpointStore
 from runtime.action_journal import JournalError
 from runtime.policy_engine import ConfirmationRequiredError, PermissionDeniedError
+from runtime.workflow_contract import (
+    WorkflowVersion, StepVersions, WorkflowContractError, capture, binding_refs, validate_record, canonical,
+)
 from runtime.speculative_saga import (
     ActionKind,
     ActionOwnershipError,
@@ -50,6 +54,10 @@ from runtime.speculative_saga import (
 )
 
 logger = logging.getLogger("ccs.task_engine")
+
+
+class WorkflowMismatchError(JournalError):
+    """This runtime cannot execute the task's recorded workflow contract."""
 
 
 # --------------------------------------------------------------------------
@@ -103,6 +111,8 @@ class TaskStep:
         or stage_write + commit_write.
     compensate: optional compensation handler (for writes).
     status_check: optional reconciliation handler for NEEDS_RECONCILIATION steps.
+    versions: explicit deployment revisions and non-secret provider scope;
+        required for journaled tasks. These declarations are not code hashes.
     """
     tool_name: str
     required_fields: list[str] = field(default_factory=list)
@@ -110,6 +120,7 @@ class TaskStep:
     kind: str = "write"
     compensate: Optional[Callable[[Any], Awaitable[None]]] = None
     status_check: Optional[Callable[[Any], Awaitable[Optional[bool]]]] = None
+    versions: Optional[StepVersions] = None
 
 
 # --------------------------------------------------------------------------
@@ -135,6 +146,7 @@ class Task:
     error: Optional[str] = None
     step_generations: list[int] = field(default_factory=list)
     replan_from: Optional[int] = None
+    workflow: Optional[WorkflowVersion] = None
 
     def __post_init__(self) -> None:
         if not self.step_states:
@@ -193,18 +205,48 @@ class TaskManager:
         self._tasks: dict[str, Task] = {}
         self._evicted_fields: set[str] = set()
         self._run_locks: dict[str, asyncio.Lock] = {}
+        self._workflow_seals: dict[str, str] = {}
+        self._workflow_bindings: dict[str, tuple] = {}
 
     # ---- task creation --------------------------------------------------
 
-    def create_task(self, name: str, steps: list[TaskStep]) -> Task:
-        """Create a new task with the given steps. Does NOT start execution."""
+    def create_task(self, name: str, steps: list[TaskStep], *, workflow: Optional[WorkflowVersion] = None) -> Task:
+        """Create without executing; journaled tasks require a pinned workflow."""
+        seal = self._capture_workflow(workflow, steps) if self._saga.journal is not None else None
         task_id = f"task-{uuid.uuid4().hex}"
-        task = Task(task_id=task_id, name=name, steps=steps)
+        task = Task(task_id=task_id, name=name, steps=steps, workflow=workflow)
         self._tasks[task_id] = task
+        if seal is not None:
+            self._workflow_seals[task_id] = seal
+            self._workflow_bindings[task_id] = binding_refs(steps, self._saga.registry)
         if self._saga.journal is not None:
             self._save_checkpoint(task)
         logger.info("created task %s (%s) with %d steps", task_id, name, len(steps))
         return task
+
+    def _capture_workflow(self, workflow, steps):
+        try:
+            return capture(workflow, steps, self._saga.registry)
+        except (WorkflowContractError, AttributeError, TypeError) as exc:
+            raise WorkflowMismatchError(f"Incompatible workflow definitions: {exc}") from exc
+
+    def _assert_workflow(self, task):
+        if self._saga.journal is None:
+            return
+        try:
+            current = self._capture_workflow(task.workflow, task.steps)
+            refs = binding_refs(task.steps, self._saga.registry)
+            old_refs = self._workflow_bindings.get(task.task_id, ())
+            if (current != self._workflow_seals.get(task.task_id) or len(refs) != len(old_refs) or
+                    any(a is not b for a, b in zip(refs, old_refs))):
+                raise WorkflowMismatchError("workflow definitions or runtime handler bindings changed")
+        except WorkflowMismatchError:
+            if task.state != TaskState.CANCELLED:
+                task.state = TaskState.NEEDS_RECONCILIATION
+                task.completed_at = None
+            task.error = "workflow contract mismatch; restore the pinned deployment before execution or repair"
+            self._save_checkpoint(task)  # preserve the original sealed contract
+            raise
 
     def _build_replan_summary(self, task: Task, field_name: str = "") -> dict[str, Any]:
         summary: dict[str, Any] = {}
@@ -328,6 +370,7 @@ class TaskManager:
         (inclusive), reset them for redispatch, rewind current_step_index, and
         transition the task to WAITING_FOR_GROUNDING or RUNNING as appropriate.
         """
+        self._assert_workflow(task)
         if task.state in (TaskState.CANCELLED, TaskState.FAILED):
             return
         if type(rewind_to) is not int or not 0 <= rewind_to < len(task.steps):
@@ -456,6 +499,7 @@ class TaskManager:
 
     def _accept_step_result(self, task: Task, idx: int) -> bool:
         """A return value is not a commit receipt. Consult the action ledger."""
+        self._assert_workflow(task)
         action = self._saga._actions.get(task.step_action_ids[idx])
         if (self._saga._durability_fault is not None or
                 (task.steps[idx].kind == "write" and not self._owns_action(task, idx, action)) or
@@ -475,6 +519,7 @@ class TaskManager:
 
     async def _compensate_step(self, task: Task, idx: int) -> bool:
         """Task repair must use the same action owner as direct saga repair."""
+        self._assert_workflow(task)
         step = task.steps[idx]
         if step.kind == "read" and step.compensate is None:
             return True  # invalidating a read has no remote effect to undo
@@ -490,6 +535,7 @@ class TaskManager:
         except JournalError:
             self._park_step(task, idx, "compensation durability unavailable")
             raise
+        self._assert_workflow(task)
         if action.state != ActionState.COMPENSATED:
             self._park_step(task, idx, f"compensation {action.compensation_state.name}; repair required")
             return False
@@ -516,6 +562,7 @@ class TaskManager:
         stale action outcomes park without automatically undoing prior work.
         """
         task = self._tasks[task_id]
+        self._assert_workflow(task)
         if task.state in (TaskState.CANCELLED, TaskState.COMPLETED, TaskState.FAILED):
             return task
         if self._saga._durability_fault is not None:
@@ -523,6 +570,7 @@ class TaskManager:
         task.state = TaskState.RUNNING
 
         while task.current_step_index < len(task.steps):
+            self._assert_workflow(task)
             if task.state == TaskState.CANCELLED:
                 # Mark remaining steps as SKIPPED
                 for i in range(task.current_step_index, len(task.steps)):
@@ -579,7 +627,12 @@ class TaskManager:
                         if status_check is None:
                             self._park_step(task, idx, "status checker unavailable")
                             return task
-                        await self._saga.reconcile_write(action_id, status_check)
+                        async def checked_status(action):
+                            self._assert_workflow(task)
+                            result = await status_check(action)
+                            self._assert_workflow(task)
+                            return result
+                        await self._saga.reconcile_write(action_id, checked_status)
                     if self._accept_step_result(task, idx):
                         continue
                     return task
@@ -801,6 +854,7 @@ class TaskManager:
         self,
         task_id: str,
         steps: Optional[list[TaskStep]] = None,
+        *, workflow: Optional[WorkflowVersion] = None,
     ) -> Optional[Task]:
         """
         Restore a task from the persistence store by task_id.
@@ -812,7 +866,15 @@ class TaskManager:
         returns the same task instance without duplicate dispatch or state reset.
         """
         if task_id in self._tasks:
-            return self._tasks[task_id]
+            task = self._tasks[task_id]
+            self._assert_workflow(task)
+            if self._saga.journal is not None:
+                if self._capture_workflow(workflow, steps) != self._workflow_seals[task_id]:
+                    raise WorkflowMismatchError("Cached task workflow definitions mismatch")
+                refs = binding_refs(steps, self._saga.registry)
+                if any(a is not b for a, b in zip(refs, self._workflow_bindings[task_id])):
+                    raise WorkflowMismatchError("Cached workflow handlers cannot be rebound")
+            return task
 
         if self.store is None:
             logger.warning("restore_task called but no CheckpointStore is configured")
@@ -824,6 +886,13 @@ class TaskManager:
             return None
 
         if self._saga.journal is not None:
+            try:
+                validate_record(cp.get("workflow_contract"))
+            except WorkflowContractError as exc:
+                raise WorkflowMismatchError("Legacy or invalid workflow contract; evidence remains read-only") from exc
+            seal = self._capture_workflow(workflow, steps)
+            if seal != canonical(cp["workflow_contract"]):
+                raise WorkflowMismatchError("Journal workflow definitions do not match this deployment")
             definitions = [{"tool_name": s.tool_name, "kind": s.kind} for s in steps] if steps is not None else None
             if definitions is None or cp.get("step_definitions") != definitions:
                 raise JournalError("Journal task restore requires matching explicit step definitions")
@@ -859,6 +928,7 @@ class TaskManager:
             error=cp.get("error"),
             step_generations=list(cp.get("step_generations", [0] * len(steps))),
             replan_from=cp.get("replan_from"),
+            workflow=workflow,
         )
 
         # CRITICAL CONSTRAINT: Mark any IN_FLIGHT or IN_FLIGHT_UNKNOWN steps as NEEDS_RECONCILIATION
@@ -870,6 +940,8 @@ class TaskManager:
 
         self._tasks[task_id] = task
         if self._saga.journal is not None:
+            self._workflow_seals[task_id] = seal
+            self._workflow_bindings[task_id] = binding_refs(steps, self._saga.registry)
             # Intent can be newer than the task projection (crash immediately
             # after STAGED/DISPATCH_INTENT). Reattach by durable task/step owner.
             # Any recovered effect still requires reconciliation, even when a
@@ -916,6 +988,7 @@ class TaskManager:
         args: dict[str, Any],
     ) -> Any:
         """Stage and commit a write through the existing saga manager."""
+        self._assert_workflow(task)
         executor = self._get_executor(step)
         action = self._saga._actions.get(task.step_action_ids[idx])
         if action is not None and not self._owns_action(task, idx, action):
@@ -932,6 +1005,8 @@ class TaskManager:
             action = self._saga.stage_write(step.tool_name, args, compensate=step.compensate,
                                             owner_task_id=task.task_id, owner_step_index=idx,
                                             owner_generation=task.step_generations[idx])
+        if self._saga.journal is not None:
+            action._execution_guard = lambda: self._assert_workflow(task)
         task.step_action_ids[idx] = action.action_id
         task.step_states[idx] = StepState.IN_FLIGHT
         result = await self._saga.commit_write(action.action_id, executor)
@@ -945,6 +1020,7 @@ class TaskManager:
         args: dict[str, Any],
     ) -> Any:
         """Fire a speculative read through the existing saga manager."""
+        self._assert_workflow(task)
         entity_hash = f"task-{task.task_id}-step-{idx}"
         action = self._saga.fire_speculative_read(
             step.tool_name,
@@ -1007,6 +1083,8 @@ class TaskManager:
                 "step_states": [s.name for s in t.step_states],
                 "step_generations": list(t.step_generations),
                 "replan_from": t.replan_from,
+                "workflow_digest": (json.loads(self._workflow_seals[t.task_id])["digest"]
+                                    if t.task_id in self._workflow_seals else None),
                 "error": t.error,
                 "age_ms": round((time.monotonic() - t.created_at) * 1000, 1),
             }
@@ -1019,6 +1097,7 @@ class TaskManager:
         be round-tripped via restore_checkpoint() or FileCheckpointStore.
         """
         task = self._tasks[task_id]
+        contract = json.loads(self._workflow_seals[task_id]) if task_id in self._workflow_seals else None
         return {
             "task_id": task.task_id,
             "name": task.name,
@@ -1028,7 +1107,9 @@ class TaskManager:
             "step_results": list(task.step_results),
             "step_action_ids": list(task.step_action_ids),
             "step_dispatched_args": list(task.step_dispatched_args),
-            "step_definitions": [{"tool_name": s.tool_name, "kind": s.kind} for s in task.steps],
+            "step_definitions": ([{"tool_name": s["tool_name"], "kind": s["kind"]} for s in contract["steps"]]
+                                 if contract is not None else [{"tool_name": s.tool_name, "kind": s.kind} for s in task.steps]),
+            "workflow_contract": contract,
             "error": task.error,
             "step_generations": list(task.step_generations),
             "replan_from": task.replan_from,

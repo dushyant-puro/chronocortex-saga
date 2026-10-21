@@ -22,6 +22,7 @@ from runtime.task_engine import TaskManager, TaskState, TaskStep, StepState
 from runtime.persistence import SQLiteCheckpointStore
 from runtime.tool_contract import ToolManifest, ToolRegistry
 from tests.lease_test_support import shared_test_journal
+from tests.workflow_test_support import VersionedTestTasks
 
 
 def manager(path, **kwargs):
@@ -32,7 +33,7 @@ def manager(path, **kwargs):
                                   journal=shared_test_journal(path), **kwargs)
 
 
-class Tasks(TaskManager):
+class Tasks(VersionedTestTasks, TaskManager):
     def __init__(self, saga, execute):
         self.execute = execute
         super().__init__(saga, lambda _: None)

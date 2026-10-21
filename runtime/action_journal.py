@@ -10,6 +10,7 @@ from pathlib import Path
 import sqlite3
 import time
 from typing import Any
+from runtime.workflow_contract import WorkflowContractError, canonical, validate_record
 
 
 class JournalError(RuntimeError):
@@ -36,7 +37,7 @@ class WorkerLease:
 
 
 _APP_ID = 0x43435341
-_VERSION = 3
+_VERSION = 4
 _IDENTITY = ("action_id", "tool_name", "args", "digest", "idempotency_key",
              "capture_epoch", "session_id", "task_id", "step_index", "generation", "chain_id")
 _TRANSITIONS = {
@@ -65,7 +66,7 @@ def _json(value: Any) -> str:
 
 
 class SQLiteActionJournal:
-    """Schema v3; rollback journal + synchronous EXTRA on every connection.
+    """Schema v4; rollback journal + synchronous EXTRA on every connection.
 
     Use a local disk with reliable locking/flush semantics and protect its ACLs.
     The database contains request/result data. Do not place it on a share or
@@ -95,10 +96,17 @@ class SQLiteActionJournal:
                     self._create_lease_tables(db)
                     db.execute(f"PRAGMA application_id={_APP_ID}")
                     db.execute(f"PRAGMA user_version={_VERSION}")
-                elif version in {1, 2} and app_id == _APP_ID and migrate is True:
+                elif version in {1, 2, 3} and app_id == _APP_ID and migrate is True:
+                    if version == 3:
+                        lease_row = db.execute("SELECT owner,generation,expires_ms,last_seen_ms FROM worker_lease WHERE singleton=1").fetchone()
+                        now = self._now()
+                        self._clock_guard(lease_row, now)
+                        if lease_row is not None and now < lease_row[2]:
+                            raise JournalError("Offline workflow migration requires an expired/released worker lease")
                     if version == 1:
                         self._migrate_v1(db)
-                    self._create_lease_tables(db)
+                    if version < 3:
+                        self._create_lease_tables(db)
                     db.execute(f"PRAGMA user_version={_VERSION}")
                 elif version != _VERSION or app_id != _APP_ID:
                     raise JournalError("Unsupported or foreign journal schema; explicit migration required")
@@ -437,9 +445,20 @@ class SQLiteActionJournal:
             raise JournalError("Task checkpoint identity mismatch")
         payload = _json(checkpoint)
         with self._transaction(writer_kind="TASK_CHECKPOINT", subject=task_id) as db:
-            row = db.execute("SELECT version FROM task_checkpoints WHERE task_id=?", (task_id,)).fetchone()
+            contract = checkpoint.get("workflow_contract")
+            if contract is not None:
+                try:
+                    validate_record(contract)
+                except WorkflowContractError as exc:
+                    raise JournalError("Invalid workflow contract") from exc
+                definitions = [{"tool_name": s["tool_name"], "kind": s["kind"]} for s in contract["steps"]]
+                if checkpoint.get("step_definitions") != definitions:
+                    raise JournalError("Task definitions disagree with workflow contract")
+            row = db.execute("SELECT version,checkpoint FROM task_checkpoints WHERE task_id=?", (task_id,)).fetchone()
             if (row[0] if row else None) != expected_version:
                 raise JournalConflict("Task checkpoint version changed")
+            if row is not None and canonical(json.loads(row[1]).get("workflow_contract")) != canonical(contract):
+                raise JournalError("Task workflow contract is immutable; legacy records cannot be adopted implicitly")
             version = 0 if expected_version is None else expected_version + 1
             if row is None:
                 db.execute("INSERT INTO task_checkpoints VALUES (?,?,?)", (task_id, version, payload))

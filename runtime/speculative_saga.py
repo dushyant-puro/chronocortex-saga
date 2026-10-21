@@ -184,6 +184,7 @@ class StagedAction:
     _compensation_task: Optional[asyncio.Task] = field(default=None, repr=False, compare=False)
     _staged_digest: Optional[str] = field(default=None, repr=False, compare=False)
     _journal_version: Optional[int] = field(default=None, repr=False, compare=False)
+    _execution_guard: Optional[Callable[[], None]] = field(default=None, repr=False, compare=False)
     intent_session: Optional[str] = None
     owner_task_id: Optional[str] = None
     owner_step_index: Optional[int] = None
@@ -791,6 +792,8 @@ class SpeculativeSagaManager:
         action = self._actions[action_id]
         if action.recovered:
             raise JournalError("Recovered journal intent cannot be dispatched; reconciliation required")
+        if action._execution_guard is not None:
+            action._execution_guard()
         if action.chain_id in self._closed_chains:
             raise ActionOwnershipError("Chain is closed; dispatch denied")
         chain_members = self._ordered_chain_members(action.chain_id)
@@ -962,7 +965,13 @@ class SpeculativeSagaManager:
 
     async def _auto_compensate(self, action: StagedAction) -> None:
         """Background entry point sharing ownership with all saga repair paths."""
-        await self.compensate_action(action.action_id)
+        try:
+            await self.compensate_action(action.action_id)
+        except JournalError as exc:
+            action.compensation_error = exc
+            action.compensation_failed = True
+            logger.critical("Automatic repair fenced for %s: %s; manual reconciliation required",
+                            action.action_id, type(exc).__name__)
 
     async def compensate_action(self, action_id: str) -> None:
         """Make at most one automatic compensation attempt in this process.
@@ -979,6 +988,8 @@ class SpeculativeSagaManager:
             return
         if action.compensate is None or action.compensation_state != CompensationState.NOT_STARTED:
             return
+        if action._execution_guard is not None:
+            action._execution_guard()
         members = self._ordered_chain_members(action.chain_id)
         if action in members:
             if any(a.chain_id == action.chain_id and
