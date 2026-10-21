@@ -1,12 +1,14 @@
-"""Local SQLite dispatch-intent journal. No network-filesystem/lease guarantee.
+"""Local SQLite dispatch-intent journal with exclusive worker execution leases.
 
 Each action update and its event commit in one transaction. SQL CAS and key
 claims serialize writers sharing this database, not arbitrary provider clients.
 """
 from contextlib import contextmanager
+from dataclasses import dataclass
 import json
 from pathlib import Path
 import sqlite3
+import time
 from typing import Any
 
 
@@ -22,8 +24,19 @@ class JournalDuplicate(JournalError):
     """An existing durable operation retains the requested key."""
 
 
+class JournalLeaseError(JournalConflict):
+    """Worker execution authority is absent, expired or superseded."""
+
+
+@dataclass(frozen=True)
+class WorkerLease:
+    """Trusted host capability, not authentication or a provider fencing token."""
+    owner: str
+    generation: int
+
+
 _APP_ID = 0x43435341
-_VERSION = 2
+_VERSION = 3
 _IDENTITY = ("action_id", "tool_name", "args", "digest", "idempotency_key",
              "capture_epoch", "session_id", "task_id", "step_index", "generation", "chain_id")
 _TRANSITIONS = {
@@ -52,18 +65,21 @@ def _json(value: Any) -> str:
 
 
 class SQLiteActionJournal:
-    """Schema v2; rollback journal + synchronous EXTRA on every connection.
+    """Schema v3; rollback journal + synchronous EXTRA on every connection.
 
     Use a local disk with reliable locking/flush semantics and protect its ACLs.
     The database contains request/result data. Do not place it on a share or
     delete its sidecars. Connections/transactions never span provider awaits.
     """
 
-    def __init__(self, path: str | Path, *, timeout: float = 0.25, migrate: bool = False):
+    def __init__(self, path: str | Path, *, timeout: float = 0.25, migrate: bool = False,
+                 clock_ms=None):
         if not str(path) or str(path) == ":memory:" or str(path).startswith("file:"):
             raise JournalError("A file-backed journal path is required")
         self.path = Path(path).resolve()
         self.timeout = timeout
+        self._clock_ms = clock_ms if clock_ms is not None else lambda: time.time_ns() // 1_000_000
+        self._lease = None
         try:
             with self._transaction(initialize=True) as db:
                 version = db.execute("PRAGMA user_version").fetchone()[0]
@@ -76,16 +92,20 @@ class SQLiteActionJournal:
                     db.execute("CREATE TABLE task_checkpoints (task_id TEXT PRIMARY KEY, version INTEGER NOT NULL, checkpoint TEXT NOT NULL)")
                     db.execute("CREATE TABLE task_events (seq INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL REFERENCES task_checkpoints(task_id), version INTEGER NOT NULL, checkpoint TEXT NOT NULL, UNIQUE(task_id,version))")
                     self._create_ownership_tables(db)
+                    self._create_lease_tables(db)
                     db.execute(f"PRAGMA application_id={_APP_ID}")
                     db.execute(f"PRAGMA user_version={_VERSION}")
-                elif version == 1 and app_id == _APP_ID and migrate is True:
-                    self._migrate_v1(db)
+                elif version in {1, 2} and app_id == _APP_ID and migrate is True:
+                    if version == 1:
+                        self._migrate_v1(db)
+                    self._create_lease_tables(db)
+                    db.execute(f"PRAGMA user_version={_VERSION}")
                 elif version != _VERSION or app_id != _APP_ID:
                     raise JournalError("Unsupported or foreign journal schema; explicit migration required")
                 if db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
                     raise JournalError("Journal integrity check failed")
                 required = {"actions", "key_claims", "events", "task_checkpoints", "task_events",
-                            "chains", "operation_slots", "chain_events"}
+                            "chains", "operation_slots", "chain_events", "worker_lease", "worker_events"}
                 present = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
                 if not required <= present:
                     raise JournalError("Journal schema tables are missing")
@@ -97,6 +117,88 @@ class SQLiteActionJournal:
         db.execute("CREATE TABLE chains (chain_id TEXT PRIMARY KEY, task_id TEXT, status TEXT NOT NULL CHECK(status IN ('OPEN','CLOSED')))")
         db.execute("CREATE TABLE operation_slots (task_id TEXT NOT NULL, step_index INTEGER NOT NULL, generation INTEGER NOT NULL, action_id TEXT NOT NULL UNIQUE REFERENCES actions(action_id), PRIMARY KEY(task_id,step_index,generation))")
         db.execute("CREATE TABLE chain_events (seq INTEGER PRIMARY KEY AUTOINCREMENT, chain_id TEXT NOT NULL REFERENCES chains(chain_id), kind TEXT NOT NULL)")
+
+    @staticmethod
+    def _create_lease_tables(db):
+        db.execute("CREATE TABLE worker_lease (singleton INTEGER PRIMARY KEY CHECK(singleton=1), owner TEXT NOT NULL, generation INTEGER NOT NULL, expires_ms INTEGER NOT NULL, last_seen_ms INTEGER NOT NULL)")
+        db.execute("CREATE TABLE worker_events (seq INTEGER PRIMARY KEY AUTOINCREMENT, owner TEXT NOT NULL, generation INTEGER NOT NULL, kind TEXT NOT NULL, subject TEXT, observed_ms INTEGER NOT NULL)")
+
+    def _now(self):
+        now = self._clock_ms()
+        if type(now) is not int or not 0 <= now <= 9_223_372_036_768_375_807:
+            raise JournalLeaseError("Invalid lease clock")
+        return now
+
+    @staticmethod
+    def _ttl(ttl_ms):
+        if type(ttl_ms) is not int or not 1 <= ttl_ms <= 86_400_000:
+            raise JournalLeaseError("lease TTL must be 1..86400000 integer milliseconds")
+
+    @staticmethod
+    def _clock_guard(row, now):
+        if row is not None and now < row[3]:
+            raise JournalLeaseError("lease clock moved backward; stop writes until clock is repaired")
+
+    def _require_lease(self, db):
+        row = db.execute("SELECT owner,generation,expires_ms,last_seen_ms FROM worker_lease WHERE singleton=1").fetchone()
+        now = self._now()
+        self._clock_guard(row, now)
+        if row is not None:
+            db.execute("UPDATE worker_lease SET last_seen_ms=? WHERE singleton=1", (now,))
+        if (self._lease is None or row is None or
+                (row[0], row[1]) != (self._lease.owner, self._lease.generation) or now >= row[2]):
+            raise JournalLeaseError("Worker lease missing, expired or superseded; reopen for recovery")
+        return now
+
+    def acquire_lease(self, owner: str, *, ttl_ms: int = 30_000) -> WorkerLease:
+        """Acquire only on an unbound instance. Takeover requires expiry, never replay."""
+        self._ttl(ttl_ms)
+        if self._lease is not None or type(owner) is not str or not owner.strip() or len(owner) > 256:
+            raise JournalLeaseError("New unbound journal instance and nonempty lease owner required")
+        with self._transaction() as db:
+            row = db.execute("SELECT owner,generation,expires_ms,last_seen_ms FROM worker_lease WHERE singleton=1").fetchone()
+            now = self._now()
+            self._clock_guard(row, now)
+            if row is not None and now < row[2]:
+                db.execute("UPDATE worker_lease SET last_seen_ms=? WHERE singleton=1", (now,))
+                # Remember denied observations too; a later clock rollback must
+                # not restore authority that has already been observed later.
+                db.execute("COMMIT")
+                raise JournalLeaseError("Worker lease already held; no forced takeover")
+            generation = 1 if row is None else row[1] + 1
+            db.execute("INSERT OR REPLACE INTO worker_lease VALUES (1,?,?,?,?)",
+                       (owner, generation, now + ttl_ms, now))
+            db.execute("INSERT INTO worker_events(owner,generation,kind,observed_ms) VALUES (?,?,'ACQUIRED',?)",
+                       (owner, generation, now))
+        self._lease = WorkerLease(owner, generation)
+        return self._lease
+
+    def bind_lease(self, lease: WorkerLease) -> None:
+        """Share one trusted worker's authority across connections, never across workers."""
+        if (self._lease is not None or type(lease) is not WorkerLease or
+                type(lease.owner) is not str or not lease.owner or
+                type(lease.generation) is not int or lease.generation < 1):
+            raise JournalLeaseError("Invalid lease binding or journal already bound")
+        # Bind once, even on failure: this object must not acquire newer authority.
+        self._lease = lease
+        with self._transaction(writer_kind="BOUND"):
+            pass
+
+    def renew_lease(self, *, ttl_ms: int = 30_000) -> None:
+        self._ttl(ttl_ms)
+        with self._transaction(writer_kind="RENEWED") as db:
+            now = db.execute("SELECT last_seen_ms FROM worker_lease WHERE singleton=1").fetchone()[0]
+            db.execute("UPDATE worker_lease SET expires_ms=? WHERE singleton=1", (now + ttl_ms,))
+
+    def release_lease(self) -> None:
+        """Stop dispatch first; release does not stop an outstanding remote request."""
+        with self._transaction(writer_kind="RELEASED") as db:
+            db.execute("UPDATE worker_lease SET expires_ms=last_seen_ms WHERE singleton=1")
+
+    def worker_events(self) -> list[dict]:
+        with self._transaction() as db:
+            rows = db.execute("SELECT seq,owner,generation,kind,subject,observed_ms FROM worker_events ORDER BY seq").fetchall()
+        return [dict(zip(("seq", "owner", "generation", "kind", "subject", "observed_ms"), row)) for row in rows]
 
     @staticmethod
     def _resolved(record):
@@ -173,10 +275,10 @@ class SQLiteActionJournal:
             updated = _json(cp)
             db.execute("UPDATE task_checkpoints SET version=?,checkpoint=? WHERE task_id=?", (version + 1, updated, task_id))
             db.execute("INSERT INTO task_events(task_id,version,checkpoint) VALUES (?,?,?)", (task_id, version + 1, updated))
-        db.execute(f"PRAGMA user_version={_VERSION}")
+        db.execute("PRAGMA user_version=2")
 
     @contextmanager
-    def _transaction(self, *, initialize=False):
+    def _transaction(self, *, initialize=False, writer_kind=None, subject=None):
         db = None
         try:
             db = sqlite3.connect(self.path, timeout=self.timeout, isolation_level=None)
@@ -191,7 +293,19 @@ class SQLiteActionJournal:
                 if (db.execute("PRAGMA user_version").fetchone()[0] != _VERSION or
                         db.execute("PRAGMA application_id").fetchone()[0] != _APP_ID):
                     raise JournalError("Journal schema changed")
+            observed = None
+            if writer_kind is not None:
+                try:
+                    observed = self._require_lease(db)
+                except JournalLeaseError:
+                    # Only the guard has run. Commit its clock high-water mark,
+                    # never action/task/chain changes or a successful write event.
+                    db.execute("COMMIT")
+                    raise
             yield db
+            if writer_kind is not None:
+                db.execute("INSERT INTO worker_events(owner,generation,kind,subject,observed_ms) VALUES (?,?,?,?,?)",
+                           (self._lease.owner, self._lease.generation, writer_kind, subject, observed))
             db.execute("COMMIT")
         except (sqlite3.Error, ValueError, TypeError, KeyError, RecursionError) as exc:
             raise JournalError("Journal transaction failed") from exc
@@ -210,7 +324,7 @@ class SQLiteActionJournal:
         payload = _json(record)
         if record["state"] != "PENDING" or record["compensation_state"] != "NOT_STARTED":
             raise JournalError("New intent must be pending with no compensation attempt")
-        with self._transaction() as db:
+        with self._transaction(writer_kind="STAGED", subject=record["action_id"]) as db:
             self._task_projection_guard(db, record)
             chain = db.execute("SELECT task_id,status FROM chains WHERE chain_id=?", (record["chain_id"],)).fetchone()
             if chain is not None and (chain[0] != record["task_id"] or chain[1] != "OPEN"):
@@ -243,9 +357,11 @@ class SQLiteActionJournal:
         return 0
 
     def transition(self, record: dict, expected_version: int, kind: str) -> int:
+        if type(kind) is not str or not kind:
+            raise JournalError("Nonempty journal event kind required")
         self._validate_ownership(record)
         payload = _json(record)
-        with self._transaction() as db:
+        with self._transaction(writer_kind=kind, subject=record["action_id"]) as db:
             if kind in {"DISPATCH_INTENT", "FORWARD_COMMITTED", "RECONCILED_PRESENT"}:
                 chain = db.execute("SELECT status FROM chains WHERE chain_id=?", (record["chain_id"],)).fetchone()
                 if chain is None or chain[0] != "OPEN":
@@ -291,7 +407,7 @@ class SQLiteActionJournal:
         return version
 
     def close_chain(self, chain_id: str, owner_task_id: str | None = None) -> None:
-        with self._transaction() as db:
+        with self._transaction(writer_kind="CHAIN_CLOSED", subject=chain_id) as db:
             row = db.execute("SELECT status,task_id FROM chains WHERE chain_id=?", (chain_id,)).fetchone()
             if row is None:
                 db.execute("INSERT INTO chains VALUES (?,?, 'CLOSED')", (chain_id, owner_task_id))
@@ -320,7 +436,7 @@ class SQLiteActionJournal:
         if checkpoint.get("task_id") != task_id:
             raise JournalError("Task checkpoint identity mismatch")
         payload = _json(checkpoint)
-        with self._transaction() as db:
+        with self._transaction(writer_kind="TASK_CHECKPOINT", subject=task_id) as db:
             row = db.execute("SELECT version FROM task_checkpoints WHERE task_id=?", (task_id,)).fetchone()
             if (row[0] if row else None) != expected_version:
                 raise JournalConflict("Task checkpoint version changed")

@@ -11,6 +11,7 @@ from runtime.policy_engine import AuthorizationContext
 from runtime.speculative_saga import SpeculativeSagaManager, TurnEpochClock
 from runtime.tool_contract import ToolManifest, ToolRegistry
 from runtime.task_engine import TaskManager, TaskStep
+from tests.lease_test_support import shared_test_journal
 
 
 async def run():
@@ -55,7 +56,7 @@ async def run():
     registry = ToolRegistry()
     registry.register(ToolManifest("change", "write"))
     saga = SpeculativeSagaManager(TurnEpochClock(), auth_context=AuthorizationContext(),
-                                  journal=CrashJournal(path), registry=registry)
+                                  journal=shared_test_journal(path, CrashJournal), registry=registry)
     if window.startswith("replan_"):
         class Tasks(TaskManager):
             def _get_executor(self, step):

@@ -21,6 +21,7 @@ from runtime.speculative_saga import (
 from runtime.task_engine import TaskManager, TaskState, TaskStep, StepState
 from runtime.persistence import SQLiteCheckpointStore
 from runtime.tool_contract import ToolManifest, ToolRegistry
+from tests.lease_test_support import shared_test_journal
 
 
 def manager(path, **kwargs):
@@ -28,7 +29,7 @@ def manager(path, **kwargs):
     registry.register(ToolManifest("change", "write", required_permissions=["test:write"]))
     return SpeculativeSagaManager(TurnEpochClock(), registry=registry,
                                   auth_context=AuthorizationContext(["test:write"]),
-                                  journal=SQLiteActionJournal(path), **kwargs)
+                                  journal=shared_test_journal(path), **kwargs)
 
 
 class Tasks(TaskManager):
