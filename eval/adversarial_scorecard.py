@@ -397,7 +397,7 @@ async def run_scenario_d(metrics: ScorecardMetrics) -> bool:
 
 async def main() -> None:
     print("================================================================================")
-    print("        CHRONOCORTEX-SAGA / PRISM — ADVERSARIAL EVALUATION SCORECARD            ")
+    print("        CHRONOCORTEX-SAGA — SIMULATED ADVERSARIAL EVALUATION SCORECARD         ")
     print("================================================================================")
 
     metrics = ScorecardMetrics()
@@ -426,10 +426,11 @@ async def main() -> None:
     false_commit_rate = metrics.false_commitments / max(1, metrics.total_actions)
 
     print("\n--------------------------------------------------------------------------------")
-    print("                          REAL COUNTED METRICS SUMMARY                          ")
+    print("                          SIMULATED OBSERVED COUNTS                             ")
     print("--------------------------------------------------------------------------------")
     print(f"Total Evaluated Actions       : {metrics.total_actions}")
     print(f"Total Scenarios Evaluated     : {metrics.scenarios_attempted}")
+    print(f"Distinct Scenarios            : {len(scenarios)} (repeated {iterations_per_scenario} times)")
     print(f"Total Scenarios Recovered     : {metrics.scenarios_recovered}")
     print(f"Stale Actions (COMMITTED_STALE): {metrics.stale_actions}")
     print(f"Duplicate Tool Executions     : {metrics.duplicate_executions}")
@@ -439,6 +440,8 @@ async def main() -> None:
     print(f"DUPLICATE-ACTION RATE         : {dup_rate * 100:.2f}%  (target: 0.00%)")
     print(f"RECOVERY RATE                 : {recovery_rate * 100:.2f}%  (target: 100.00%)")
     print(f"FALSE-COMMITMENT RATE         : {false_commit_rate * 100:.2f}%  (target: 0.00%)")
+    print("Completion and safe parking are distinct. Legacy restart intent remains parked;")
+    print("this scorecard does not establish crash safety or real-provider guarantees.")
     print("================================================================================")
 
 

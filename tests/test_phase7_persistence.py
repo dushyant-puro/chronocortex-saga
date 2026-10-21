@@ -242,7 +242,8 @@ async def test_7c_in_flight_restores_as_needs_reconciliation():
     1. Create checkpoint where step 0 was IN_FLIGHT when process crashed.
     2. restore_task marks step 0 as NEEDS_RECONCILIATION.
     3. Advancing the task uses saga.reconcile_write with status_check:
-       - Status check returns True -> step becomes COMMITTED, task completes.
+       - Status check confirms an effect, but a legacy checkpoint cannot
+         establish intent validity in a new process. Keep the task parked.
     """
     with tempfile.TemporaryDirectory() as tmpdir:
         store = FileCheckpointStore(tmpdir)
@@ -300,8 +301,11 @@ async def test_7c_in_flight_restores_as_needs_reconciliation():
         res = await tm.run_task(task_id)
 
         assert reconcile_called is True
-        assert res.state == TaskState.COMPLETED
-        assert res.step_states[0] == StepState.COMMITTED
+        assert res.state == TaskState.NEEDS_RECONCILIATION
+        assert res.step_states[0] == StepState.NEEDS_RECONCILIATION
+        assert res.current_step_index == 0
+        assert res.step_action_ids[0] == "write-0-action-123"
+        assert saga._actions[res.step_action_ids[0]].state == ActionState.COMMITTED_STALE
         assert res.step_results[0] == {"route_id": "route-reconciled"}
 
         print(f"\n[TEST 7c VERIFICATION] NEEDS_RECONCILIATION step reconciled via saga.reconcile_write: result={res.step_results[0]}")
