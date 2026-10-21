@@ -245,12 +245,9 @@ async def test_3_negative_case_isolated_discrimination():
     graph.add_task(task_b.task_id, task_b, depends_on={task_a.task_id: ["y"]})
     graph._task_manager = tm
 
-    # Manually mark B as committed
-    task_b.step_states[0] = StepState.COMMITTED
-    task_b.step_results[0] = {"ok": True}
-    task_b.step_dispatched_args[0] = {"y": "y_val"}
-    task_b.state = TaskState.COMPLETED
-    task_b.current_step_index = 1
+    # Establish real action identity/evidence before testing compensation.
+    await tm.run_task(task_b.task_id)
+    assert task_b.state == TaskState.COMPLETED
 
     # Call on_upstream_replanned directly in isolation with changed 'x' (unconsumed field)
     cascaded = await graph.on_upstream_replanned(task_a.task_id, {"x": "new_x_value"})

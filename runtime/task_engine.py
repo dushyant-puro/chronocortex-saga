@@ -39,6 +39,7 @@ from runtime.policy_engine import ConfirmationRequiredError, PermissionDeniedErr
 from runtime.speculative_saga import (
     ActionKind,
     ActionState,
+    CompensationState,
     DuplicateOperationError,
     SagaAbortedError,
     SpeculativeSagaManager,
@@ -291,6 +292,17 @@ class TaskManager:
                     )
 
     async def _replan_from_step(
+        self, task: Task, rewind_to: int, field_name: str = "", evicted_value: str = "",
+    ) -> None:
+        """Serialize task repair with run/resume; release before redispatch."""
+        lock = self._run_locks.setdefault(task.task_id, asyncio.Lock())
+        async with lock:
+            await self._replan_locked(task, rewind_to, field_name, evicted_value)
+            should_run = task.state == TaskState.RUNNING
+        if should_run:
+            await self.run_task(task.task_id)
+
+    async def _replan_locked(
         self,
         task: Task,
         rewind_to: int,
@@ -302,41 +314,29 @@ class TaskManager:
         (inclusive), reset them for redispatch, rewind current_step_index, and
         transition the task to WAITING_FOR_GROUNDING or RUNNING as appropriate.
         """
+        if task.state == TaskState.CANCELLED:
+            return
         upper_idx = (
             task.current_step_index
             if task.current_step_index < len(task.steps)
             else len(task.steps)
         )
+        for i in range(rewind_to, min(upper_idx + 1, len(task.steps))):
+            if task.step_states[i] == StepState.NEEDS_RECONCILIATION:
+                self._park_step(task, i, "prior compensation or operation remains unresolved")
+                return
         for i in range(upper_idx - 1, rewind_to - 1, -1):
             if task.step_states[i] != StepState.COMMITTED:
                 continue
-            step = task.steps[i]
-            result = task.step_results[i]
-            if step.compensate is not None and result is not None:
-                try:
-                    await step.compensate(result)
-                    logger.info(
-                        "task %s step %d (%s) compensated for replanning",
-                        task.task_id, i, step.tool_name,
-                    )
-                except Exception:  # noqa: BLE001
-                    logger.critical(
-                        "COMPENSATION FAILED during replan for task %s step %d (%s) — "
-                        "MANUAL RECONCILIATION REQUIRED",
-                        task.task_id, i, step.tool_name,
-                        exc_info=True,
-                    )
-                    task.state = TaskState.FAILED
-                    task.error = f"compensation failed during replan at step {i}"
-                    task.completed_at = time.monotonic()
-                    return
-            elif step.compensate is None and step.kind == "write":
-                logger.critical(
-                    "COMMITTED step %d (%s) used evicted field %s=%r but has NO "
-                    "compensate() handler — MANUAL RECONCILIATION REQUIRED; remote "
-                    "side-effect cannot be rolled back automatically",
-                    i, step.tool_name, field_name, evicted_value,
-                )
+            action = self._saga._actions.get(task.step_action_ids[i])
+            if task.steps[i].kind == "write" and action is not None and action.state == ActionState.COMMITTED:
+                # A semantic correction invalidates this intent even if the
+                # asynchronous epoch callback has not run yet.
+                action.state = ActionState.COMMITTED_STALE
+            if not await self._compensate_step(task, i):
+                return
+            if task.state == TaskState.CANCELLED:
+                return
 
             # Mark step for redispatch
             task.step_states[i] = StepState.COMPENSATED
@@ -352,7 +352,6 @@ class TaskManager:
         if self._check_fields_resolved(task.steps[rewind_to]):
             task.step_states[rewind_to] = StepState.PENDING
             task.state = TaskState.RUNNING
-            await self.run_task(task.task_id)
         else:
             task.step_states[rewind_to] = StepState.WAITING_FOR_GROUNDING
             task.state = TaskState.WAITING_FOR_GROUNDING
@@ -413,6 +412,7 @@ class TaskManager:
     def _park_step(self, task: Task, idx: int, reason: str) -> None:
         """Preserve operation identity and prior progress; never guess remote failure."""
         task.step_states[idx] = StepState.NEEDS_RECONCILIATION
+        task.current_step_index = min(task.current_step_index, idx)
         action = self._saga._actions.get(task.step_action_ids[idx])
         if action is not None:
             task.step_results[idx] = action.result
@@ -426,14 +426,37 @@ class TaskManager:
         """A return value is not a commit receipt. Consult the action ledger."""
         action = self._saga._actions.get(task.step_action_ids[idx])
         if (task.state == TaskState.CANCELLED or action is None or
-                action.state != ActionState.COMMITTED):
-            state = action.state.name if action is not None else "MISSING_ACTION"
+                action.state != ActionState.COMMITTED or
+                action.compensation_state != CompensationState.NOT_STARTED):
+            state = (f"{action.state.name}/compensation={action.compensation_state.name}"
+                     if action is not None else "MISSING_ACTION")
             self._park_step(task, idx, f"action outcome {state}; reconciliation or repair required")
             return False
         task.step_results[idx] = action.result
         task.step_states[idx] = StepState.COMMITTED
         task.current_step_index += 1
         task.error = None
+        self._save_checkpoint(task)
+        return True
+
+    async def _compensate_step(self, task: Task, idx: int) -> bool:
+        """Task repair must use the same action owner as direct saga repair."""
+        step = task.steps[idx]
+        if step.kind == "read" and step.compensate is None:
+            return True  # invalidating a read has no remote effect to undo
+        action = self._saga._actions.get(task.step_action_ids[idx])
+        if action is None:
+            self._park_step(task, idx, "missing original action evidence for compensation")
+            return False
+        try:
+            await self._saga.compensate_action(action.action_id)
+        except asyncio.CancelledError:
+            self._park_step(task, idx, "compensation interrupted; outcome unresolved")
+            raise
+        if action.state != ActionState.COMPENSATED:
+            self._park_step(task, idx, f"compensation {action.compensation_state.name}; repair required")
+            return False
+        task.step_states[idx] = StepState.COMPENSATED
         self._save_checkpoint(task)
         return True
 
@@ -488,12 +511,17 @@ class TaskManager:
                         idempotency_key=action_id,
                         compensate=step.compensate,
                         state=ActionState.IN_FLIGHT_UNKNOWN,
+                        # Legacy task snapshots cannot prove no compensation
+                        # was dispatched before the crash. Never auto-repeat it.
+                        compensation_state=CompensationState.UNKNOWN,
                     )
                     self._saga._actions[action_id] = action
                     self._saga._ikey_index[action.idempotency_key] = action_id
 
                 try:
-                    if action.state in (ActionState.IN_FLIGHT_UNKNOWN, ActionState.COMMITTED_STALE):
+                    if (action.state in (ActionState.IN_FLIGHT_UNKNOWN, ActionState.COMMITTED_STALE)
+                            or action.compensation_state in (CompensationState.IN_FLIGHT,
+                                CompensationState.UNKNOWN, CompensationState.NOT_APPLIED)):
                         if status_check is None:
                             self._park_step(task, idx, "status checker unavailable")
                             return task
@@ -650,7 +678,7 @@ class TaskManager:
         Compensates all committed steps in reverse order before marking CANCELLED.
         """
         task = self._tasks[task_id]
-        if task.state in (TaskState.COMPLETED, TaskState.FAILED):
+        if task.state in (TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED):
             logger.warning(
                 "cancel_task called on task %s in terminal state %s — no-op",
                 task_id, task.state.name,
@@ -659,26 +687,20 @@ class TaskManager:
         task.state = TaskState.CANCELLED
         task.completed_at = time.monotonic()
 
+        # A dispatched descendant may still apply. Do not undo its ancestors
+        # while pretending cancellation established a reverse execution order.
+        for i in range(len(task.steps) - 1, -1, -1):
+            if (task.steps[i].kind == "write" and task.step_states[i] in
+                    (StepState.IN_FLIGHT, StepState.NEEDS_RECONCILIATION)):
+                self._park_step(task, i, "cancellation requested with unresolved descendant write")
+                return task
+
         # Compensate committed steps in reverse order
         for i in range(len(task.steps) - 1, -1, -1):
             if task.step_states[i] != StepState.COMMITTED:
                 continue
-            step = task.steps[i]
-            result = task.step_results[i]
-            if step.compensate is not None and result is not None:
-                try:
-                    await step.compensate(result)
-                    task.step_states[i] = StepState.COMPENSATED
-                    logger.info(
-                        "task %s step %d (%s) compensated on cancel",
-                        task.task_id, i, step.tool_name,
-                    )
-                except Exception:  # noqa: BLE001
-                    logger.critical(
-                        "COMPENSATION FAILED during cancel for task %s step %d (%s)",
-                        task.task_id, i, step.tool_name,
-                        exc_info=True,
-                    )
+            if not await self._compensate_step(task, i):
+                break
 
         # Mark pending/waiting steps as SKIPPED
         for i in range(len(task.steps)):
@@ -825,29 +847,14 @@ class TaskManager:
     async def _compensate_committed_steps(self, task: Task, failed_idx: int) -> None:
         """
         Compensate all previously committed steps in reverse order.
-        Uses individual step compensate handlers directly, not saga.abort_chain_from,
-        because task steps may span multiple epoch chains.
+        Uses action-scoped ownership, never the manager-wide saga chain.
+        Stop on an unresolved repair to preserve reverse dependency order.
         """
         for i in range(failed_idx - 1, -1, -1):
             if task.step_states[i] != StepState.COMMITTED:
                 continue
-            step = task.steps[i]
-            result = task.step_results[i]
-            if step.compensate is not None and result is not None:
-                try:
-                    await step.compensate(result)
-                    task.step_states[i] = StepState.SKIPPED  # compensated
-                    logger.info(
-                        "task %s step %d (%s) compensated",
-                        task.task_id, i, step.tool_name,
-                    )
-                except Exception:  # noqa: BLE001
-                    logger.critical(
-                        "COMPENSATION FAILED for task %s step %d (%s) — "
-                        "MANUAL RECONCILIATION REQUIRED",
-                        task.task_id, i, step.tool_name,
-                        exc_info=True,
-                    )
+            if not await self._compensate_step(task, i):
+                break
 
     # ---- inspection ------------------------------------------------------
 

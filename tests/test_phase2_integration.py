@@ -838,12 +838,12 @@ async def test_19_bug_b_committed_stale_blocks_duplicate_stage_write():
             idempotency_key="ikey-t19",
         )
 
-    # Resolve via reconcile_write (status_check: confirmed not persisted -> ABORTED)
+    # A known applied effect is now absent: preserve that history as COMPENSATED.
     async def confirmed_false(a) -> bool:
         return False
 
     await saga.reconcile_write(action.action_id, confirmed_false)
-    assert action.state == ActionState.ABORTED
+    assert action.state == ActionState.COMPENSATED
 
     # Now a fresh stage_write with the same key must succeed
     action2 = saga.stage_write(

@@ -89,8 +89,9 @@ indexes and exception evidence remain process-local, not a durable journal.
 
 ## Remaining blockers
 
-Exclusive ownership of direct reconciliation/compensation is next: concurrent
-reconcilers can still invoke a compensator twice. Optional/fail-open mutation
+Exclusive ownership was the next blocker at this PR's baseline; the stacked
+change in [reconciliation-ownership.md](reconciliation-ownership.md) addresses
+process-local saga and task repair ownership. Optional/fail-open mutation
 authorization, durable intent before dispatch, transactional action/event storage,
 compensation lifecycle, distributed fencing and real voice/provider verification
 remain separate required work. This PR is not a production-readiness claim.
