@@ -84,14 +84,14 @@ async def test_journal_failure_fences_dispatch_or_preserves_uncertain_effect(tmp
     saga = manager(tmp_path / "journal.db")
     action = saga.stage_write("change", {})
     calls = []
-    original = saga.journal.transition
+    original = saga.journal._transition
 
     def failing(record, version, event, **kwargs):
         if event == kind:
             raise JournalError("injected durable write failure")
         return original(record, version, event, **kwargs)
 
-    monkeypatch.setattr(saga.journal, "transition", failing)
+    monkeypatch.setattr(saga.journal, "_transition", failing)
 
     async def execute(args):
         calls.append("applied")

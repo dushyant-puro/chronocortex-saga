@@ -257,42 +257,51 @@ class SecurityAuthority:
         with self.journal._transaction() as db:
             now = self._now(db)
             issuer = self._authenticate(db, issuer_token, now)
-            executor_version, _ = self._principal(db, executor_principal_id)
-            row = db.execute("SELECT record FROM actions WHERE action_id=?", (action_id,)).fetchone()
-            if row is None:
-                raise PermissionDeniedError("Operation unavailable")
-            old = json.loads(row[0])
-            required, _ = self._operation(old, direction)
-            if not (required | {"ccs:approve"}) <= issuer.granted_permissions:
-                raise PermissionDeniedError("Issuer lacks operation approval permissions")
-            binding = self._binding(db, old, direction)
-            approval_id = secrets.token_hex(16)
-            record = {"binding": binding, "issuer_principal_id": issuer.principal_id,
-                      "issuer_version": issuer.version, "issuer_credential_id": issuer.credential_id,
-                      "executor_principal_id": executor_principal_id, "executor_version": executor_version,
-                      "issued_ms": now, "expires_ms": now + ttl_ms, "required_permissions": sorted(required)}
-            db.execute("INSERT INTO approvals(id,record) VALUES (?,?)", (approval_id, _json(record)))
-            self._event(db, "APPROVAL_ISSUED", now, approval_id=approval_id, action_id=action_id,
-                        direction=direction, issuer_principal_id=issuer.principal_id,
-                        executor_principal_id=executor_principal_id, expires_ms=now + ttl_ms)
-            return approval_id
+            return self._issue_approval(db, issuer, executor_principal_id, action_id, direction, ttl_ms, now)
+
+    def _issue_approval(self, db, issuer, executor_principal_id, action_id, direction, ttl_ms, now):
+        """Internal transaction API; caller must authenticate issuer in this transaction."""
+        _ttl(ttl_ms, 300_000)
+        _identity(action_id)
+        executor_version, _ = self._principal(db, executor_principal_id)
+        row = db.execute("SELECT record FROM actions WHERE action_id=?", (action_id,)).fetchone()
+        if row is None:
+            raise PermissionDeniedError("Operation unavailable")
+        old = json.loads(row[0])
+        required, _ = self._operation(old, direction)
+        if not (required | {"ccs:approve"}) <= issuer.granted_permissions:
+            raise PermissionDeniedError("Issuer lacks operation approval permissions")
+        binding = self._binding(db, old, direction)
+        approval_id = secrets.token_hex(16)
+        record = {"binding": binding, "issuer_principal_id": issuer.principal_id,
+                  "issuer_version": issuer.version, "issuer_credential_id": issuer.credential_id,
+                  "executor_principal_id": executor_principal_id, "executor_version": executor_version,
+                  "issued_ms": now, "expires_ms": now + ttl_ms, "required_permissions": sorted(required)}
+        db.execute("INSERT INTO approvals(id,record) VALUES (?,?)", (approval_id, _json(record)))
+        self._event(db, "APPROVAL_ISSUED", now, approval_id=approval_id, action_id=action_id,
+                    direction=direction, issuer_principal_id=issuer.principal_id,
+                    executor_principal_id=executor_principal_id, expires_ms=now + ttl_ms)
+        return approval_id
 
     def revoke_approval(self, issuer_token, approval_id):
         _identity(approval_id)
         with self.journal._transaction() as db:
             now = self._now(db)
             issuer = self._authenticate(db, issuer_token, now)
-            if "ccs:approve" not in issuer.granted_permissions:
-                raise PermissionDeniedError("Approval revocation permission required")
-            row = db.execute("SELECT record FROM approvals WHERE id=?", (approval_id,)).fetchone()
-            if row is None:
-                raise PermissionDeniedError("Approval unavailable")
-            required = _permissions(json.loads(row[0])["required_permissions"])
-            if not required <= issuer.granted_permissions:
-                raise PermissionDeniedError("Approval revocation requires current operation permissions")
-            db.execute("UPDATE approvals SET revoked=1 WHERE id=?", (approval_id,))
-            self._event(db, "APPROVAL_REVOKED", now, approval_id=approval_id,
-                        issuer_principal_id=issuer.principal_id)
+            self._revoke_approval(db, issuer, approval_id, now)
+
+    def _revoke_approval(self, db, issuer, approval_id, now):
+        if "ccs:approve" not in issuer.granted_permissions:
+            raise PermissionDeniedError("Approval revocation permission required")
+        row = db.execute("SELECT record FROM approvals WHERE id=?", (approval_id,)).fetchone()
+        if row is None:
+            raise PermissionDeniedError("Approval unavailable")
+        required = _permissions(json.loads(row[0])["required_permissions"])
+        if not required <= issuer.granted_permissions:
+            raise PermissionDeniedError("Approval revocation requires current operation permissions")
+        db.execute("UPDATE approvals SET revoked=1 WHERE id=?", (approval_id,))
+        self._event(db, "APPROVAL_REVOKED", now, approval_id=approval_id,
+                    issuer_principal_id=issuer.principal_id)
 
     def authorize(self, db, record, old, request):
         """Called only inside the journal's dispatch/repair intent transaction."""

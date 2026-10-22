@@ -376,8 +376,14 @@ class SpeculativeSagaManager:
         try:
             record = self._journal_record(action)
             kwargs = {"authorization": authorization} if authorization is not None else {}
-            action._journal_version = (self.journal.create(record) if create else
-                                       self.journal.transition(record, action._journal_version, event, **kwargs))
+            if event in {"FORWARD_COMMITTED", "RECONCILED_PRESENT"} and record["state"] == "COMMITTED":
+                action._journal_version, durable_state = self.journal.finalize_forward(record, action._journal_version, event)
+                action.state = ActionState[durable_state]
+                if action.state == ActionState.COMMITTED_STALE:
+                    self._closed_chains.add(action.chain_id)
+            else:
+                action._journal_version = (self.journal.create(record) if create else
+                                           self.journal.transition(record, action._journal_version, event, **kwargs))
         except JournalDuplicate as exc:
             raise DuplicateOperationError("Durable operation key remains claimed") from exc
         except JournalError as exc:
@@ -960,7 +966,10 @@ class SpeculativeSagaManager:
             if not action._set_terminal(ActionState.COMMITTED):
                 return action.result
             self._persist_action(action, "FORWARD_COMMITTED")
-            self._chain.append(action)
+            if action.state == ActionState.COMMITTED:
+                self._chain.append(action)
+            else:
+                logger.critical("Returned effect retained as stale after durable intent changed: %s; manual reconciliation required", action.action_id)
             return result
 
         # Epoch advanced while the executor was running. The mutation
@@ -1176,10 +1185,11 @@ class SpeculativeSagaManager:
                     # by design, but reconciliation is its explicit resolution path.
                     action.state = ActionState.COMMITTED
                     self._persist_action(action, "RECONCILED_PRESENT")
-                    self._chain.append(action)
+                    if action.state == ActionState.COMMITTED:
+                        self._chain.append(action)
                     logger.info(
-                        "reconcile_write %s (%s): confirmed executed -> COMMITTED",
-                        action_id, action.tool_name,
+                        "reconcile_write %s (%s): confirmed executed -> %s",
+                        action_id, action.tool_name, action.state.name,
                     )
                 else:
                     action.state = ActionState.COMMITTED_STALE

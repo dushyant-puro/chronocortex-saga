@@ -377,7 +377,7 @@ def test_schema2_migration_is_explicit_and_preserves_unresolved_claims(tmp_path)
     assert journal.records() == before and journal.worker_events() == []
     with closing(sqlite3.connect(path)) as db:
         assert db.execute("SELECT count(*) FROM key_claims").fetchone()[0] == 1
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 5
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 6
     with pytest.raises(JournalLeaseError):
         journal.close_chain(before[0][1]["chain_id"])
     journal.acquire_lease("new")
