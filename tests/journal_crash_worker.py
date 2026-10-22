@@ -13,14 +13,15 @@ from runtime.tool_contract import ToolManifest, ToolRegistry
 from runtime.task_engine import TaskManager, TaskStep
 from tests.lease_test_support import shared_test_journal
 from tests.workflow_test_support import VersionedTestTasks
+from tests.security_test_support import AuthenticatedTestSaga
 
 
 async def run():
     path, ledger, window = sys.argv[1:]
 
     class CrashJournal(SQLiteActionJournal):
-        def transition(self, record, version, kind):
-            result = super().transition(record, version, kind)
+        def transition(self, record, version, kind, **kwargs):
+            result = super().transition(record, version, kind, **kwargs)
             if (window, kind) in {("intent", "DISPATCH_INTENT"),
                                   ("committed", "FORWARD_COMMITTED"),
                                   ("compensation_intent", "COMPENSATION_INTENT"),
@@ -56,7 +57,7 @@ async def run():
 
     registry = ToolRegistry()
     registry.register(ToolManifest("change", "write"))
-    saga = SpeculativeSagaManager(TurnEpochClock(), auth_context=AuthorizationContext(),
+    saga = AuthenticatedTestSaga(TurnEpochClock(), auth_context=AuthorizationContext(),
                                   journal=shared_test_journal(path, CrashJournal), registry=registry)
     if window.startswith("replan_"):
         class Tasks(VersionedTestTasks, TaskManager):

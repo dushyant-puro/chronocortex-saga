@@ -19,6 +19,7 @@ from runtime.action_journal import SQLiteActionJournal
 from runtime.workflow_contract import WorkflowVersion, StepVersions, canonical
 from tests.test_task_operation_ownership import saga_at
 from tests.workflow_test_support import TEST_WORKFLOW, versioned_test_steps
+from tests.security_test_support import drop_security_tables
 
 
 @pytest.mark.parametrize("change", ["fields", "builder", "compensation", "status"])
@@ -297,6 +298,7 @@ def test_schema3_upgrade_preserves_evidence_and_fences_old_binary_format(tmp_pat
     manager.journal.release_lease()
     before = manager.journal.load_task(task.task_id)
     with closing(sqlite3.connect(manager.journal.path)) as db:
+        drop_security_tables(db)
         db.execute("PRAGMA user_version=3")
         db.commit()
     with pytest.raises(JournalError, match="migration"):
@@ -304,7 +306,7 @@ def test_schema3_upgrade_preserves_evidence_and_fences_old_binary_format(tmp_pat
     migrated = SQLiteActionJournal(manager.journal.path, migrate=True)
     assert migrated.load_task(task.task_id) == before
     with closing(sqlite3.connect(manager.journal.path)) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 5
     with pytest.raises(JournalError, match="schema changed"):
         # A running schema-4 client also fails closed if its header changes.
         with closing(sqlite3.connect(manager.journal.path)) as db:

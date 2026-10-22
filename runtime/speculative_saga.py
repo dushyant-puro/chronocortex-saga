@@ -61,9 +61,10 @@ from runtime.tool_contract import (
 )
 from runtime.policy_engine import (
     AuthorizationContext, ConfirmationRequiredError, PermissionDeniedError,
-    PolicyEngine, payload_digest,
+    PolicyEngine, PolicyError, payload_digest,
 )
 from runtime.action_journal import JournalError, JournalDuplicate, SQLiteActionJournal
+from runtime.security_authority import AuthRequest
 
 logger = logging.getLogger("ccs.saga")
 
@@ -185,6 +186,8 @@ class StagedAction:
     _staged_digest: Optional[str] = field(default=None, repr=False, compare=False)
     _journal_version: Optional[int] = field(default=None, repr=False, compare=False)
     _execution_guard: Optional[Callable[[], None]] = field(default=None, repr=False, compare=False)
+    _authorization_policy: Optional[dict] = field(default=None, repr=False, compare=False)
+    _security_context: Optional[AuthorizationContext] = field(default=None, repr=False, compare=False)
     intent_session: Optional[str] = None
     owner_task_id: Optional[str] = None
     owner_step_index: Optional[int] = None
@@ -336,6 +339,7 @@ class SpeculativeSagaManager:
                 intent_session=record["session_id"], owner_task_id=record["task_id"],
                 owner_step_index=record["step_index"], recovered=True,
                 owner_generation=record["generation"], chain_id=record["chain_id"],
+                _authorization_policy=record.get("authorization_policy"),
             )
             self._actions[action.action_id] = action
             self._ikey_index[action.idempotency_key] = action.action_id
@@ -348,6 +352,7 @@ class SpeculativeSagaManager:
             "session_id": action.intent_session, "task_id": action.owner_task_id,
             "step_index": action.owner_step_index, "state": action.state.name,
             "generation": action.owner_generation, "chain_id": action.chain_id,
+            "authorization_policy": action._authorization_policy,
             "compensation_state": action.compensation_state.name, "result": action.result,
             "compensation_failed": action.compensation_failed,
             "error_type": type(action.error).__name__ if action.error is not None else None,
@@ -364,14 +369,15 @@ class SpeculativeSagaManager:
         if self.journal is None and not self.simulation:
             raise JournalError("Durable journal required before mutation dispatch")
 
-    def _persist_action(self, action: StagedAction, event: str, *, create=False) -> None:
+    def _persist_action(self, action: StagedAction, event: str, *, create=False, authorization=None) -> None:
         self._require_journal()
         if self.journal is None:  # Explicit SIMULATED execution only.
             return
         try:
             record = self._journal_record(action)
+            kwargs = {"authorization": authorization} if authorization is not None else {}
             action._journal_version = (self.journal.create(record) if create else
-                                       self.journal.transition(record, action._journal_version, event))
+                                       self.journal.transition(record, action._journal_version, event, **kwargs))
         except JournalDuplicate as exc:
             raise DuplicateOperationError("Durable operation key remains claimed") from exc
         except JournalError as exc:
@@ -730,6 +736,8 @@ class SpeculativeSagaManager:
             intent_session=self._session_id,
             owner_task_id=owner_task_id, owner_step_index=owner_step_index,
             owner_generation=owner_generation, chain_id=chain_id,
+            _authorization_policy=({"required_permissions": sorted(set(mf.required_permissions)),
+                                    "requires_confirmation": mf.requires_confirmation} if mf is not None else None),
         )
         if self.journal is not None:
             self._persist_action(action, "STAGED", create=True)
@@ -833,7 +841,14 @@ class SpeculativeSagaManager:
                 manifests.append(candidate)
         if not manifests:
             raise PermissionDeniedError("A write requires an explicit tool manifest")
-        context = auth_context if auth_context is not None else self.auth_context
+        supplied_context = auth_context if auth_context is not None else self.auth_context
+        context = supplied_context
+        if self.journal is not None:
+            if not isinstance(supplied_context, AuthorizationContext):
+                raise PermissionDeniedError("Authenticated AuthorizationContext required")
+            principal = self.journal.security.authenticate(supplied_context.credential)
+            context = AuthorizationContext(principal.granted_permissions,
+                                           confirmed=supplied_context.approval_id is not None)
         baseline = PolicyEngine()
         for mf in manifests:
             if mf.tool_name != action.tool_name:
@@ -844,7 +859,7 @@ class SpeculativeSagaManager:
                     f"is manifested as kind='{mf.kind}'"
                 )
             baseline.check(mf, context, confirmed=confirmed)
-            if mf.requires_confirmation:
+            if mf.requires_confirmation and self.journal is None:
                 if context.approval is None or not context.approval.matches(action):
                     raise ConfirmationRequiredError("Approval must match staged action, epoch and payload")
             # Validation receives a detached payload; it cannot mutate the approved request.
@@ -863,8 +878,19 @@ class SpeculativeSagaManager:
             raise StaleEpochError("Epoch changed during pre-dispatch checks")
 
         self._require_journal()
+        authorization = None
+        if self.journal is not None:
+            authorization = AuthRequest(
+                token=supplied_context.credential, approval_id=supplied_context.approval_id,
+                required_permissions=tuple(sorted({p for mf in manifests for p in mf.required_permissions})),
+                require_approval=any(mf.requires_confirmation for mf in manifests), direction="FORWARD")
+            action._security_context = supplied_context
         action.state = ActionState.IN_FLIGHT
-        self._persist_action(action, "DISPATCH_INTENT")
+        try:
+            self._persist_action(action, "DISPATCH_INTENT", authorization=authorization)
+        except PolicyError:
+            action.state = ActionState.PENDING  # denial established no dispatch
+            raise
 
         try:
             result = await asyncio.wait_for(executor(dispatch_args), timeout=timeout)
@@ -967,23 +993,24 @@ class SpeculativeSagaManager:
         """Background entry point sharing ownership with all saga repair paths."""
         try:
             await self.compensate_action(action.action_id)
-        except JournalError as exc:
+        except (JournalError, PolicyError) as exc:
             action.compensation_error = exc
             action.compensation_failed = True
             logger.critical("Automatic repair fenced for %s: %s; manual reconciliation required",
                             action.action_id, type(exc).__name__)
 
-    async def compensate_action(self, action_id: str) -> None:
+    async def compensate_action(self, action_id: str, *, auth_context=None) -> None:
         """Make at most one automatic compensation attempt in this process.
 
-        This is local serialization, not durable/distributed ownership. An
-        ambiguous or explicitly rejected attempt is never automatically repeated.
+        The local lock serializes callers; journaled intent additionally checks
+        worker ownership, current credentials and a separate repair approval.
+        Ambiguous or explicitly rejected attempts are never automatically repeated.
         """
         action = self._actions[action_id]
         async with action._resolution_lock:
-            await self._compensate_locked(action)
+            await self._compensate_locked(action, auth_context=auth_context)
 
-    async def _compensate_locked(self, action: StagedAction) -> None:
+    async def _compensate_locked(self, action: StagedAction, *, auth_context=None) -> None:
         if action.state not in (ActionState.COMMITTED, ActionState.COMMITTED_STALE):
             return
         if action.compensate is None or action.compensation_state != CompensationState.NOT_STARTED:
@@ -998,10 +1025,29 @@ class SpeculativeSagaManager:
                    for a in members[members.index(action) + 1:]):
                 return  # never undo an ancestor while a descendant can still apply
         self._require_journal()
+        authorization = None
+        if self.journal is not None:
+            context = auth_context if auth_context is not None else self.auth_context or action._security_context
+            if not isinstance(context, AuthorizationContext):
+                raise PermissionDeniedError("Authenticated repair context required")
+            registered = self.registry.get(action.tool_name) if self.registry is not None else None
+            permissions = tuple(sorted({p for mf in (registered, action.manifest) if mf is not None
+                                        for p in mf.required_permissions}))
+            authorization = AuthRequest(token=context.credential, approval_id=context.repair_approval_id,
+                                        required_permissions=permissions, require_approval=True, direction="COMPENSATION")
+        receipt = copy.deepcopy(action.result)
         action.compensation_state = CompensationState.IN_FLIGHT
-        self._persist_action(action, "COMPENSATION_INTENT")
         try:
-            await action.compensate(action.result)
+            self._persist_action(action, "COMPENSATION_INTENT", authorization=authorization)
+        except PolicyError as exc:
+            action.compensation_state = CompensationState.NOT_STARTED
+            action.compensation_error = exc
+            raise
+        try:
+            try:
+                await action.compensate(copy.deepcopy(receipt))
+            finally:
+                action.result = receipt  # preserve the approved effect evidence
         except asyncio.CancelledError as exc:
             action.compensation_state = CompensationState.UNKNOWN
             action.compensation_error = exc
@@ -1040,6 +1086,7 @@ class SpeculativeSagaManager:
         self,
         action_id: str,
         status_check: StatusCheck,
+        *, auth_context=None,
     ) -> None:
         """Serialize status resolution and saga compensation for one action.
 
@@ -1051,12 +1098,25 @@ class SpeculativeSagaManager:
         action = self._actions[action_id]
         async with action._resolution_lock:
             self._require_journal()
+            context = auth_context if auth_context is not None else self.auth_context or action._security_context
+            if self.journal is not None:
+                if not isinstance(context, AuthorizationContext):
+                    raise PermissionDeniedError("Authenticated reconciliation context required")
+                principal = self.journal.security.authenticate(context.credential)
+                required = set((action._authorization_policy or {}).get("required_permissions", ())) | {"ccs:reconcile"}
+                registered = self.registry.get(action.tool_name) if self.registry is not None else None
+                if registered is not None:
+                    required.update(registered.required_permissions)
+                if action._authorization_policy is None:
+                    required.add("ccs:legacy-reconcile")
+                if not required <= principal.granted_permissions:
+                    raise PermissionDeniedError("Current reconciliation permissions required")
             if (action.state in (ActionState.COMMITTED, ActionState.ABORTED, ActionState.COMPENSATED)
                     and action.compensation_state not in _BLOCKING_COMPENSATION_STATES):
                 return
-            await self._reconcile_write_locked(action, status_check)
+            await self._reconcile_write_locked(action, status_check, auth_context=context)
 
-    async def _reconcile_write_locked(self, action: StagedAction, status_check: StatusCheck) -> None:
+    async def _reconcile_write_locked(self, action: StagedAction, status_check: StatusCheck, *, auth_context=None) -> None:
         """
         Deterministically resolve an IN_FLIGHT_UNKNOWN or unreconciled
         COMMITTED_STALE action by querying the remote system.
@@ -1131,7 +1191,7 @@ class SpeculativeSagaManager:
                         action.capture_epoch, self.epoch_clock.current,
                     )
                     if action.compensate is not None:
-                        await self._compensate_locked(action)
+                        await self._compensate_locked(action, auth_context=auth_context)
                     else:
                         logger.critical(
                             "COMMITTED_STALE via reconciliation for %s (%s): "
@@ -1147,7 +1207,7 @@ class SpeculativeSagaManager:
                     action_id, action.tool_name, action.compensation_state.name,
                 )
                 if action.compensate is not None:
-                    await self._compensate_locked(action)
+                    await self._compensate_locked(action, auth_context=auth_context)
                 else:
                     logger.critical(
                         "COMMITTED_STALE reconcile confirmed for %s (%s): "

@@ -12,13 +12,14 @@ from runtime.task_engine import TaskManager, TaskStep
 from runtime.tool_contract import ToolManifest, ToolRegistry
 from runtime.workflow_contract import WorkflowVersion, StepVersions
 from tests.lease_test_support import shared_test_journal
+from tests.security_test_support import AuthenticatedTestSaga
 
 
 async def run():
     path, ledger = sys.argv[1:]
     registry = ToolRegistry()
     registry.register(ToolManifest("change", "write"))
-    manager = SpeculativeSagaManager(TurnEpochClock(), registry=registry,
+    manager = AuthenticatedTestSaga(TurnEpochClock(), registry=registry,
                                     auth_context=AuthorizationContext(), journal=shared_test_journal(path))
 
     async def execute(args):

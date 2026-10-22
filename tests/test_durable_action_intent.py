@@ -23,12 +23,13 @@ from runtime.persistence import SQLiteCheckpointStore
 from runtime.tool_contract import ToolManifest, ToolRegistry
 from tests.lease_test_support import shared_test_journal
 from tests.workflow_test_support import VersionedTestTasks
+from tests.security_test_support import AuthenticatedTestSaga
 
 
 def manager(path, **kwargs):
     registry = ToolRegistry()
     registry.register(ToolManifest("change", "write", required_permissions=["test:write"]))
-    return SpeculativeSagaManager(TurnEpochClock(), registry=registry,
+    return AuthenticatedTestSaga(TurnEpochClock(), registry=registry,
                                   auth_context=AuthorizationContext(["test:write"]),
                                   journal=shared_test_journal(path), **kwargs)
 
@@ -85,10 +86,10 @@ async def test_journal_failure_fences_dispatch_or_preserves_uncertain_effect(tmp
     calls = []
     original = saga.journal.transition
 
-    def failing(record, version, event):
+    def failing(record, version, event, **kwargs):
         if event == kind:
             raise JournalError("injected durable write failure")
-        return original(record, version, event)
+        return original(record, version, event, **kwargs)
 
     monkeypatch.setattr(saga.journal, "transition", failing)
 
@@ -437,10 +438,10 @@ async def test_epoch_advance_during_executor_never_records_current_commit(tmp_pa
     started, release = asyncio.Event(), asyncio.Event()
     original = saga.journal.transition
 
-    def transition(record, version, event):
+    def transition(record, version, event, **kwargs):
         if event == "TURN_SUPERSEDED" and fail_epoch_record:
             raise JournalError("epoch journal fault")
-        return original(record, version, event)
+        return original(record, version, event, **kwargs)
 
     monkeypatch.setattr(saga.journal, "transition", transition)
 

@@ -17,6 +17,7 @@ from runtime.speculative_saga import ActionState, CompensationState, Speculative
 from runtime.tool_contract import ToolManifest, ToolRegistry
 from runtime.task_engine import TaskManager, TaskStep, TaskState
 from tests.workflow_test_support import VersionedTestTasks
+from tests.security_test_support import AuthenticatedTestSaga, drop_security_tables
 
 
 class Clock:
@@ -30,7 +31,7 @@ class Clock:
 def saga(journal):
     registry = ToolRegistry()
     registry.register(ToolManifest("change", "write"))
-    return SpeculativeSagaManager(TurnEpochClock(), registry=registry,
+    return AuthenticatedTestSaga(TurnEpochClock(), registry=registry,
                                   auth_context=AuthorizationContext(), journal=journal)
 
 
@@ -359,6 +360,7 @@ def schema2_fixture(path):
     manager.stage_write("change", {})
     before = journal.records()
     with closing(sqlite3.connect(path)) as db:
+        drop_security_tables(db)
         db.execute("DROP TABLE worker_events")
         db.execute("DROP TABLE worker_lease")
         db.execute("PRAGMA user_version=2")
@@ -375,7 +377,7 @@ def test_schema2_migration_is_explicit_and_preserves_unresolved_claims(tmp_path)
     assert journal.records() == before and journal.worker_events() == []
     with closing(sqlite3.connect(path)) as db:
         assert db.execute("SELECT count(*) FROM key_claims").fetchone()[0] == 1
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 5
     with pytest.raises(JournalLeaseError):
         journal.close_chain(before[0][1]["chain_id"])
     journal.acquire_lease("new")

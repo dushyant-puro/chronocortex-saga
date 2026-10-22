@@ -5,10 +5,10 @@ Deterministic authorization and confirmation policy engine for tool execution.
 
 Core safety principle:
   "The LLM must never be the final authority on whether an unsafe mutation
-   is permitted." Every permission grant and confirmation token must come
-   from an explicit AuthorizationContext object supplied by the caller
-   independently of the conversation — NEVER from LLM-generated text,
-   tool arguments, or anything resolved via GroundingGuard.resolve_current_value.
+   is permitted." Journaled execution authenticates an opaque host credential
+   and reads current grants/approvals from the durable authority. In-process
+   permission/approval objects remain for explicit volatile simulation. Neither
+   mode derives authority from LLM/ASR text or grounded tool arguments.
 """
 
 from __future__ import annotations
@@ -87,20 +87,30 @@ class AuthorizationContext:
     Caller-supplied authorization credentials.
 
     Attributes:
-        granted_permissions: Set of permissions granted to this execution context.
+        granted_permissions: In-process grants for explicit simulation; ignored
+            as a source of authority by journaled execution.
         confirmed: Legacy exact-bool confirmation signal. Insufficient for dispatch
             of a manifest requiring confirmation; an action-bound approval is required.
         approval: Trusted approval bound to one staged action, epoch and payload.
+            Applicable to explicit simulation, not durable dispatch.
+        credential: Locally provisioned bearer secret; never serialize or log.
+        approval_id: Durable forward approval lookup ID.
+        repair_approval_id: Separate durable compensation approval lookup ID.
     """
     granted_permissions: set[str] = field(default_factory=set)
     confirmed: bool = False
     approval: Optional[MutationApproval] = None
+    credential: Optional[str] = field(default=None, repr=False)
+    approval_id: Optional[str] = None
+    repair_approval_id: Optional[str] = None
 
     def __init__(
         self,
         granted_permissions: Optional[Iterable[str]] = None,
         confirmed: bool = False,
         approval: Optional[MutationApproval] = None,
+        *, credential: Optional[str] = None, approval_id: Optional[str] = None,
+        repair_approval_id: Optional[str] = None,
     ) -> None:
         if type(confirmed) is not bool:
             raise TypeError("confirmed must be an exact bool")
@@ -113,6 +123,9 @@ class AuthorizationContext:
             raise TypeError("approval must be a MutationApproval")
         self.confirmed = confirmed
         self.approval = approval
+        self.credential = credential
+        self.approval_id = approval_id
+        self.repair_approval_id = repair_approval_id
 
 
 class PolicyEngine:
