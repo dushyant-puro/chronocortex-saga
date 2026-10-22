@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>ChronoCortex · Operator console</title>
+    <link rel="icon" href="/assets/mark.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/assets/console.css" />
+    <script type="module" src="/assets/console.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to journal evidence</a>
+    <section id="connect" class="connect" aria-labelledby="connect-title">
+      <div class="connect-intro">
+        <a class="brand" href="/"
+          ><img src="/assets/mark.svg" alt="" width="34" height="34" /><span
+            >ChronoCortex<span class="brand-sub">SAGA / CONTROL</span></span
+          ></a
+        >
+        <p class="eyebrow">DURABLE WORK. CLEAR AUTHORITY.</p>
+        <h1>Voice turns change.<br />Task evidence stays.</h1>
+        <p class="intro-copy">
+          An operator surface for decisions that must remain safe, recoverable,
+          and explainable.
+        </p>
+        <div class="principles">
+          <span>01 <strong>Review the evidence</strong></span
+          ><span>02 <strong>Authorize the exact operation</strong></span
+          ><span>03 <strong>Preserve uncertainty</strong></span>
+        </div>
+        <p class="local-note">
+          LOCAL CONTROL HOST · PROVIDER EXECUTION NOT CONFIGURED
+        </p>
+      </div>
+      <div class="connect-form-wrap">
+        <form id="connect-form" class="connect-card">
+          <p class="eyebrow">OPERATOR ACCESS</p>
+          <h2 id="connect-title">Connect to the journal</h2>
+          <p>
+            Use a locally provisioned operator credential. Permissions are
+            checked by the server on every request.
+          </p>
+          <label for="credential">Operator credential</label
+          ><input
+            id="credential"
+            name="credential"
+            type="password"
+            autocomplete="off"
+            spellcheck="false"
+            required
+            maxlength="256"
+            aria-describedby="credential-help"
+          />
+          <p id="credential-help" class="fine">
+            Your credential is exchanged for an HttpOnly session. It is never
+            saved in browser storage.
+          </p>
+          <button type="submit" class="primary" id="connect-button">
+            Connect to journal <span aria-hidden="true">↗</span>
+          </button>
+          <p id="connect-error" class="error" role="alert"></p>
+          <div class="session-note">
+            <span class="small-dot"></span> Short-lived session · Scoped journal
+            access
+          </div>
+        </form>
+      </div>
+    </section>
+    <div id="console" class="shell" hidden>
+      <aside class="sidebar">
+        <a class="brand" href="/"
+          ><img src="/assets/mark.svg" alt="" width="32" height="32" /><span
+            >ChronoCortex<span class="brand-sub">SAGA / CONTROL</span></span
+          ></a
+        >
+        <p class="nav-label">WORKSPACE</p>
+        <nav aria-label="Console sections" id="navigation">
+          <button data-view="overview" aria-current="page">
+            <span>01</span>Overview
+          </button>
+          <button data-view="tasks"><span>02</span>Durable tasks</button>
+          <button data-view="actions"><span>03</span>Action evidence</button>
+          <button data-view="approvals"><span>04</span>Approvals</button>
+          <button data-view="decisions"><span>05</span>Decision history</button>
+        </nav>
+        <div class="sidebar-bottom">
+          <p class="eyebrow">SYSTEM PRINCIPLE</p>
+          <strong>Voice turn ≠ task</strong>
+          <p>Conversation can change.<br />Evidence cannot be wished away.</p>
+          <span class="scope-label">LOCAL OPERATOR CONSOLE</span>
+        </div>
+      </aside>
+      <div class="workspace">
+        <header class="topbar">
+          <span class="breadcrumb">Workspace <span>/</span> Operations</span>
+          <div class="top-actions">
+            <span id="sync-state" class="sync" role="status"
+              >Reading journal…</span
+            ><button id="refresh" class="subtle">Refresh</button
+            ><button id="sign-out" class="subtle">Disconnect</button>
+          </div>
+        </header>
+        <main id="main" tabindex="-1">
+          <div class="page-heading">
+            <div>
+              <p class="eyebrow">CHRONOCORTEX SAGA</p>
+              <h1 id="view-title">Operator overview</h1>
+              <p id="view-description">
+                Decisions grounded in durable evidence.
+              </p>
+            </div>
+            <div class="identity">
+              <span class="avatar" aria-hidden="true">OP</span>
+              <div>
+                <strong id="principal"></strong
+                ><span id="session-expiry" class="fine"></span>
+              </div>
+            </div>
+          </div>
+          <div class="system-strip">
+            <span class="outline-dot" aria-hidden="true"></span>
+            <div>
+              <strong>Provider not configured</strong
+              ><span
+                >Journal records are shown as evidence. This console does not
+                execute or retry provider mutations.</span
+              >
+            </div>
+            <span id="worker-state" class="badge">Checking lease</span>
+          </div>
+          <div id="stale-banner" class="stale-banner" role="alert" hidden>
+            Journal read unavailable. Displayed evidence may be stale. All
+            decision controls are paused until refresh succeeds.
+          </div>
+          <div id="notice" class="notice" role="status" hidden></div>
+          <section
+            id="metrics"
+            class="metrics"
+            aria-label="Current journal window"
+          ></section>
+          <div class="content-grid" id="content-grid">
+            <div class="record-area">
+              <form id="lookup" class="lookup">
+                <label for="lookup-id">Find a record</label
+                ><select id="lookup-kind" aria-label="Record type">
+                  <option value="actions">Action</option>
+                  <option value="tasks">Task</option></select
+                ><input
+                  id="lookup-id"
+                  aria-label="Exact record ID"
+                  placeholder="Enter an exact record ID"
+                  maxlength="256"
+                  required
+                /><button class="subtle" type="submit">
+                  Inspect <span aria-hidden="true">→</span>
+                </button>
+              </form>
+              <div id="record-content"></div>
+              <p class="window-note">
+                Recent journal window: up to 200 records per category, filtered
+                by your current permissions. Use an exact ID to inspect older
+                evidence.
+              </p>
+            </div>
+            <aside
+              id="detail"
+              class="detail"
+              aria-label="Selected journal evidence"
+              hidden
+            ></aside>
+          </div>
+          <footer>
+            Authority lives in the journal.<span id="read-time"
+              >No completed read yet.</span
+            >
+          </footer>
+        </main>
+      </div>
+    </div>
+    <dialog id="decision-dialog" aria-labelledby="decision-title">
+      <form id="decision-form">
+        <div class="dialog-top">
+          <p class="eyebrow">EXPLICIT OPERATOR DECISION</p>
+          <button
+            type="button"
+            class="icon-button"
+            id="dismiss-dialog"
+            aria-label="Close decision review"
+          >
+            ×
+          </button>
+        </div>
+        <h2 id="decision-title"></h2>
+        <p id="decision-description"></p>
+        <pre id="decision-evidence" class="evidence"></pre>
+        <div id="approval-fields">
+          <label for="executor">Execution principal</label
+          ><input id="executor" autocomplete="off" maxlength="256" /><label
+            for="approval-lifetime"
+            >Approval lifetime</label
+          ><select id="approval-lifetime">
+            <option value="60000">1 minute</option>
+            <option value="180000">3 minutes</option>
+            <option value="300000">5 minutes</option>
+          </select>
+        </div>
+        <label class="check-label"
+          ><input type="checkbox" id="reviewed" required /><span
+            >I reviewed this exact evidence and understand the effect of this
+            decision.</span
+          ></label
+        >
+        <p id="decision-error" class="error" role="alert"></p>
+        <div class="dialog-actions">
+          <button type="button" id="cancel-dialog" class="subtle">
+            Back to evidence</button
+          ><button
+            type="submit"
+            id="confirm-decision"
+            class="primary"
+            data-control
+          >
+            Record decision
+          </button>
+        </div>
+      </form>
+    </dialog>
+    <noscript
+      ><p class="noscript">
+        JavaScript is required for this operator console. The journal and
+        runtime remain authoritative.
+      </p></noscript
+    >
+  </body>
+</html>

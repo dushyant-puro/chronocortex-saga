@@ -20,8 +20,8 @@ async def run():
     path, ledger, window = sys.argv[1:]
 
     class CrashJournal(SQLiteActionJournal):
-        def transition(self, record, version, kind, **kwargs):
-            result = super().transition(record, version, kind, **kwargs)
+        def _transition(self, record, version, kind, **kwargs):
+            result = super()._transition(record, version, kind, **kwargs)
             if (window, kind) in {("intent", "DISPATCH_INTENT"),
                                   ("committed", "FORWARD_COMMITTED"),
                                   ("compensation_intent", "COMPENSATION_INTENT"),

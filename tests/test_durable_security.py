@@ -476,7 +476,7 @@ async def test_schema4_migration_preserves_legacy_evidence_without_granting_auth
     migrated = SQLiteActionJournal(env.journal.path, clock_ms=env.clock, migrate=True)
     assert migrated.records() == [(0, record)]
     with closing(sqlite3.connect(env.journal.path)) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 5
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 6
         assert db.execute("SELECT count(*) FROM principals").fetchone()[0] == 0
         assert db.execute("SELECT count(*) FROM approvals").fetchone()[0] == 0
         assert db.execute("SELECT action_id FROM key_claims").fetchall() == [(action.action_id,)]

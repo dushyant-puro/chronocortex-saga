@@ -11,8 +11,14 @@ from runtime.speculative_saga import SpeculativeSagaManager
 GRANTS = {"test:write", "fleet:write", "ccs:repair", "ccs:reconcile"}
 
 
+def drop_control_tables(db):
+    for table in ("operator_sessions", "control_commands", "control_events"):
+        db.execute(f"DROP TABLE {table}")
+
+
 def drop_security_tables(db):
     """Build an explicitly simulated older-schema fixture, never a downgrade API."""
+    drop_control_tables(db)
     for table in ("security_events", "approvals", "credentials", "principals", "security_clock"):
         db.execute(f"DROP TABLE {table}")
 

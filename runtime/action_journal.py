@@ -39,7 +39,7 @@ class WorkerLease:
 
 
 _APP_ID = 0x43435341
-_VERSION = 5
+_VERSION = 6
 _IDENTITY = ("action_id", "tool_name", "args", "digest", "idempotency_key",
              "capture_epoch", "session_id", "task_id", "step_index", "generation", "chain_id", "authorization_policy")
 _TRANSITIONS = {
@@ -68,7 +68,7 @@ def _json(value: Any) -> str:
 
 
 class SQLiteActionJournal:
-    """Schema v5; rollback journal + synchronous EXTRA on every connection.
+    """Schema v6; rollback journal + synchronous EXTRA on every connection.
 
     Use a local disk with reliable locking/flush semantics and protect its ACLs.
     The database contains request/result data. Do not place it on a share or
@@ -97,10 +97,11 @@ class SQLiteActionJournal:
                     self._create_ownership_tables(db)
                     self._create_lease_tables(db)
                     create_security_schema(db)
+                    self._create_control_tables(db)
                     db.execute(f"PRAGMA application_id={_APP_ID}")
                     db.execute(f"PRAGMA user_version={_VERSION}")
-                elif version in {1, 2, 3, 4} and app_id == _APP_ID and migrate is True:
-                    if version in {3, 4}:
+                elif version in {1, 2, 3, 4, 5} and app_id == _APP_ID and migrate is True:
+                    if version >= 3:
                         lease_row = db.execute("SELECT owner,generation,expires_ms,last_seen_ms FROM worker_lease WHERE singleton=1").fetchone()
                         now = self._now()
                         self._clock_guard(lease_row, now)
@@ -110,7 +111,9 @@ class SQLiteActionJournal:
                         self._migrate_v1(db)
                     if version < 3:
                         self._create_lease_tables(db)
-                    create_security_schema(db)
+                    if version < 5:
+                        create_security_schema(db)
+                    self._create_control_tables(db)
                     db.execute(f"PRAGMA user_version={_VERSION}")
                 elif version != _VERSION or app_id != _APP_ID:
                     raise JournalError("Unsupported or foreign journal schema; explicit migration required")
@@ -118,13 +121,23 @@ class SQLiteActionJournal:
                     raise JournalError("Journal integrity check failed")
                 required = {"actions", "key_claims", "events", "task_checkpoints", "task_events",
                             "chains", "operation_slots", "chain_events", "worker_lease", "worker_events",
-                            "principals", "credentials", "approvals", "security_clock", "security_events"}
+                            "principals", "credentials", "approvals", "security_clock", "security_events",
+                            "operator_sessions", "control_commands", "control_events"}
                 present = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
                 if not required <= present:
                     raise JournalError("Journal schema tables are missing")
         except sqlite3.Error as exc:
             raise JournalError("Cannot initialize journal") from exc
         self.security = SecurityAuthority(self)
+
+    @staticmethod
+    def _create_control_tables(db):
+        db.execute("CREATE TABLE operator_sessions (session_hash TEXT PRIMARY KEY, csrf_salt TEXT NOT NULL, credential_id TEXT NOT NULL REFERENCES credentials(id), principal_version INTEGER NOT NULL, expires_ms INTEGER NOT NULL, revoked INTEGER NOT NULL DEFAULT 0)")
+        db.execute("CREATE TABLE control_commands (principal_id TEXT NOT NULL REFERENCES principals(id), operation_id TEXT NOT NULL, request_digest TEXT NOT NULL, kind TEXT NOT NULL, target_id TEXT NOT NULL, result TEXT NOT NULL, created_ms INTEGER NOT NULL, PRIMARY KEY(principal_id,operation_id))")
+        db.execute("CREATE TABLE control_events (seq INTEGER PRIMARY KEY AUTOINCREMENT, principal_id TEXT NOT NULL, kind TEXT NOT NULL, target_id TEXT, operation_id TEXT, observed_ms INTEGER NOT NULL)")
+        db.execute("CREATE INDEX operator_credential_sessions ON operator_sessions(credential_id,expires_ms)")
+        db.execute("CREATE INDEX operator_decision_history ON control_commands(principal_id,created_ms DESC)")
+        db.execute("CREATE INDEX control_target_requests ON control_commands(kind,target_id)")
 
     @staticmethod
     def _create_ownership_tables(db):
@@ -386,14 +399,37 @@ class SQLiteActionJournal:
         return 0
 
     def transition(self, record: dict, expected_version: int, kind: str, *, authorization: AuthRequest | None = None) -> int:
+        return self._transition(record, expected_version, kind, authorization=authorization)[0]
+
+    def finalize_forward(self, record: dict, expected_version: int, kind: str) -> tuple[int, str]:
+        """Retain a returned/reconciled receipt; classify current intent atomically.
+
+        A control connection can close a chain or cancel its checkpoint while
+        the worker awaits a provider. Its receipt remains evidence, but cannot
+        become a current commit. Lease, immutable identity and CAS still apply.
+        """
+        if kind not in {"FORWARD_COMMITTED", "RECONCILED_PRESENT"} or record["state"] != "COMMITTED":
+            raise JournalError("Current forward result required")
+        return self._transition(record, expected_version, kind, classify_forward=True)
+
+    def _transition(self, record, expected_version, kind, *, authorization=None, classify_forward=False):
         if type(kind) is not str or not kind:
             raise JournalError("Nonempty journal event kind required")
+        record = dict(record)
         self._validate_ownership(record)
-        payload = _json(record)
         with self._transaction(writer_kind=kind, subject=record["action_id"]) as db:
             if kind in {"DISPATCH_INTENT", "FORWARD_COMMITTED", "RECONCILED_PRESENT"}:
                 chain = db.execute("SELECT status FROM chains WHERE chain_id=?", (record["chain_id"],)).fetchone()
-                if chain is None or chain[0] != "OPEN":
+                stale = chain is None or chain[0] != "OPEN"
+                if classify_forward and not stale:
+                    try:
+                        self._task_projection_guard(db, record)
+                    except JournalError:
+                        stale = True
+                if stale and classify_forward:
+                    record["state"] = "COMMITTED_STALE"
+                    kind += "_STALE"
+                elif stale:
                     raise JournalError("Chain is closed; dispatch denied")
             if kind == "DISPATCH_INTENT":
                 self._task_projection_guard(db, record)
@@ -434,6 +470,7 @@ class SQLiteActionJournal:
                         type(authorization) is not AuthRequest or authorization.direction != direction):
                     raise PermissionDeniedError("Authenticated authorization required for dispatch intent")
                 self.security.authorize(db, record, old, authorization)
+            payload = _json(record)
             version = expected_version + 1
             db.execute("UPDATE actions SET version=?,record=? WHERE action_id=? AND version=?",
                        (version, payload, record["action_id"], expected_version))
@@ -442,7 +479,7 @@ class SQLiteActionJournal:
             if (record["state"] in {"ABORTED", "COMPENSATED"} and
                     record["compensation_state"] in {"NOT_STARTED", "SUCCEEDED"}):
                 db.execute("DELETE FROM key_claims WHERE action_id=?", (record["action_id"],))
-        return version
+        return version, record["state"]
 
     def close_chain(self, chain_id: str, owner_task_id: str | None = None) -> None:
         with self._transaction(writer_kind="CHAIN_CLOSED", subject=chain_id) as db:
