@@ -19,12 +19,13 @@ from runtime.task_engine import TaskManager, TaskStep, TaskState, StepState
 from runtime.tool_contract import ToolManifest, ToolRegistry
 from tests.lease_test_support import shared_test_journal
 from tests.workflow_test_support import VersionedTestTasks
+from tests.security_test_support import AuthenticatedTestSaga
 
 
 def saga_at(path=None):
     registry = ToolRegistry()
     registry.register(ToolManifest("change", "write"))
-    return SpeculativeSagaManager(TurnEpochClock(), registry=registry,
+    return AuthenticatedTestSaga(TurnEpochClock(), registry=registry,
                                   auth_context=AuthorizationContext(),
                                   journal=shared_test_journal(path) if path else None,
                                   simulation=path is None)
@@ -140,14 +141,16 @@ async def test_pending_argument_revision_invalidates_old_approval(tmp_path):
     with pytest.raises(ConfirmationRequiredError):
         await tasks.run_task(task.task_id)
     old = saga._actions[task.step_action_ids[0]]
-    saga.auth_context.approval = MutationApproval.for_action(old)
+    saga.auth_context.approval_id = saga.journal.security.issue_approval(
+        saga.test_approver.token, "SIMULATED-worker", old.action_id)
     value = "new"
     with pytest.raises(ConfirmationRequiredError):
         await tasks.resume_task(task.task_id)
     fresh = saga._actions[task.step_action_ids[0]]
     assert old.state == ActionState.ABORTED and fresh.state == ActionState.PENDING
     assert fresh.owner_generation == 1
-    saga.auth_context.approval = MutationApproval.for_action(fresh)
+    saga.auth_context.approval_id = saga.journal.security.issue_approval(
+        saga.test_approver.token, "SIMULATED-worker", fresh.action_id)
     await tasks.resume_task(task.task_id)
     assert task.step_results == [{"value": "new"}]
 

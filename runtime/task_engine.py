@@ -37,7 +37,7 @@ from typing import Any, Awaitable, Callable, Optional
 
 from runtime.persistence import CheckpointStore, SQLiteCheckpointStore
 from runtime.action_journal import JournalError
-from runtime.policy_engine import ConfirmationRequiredError, PermissionDeniedError
+from runtime.policy_engine import ConfirmationRequiredError, PermissionDeniedError, PolicyError
 from runtime.workflow_contract import (
     WorkflowVersion, StepVersions, WorkflowContractError, capture, binding_refs, validate_record, canonical,
 )
@@ -534,6 +534,9 @@ class TaskManager:
             raise
         except JournalError:
             self._park_step(task, idx, "compensation durability unavailable")
+            raise
+        except PolicyError:
+            self._park_step(task, idx, "current repair authority and separate approval required")
             raise
         self._assert_workflow(task)
         if action.state != ActionState.COMPENSATED:

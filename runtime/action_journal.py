@@ -11,6 +11,8 @@ import sqlite3
 import time
 from typing import Any
 from runtime.workflow_contract import WorkflowContractError, canonical, validate_record
+from runtime.policy_engine import PolicyError, PermissionDeniedError
+from runtime.security_authority import SecurityAuthority, AuthRequest, create_schema as create_security_schema
 
 
 class JournalError(RuntimeError):
@@ -37,9 +39,9 @@ class WorkerLease:
 
 
 _APP_ID = 0x43435341
-_VERSION = 4
+_VERSION = 5
 _IDENTITY = ("action_id", "tool_name", "args", "digest", "idempotency_key",
-             "capture_epoch", "session_id", "task_id", "step_index", "generation", "chain_id")
+             "capture_epoch", "session_id", "task_id", "step_index", "generation", "chain_id", "authorization_policy")
 _TRANSITIONS = {
     "PENDING": {"PENDING", "IN_FLIGHT", "IN_FLIGHT_UNKNOWN", "COMMITTED_STALE", "ABORTED"},
     "IN_FLIGHT": {"IN_FLIGHT", "IN_FLIGHT_UNKNOWN", "COMMITTED", "COMMITTED_STALE", "ABORTED"},
@@ -66,7 +68,7 @@ def _json(value: Any) -> str:
 
 
 class SQLiteActionJournal:
-    """Schema v4; rollback journal + synchronous EXTRA on every connection.
+    """Schema v5; rollback journal + synchronous EXTRA on every connection.
 
     Use a local disk with reliable locking/flush semantics and protect its ACLs.
     The database contains request/result data. Do not place it on a share or
@@ -94,10 +96,11 @@ class SQLiteActionJournal:
                     db.execute("CREATE TABLE task_events (seq INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL REFERENCES task_checkpoints(task_id), version INTEGER NOT NULL, checkpoint TEXT NOT NULL, UNIQUE(task_id,version))")
                     self._create_ownership_tables(db)
                     self._create_lease_tables(db)
+                    create_security_schema(db)
                     db.execute(f"PRAGMA application_id={_APP_ID}")
                     db.execute(f"PRAGMA user_version={_VERSION}")
-                elif version in {1, 2, 3} and app_id == _APP_ID and migrate is True:
-                    if version == 3:
+                elif version in {1, 2, 3, 4} and app_id == _APP_ID and migrate is True:
+                    if version in {3, 4}:
                         lease_row = db.execute("SELECT owner,generation,expires_ms,last_seen_ms FROM worker_lease WHERE singleton=1").fetchone()
                         now = self._now()
                         self._clock_guard(lease_row, now)
@@ -107,18 +110,21 @@ class SQLiteActionJournal:
                         self._migrate_v1(db)
                     if version < 3:
                         self._create_lease_tables(db)
+                    create_security_schema(db)
                     db.execute(f"PRAGMA user_version={_VERSION}")
                 elif version != _VERSION or app_id != _APP_ID:
                     raise JournalError("Unsupported or foreign journal schema; explicit migration required")
                 if db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
                     raise JournalError("Journal integrity check failed")
                 required = {"actions", "key_claims", "events", "task_checkpoints", "task_events",
-                            "chains", "operation_slots", "chain_events", "worker_lease", "worker_events"}
+                            "chains", "operation_slots", "chain_events", "worker_lease", "worker_events",
+                            "principals", "credentials", "approvals", "security_clock", "security_events"}
                 present = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
                 if not required <= present:
                     raise JournalError("Journal schema tables are missing")
         except sqlite3.Error as exc:
             raise JournalError("Cannot initialize journal") from exc
+        self.security = SecurityAuthority(self)
 
     @staticmethod
     def _create_ownership_tables(db):
@@ -315,6 +321,21 @@ class SQLiteActionJournal:
                 db.execute("INSERT INTO worker_events(owner,generation,kind,subject,observed_ms) VALUES (?,?,?,?,?)",
                            (self._lease.owner, self._lease.generation, writer_kind, subject, observed))
             db.execute("COMMIT")
+        except PolicyError:
+            # Roll back approval consumption, action/worker events and all other
+            # writes. Persist only observed time so expiry cannot resurrect after
+            # a clock rollback. Never commit partial authorization on denial.
+            if db is not None and db.in_transaction:
+                security_time = db.execute("SELECT last_seen_ms FROM security_clock WHERE singleton=1").fetchone()
+                lease_time = db.execute("SELECT last_seen_ms FROM worker_lease WHERE singleton=1").fetchone()
+                db.rollback()
+                db.execute("BEGIN IMMEDIATE")
+                if security_time is not None:
+                    db.execute("UPDATE security_clock SET last_seen_ms=max(last_seen_ms,?) WHERE singleton=1", security_time)
+                if lease_time is not None:
+                    db.execute("UPDATE worker_lease SET last_seen_ms=max(last_seen_ms,?) WHERE singleton=1", lease_time)
+                db.execute("COMMIT")
+            raise
         except (sqlite3.Error, ValueError, TypeError, KeyError, RecursionError) as exc:
             raise JournalError("Journal transaction failed") from exc
         finally:
@@ -364,7 +385,7 @@ class SQLiteActionJournal:
                        (record["action_id"], 0, "STAGED", payload))
         return 0
 
-    def transition(self, record: dict, expected_version: int, kind: str) -> int:
+    def transition(self, record: dict, expected_version: int, kind: str, *, authorization: AuthRequest | None = None) -> int:
         if type(kind) is not str or not kind:
             raise JournalError("Nonempty journal event kind required")
         self._validate_ownership(record)
@@ -399,11 +420,20 @@ class SQLiteActionJournal:
             if row is None or row[0] != expected_version:
                 raise JournalConflict("Action version changed; no dispatch or automatic retry")
             old = json.loads(row[1])
-            if _json({key: old[key] for key in _IDENTITY}) != _json({key: record[key] for key in _IDENTITY}):
+            if _json({key: old.get(key) for key in _IDENTITY}) != _json({key: record.get(key) for key in _IDENTITY}):
                 raise JournalError("Journal action identity is immutable")
             if (record["state"] not in _TRANSITIONS[old["state"]] or
                     record["compensation_state"] not in _COMP_TRANSITIONS[old["compensation_state"]]):
                 raise JournalError("Invalid journal transition")
+            forward_intent = old["state"] == "PENDING" and record["state"] == "IN_FLIGHT"
+            repair_intent = old["compensation_state"] == "NOT_STARTED" and record["compensation_state"] == "IN_FLIGHT"
+            if forward_intent or repair_intent or kind in {"DISPATCH_INTENT", "COMPENSATION_INTENT"}:
+                direction = "FORWARD" if forward_intent else "COMPENSATION"
+                expected_kind = "DISPATCH_INTENT" if forward_intent else "COMPENSATION_INTENT"
+                if (not (forward_intent or repair_intent) or kind != expected_kind or
+                        type(authorization) is not AuthRequest or authorization.direction != direction):
+                    raise PermissionDeniedError("Authenticated authorization required for dispatch intent")
+                self.security.authorize(db, record, old, authorization)
             version = expected_version + 1
             db.execute("UPDATE actions SET version=?,record=? WHERE action_id=? AND version=?",
                        (version, payload, record["action_id"], expected_version))

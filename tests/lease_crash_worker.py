@@ -10,6 +10,7 @@ from runtime.action_journal import JournalLeaseError, SQLiteActionJournal
 from runtime.policy_engine import AuthorizationContext
 from runtime.speculative_saga import SpeculativeSagaManager, TurnEpochClock
 from runtime.tool_contract import ToolManifest, ToolRegistry
+from tests.security_test_support import AuthenticatedTestSaga
 
 
 async def run():
@@ -19,7 +20,7 @@ async def run():
     journal.acquire_lease("original-process", ttl_ms=10)
     registry = ToolRegistry()
     registry.register(ToolManifest("change", "write"))
-    manager = SpeculativeSagaManager(TurnEpochClock(), registry=registry,
+    manager = AuthenticatedTestSaga(TurnEpochClock(), registry=registry,
                                     auth_context=AuthorizationContext(), journal=journal)
 
     async def execute(args):
