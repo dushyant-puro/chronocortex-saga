@@ -201,8 +201,8 @@ effect. Reconcile against the provider before any new mutation.
 .\.venv\Scripts\python.exe eval/adversarial_scorecard.py
 ```
 
-Local Windows: **517 passed, 1 skipped** in the full runtime suite, plus **7
-passed** in real Chromium. The phase adds 50 control API cases and 3 offline
+Local Windows: **519 passed, 1 skipped** in the full runtime suite, plus **7
+passed** in real Chromium. The phase adds 52 control API cases and 3 offline
 provisioning cases, including deterministic cancellation during forward/status
 awaits. The draft PR records exact-commit fresh-clone/new-environment validation
 and Windows/Linux runtime/browser CI. Browser captures in results/console-visual

@@ -323,7 +323,8 @@ def test_cancel_fences_real_dispatch_boundary_and_stale_checkpoint_writer(consol
         env.journal.save_task(env.task.task_id, previous[1], previous[0])
 
 
-def test_cancel_after_intent_preserves_simulated_returned_effect_as_stale(console):
+@pytest.mark.parametrize("intent_change", ["operator_cancel", "terminal_checkpoint", "superseded_generation"])
+def test_cancel_after_intent_preserves_simulated_returned_effect_as_stale(console, intent_change):
     env, client = console
     csrf = login(env, client)
     env.saga.auth_context.approval_id = env.approval
@@ -335,16 +336,32 @@ def test_cancel_after_intent_preserves_simulated_returned_effect_as_stale(consol
             return {"provider": "SIMULATED", "receipt": "applied-before-cancel"}
         operation = asyncio.create_task(env.saga.commit_write(env.pending.action_id, execute))
         await started.wait()
-        detail = client.get(f"/api/records/tasks/{env.task.task_id}").json()
-        response = command(client, csrf, "cancel", env.task.task_id, detail["review_digest"])
-        assert response.status_code == 200
+        if intent_change == "operator_cancel":
+            detail = client.get(f"/api/records/tasks/{env.task.task_id}").json()
+            response = command(client, csrf, "cancel", env.task.task_id, detail["review_digest"])
+            assert response.status_code == 200
+        else:
+            # The durable checkpoint can independently invalidate the result,
+            # even if a trusted host has not closed the action chain yet.
+            version, checkpoint = env.journal.load_task(env.task.task_id)
+            if intent_change == "terminal_checkpoint":
+                checkpoint["state"] = "CANCELLED"
+            else:
+                checkpoint["step_generations"][0] += 1
+            env.journal.save_task(env.task.task_id, checkpoint, version)
+            assert env.pending.chain_id not in env.journal.closed_chains()
         finish.set()
         await operation
     asyncio.run(scenario())
     record = dict((r["action_id"], r) for _, r in env.journal.records())[env.pending.action_id]
     assert record["state"] == "COMMITTED_STALE"
     assert record["result"]["receipt"] == "applied-before-cancel"
-    assert env.journal.load_task(env.task.task_id)[1]["state"] == "CANCELLED"
+    checkpoint = env.journal.load_task(env.task.task_id)[1]
+    if intent_change != "superseded_generation":
+        assert checkpoint["state"] == "CANCELLED"
+    else:
+        assert checkpoint["step_generations"] == [1]
+    assert env.pending not in env.saga._chain
 
 
 def test_reconciliation_deduplicates_across_new_operation_ids_without_replay(console):
