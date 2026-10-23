@@ -13,7 +13,7 @@ $ccsBytes = $null
 $ccsFile = $null
 
 try {
-    if (-not [System.IO.Path]::IsPathRooted($Directory)) { throw 'Absolute directory required' }
+    if ($Directory -notmatch '\A[A-Za-z]:[\\/]') { throw 'Fully qualified local directory required' }
     $ccsDirectory = [System.IO.Path]::GetFullPath($Directory)
     $ccsDriveRoot = [System.IO.Path]::GetPathRoot($ccsDirectory)
     if ($ccsDriveRoot -notmatch '^[A-Za-z]:\\$' -or
@@ -25,6 +25,9 @@ try {
     for ($ccsAncestor = $ccsParent; $null -ne $ccsAncestor; $ccsAncestor = $ccsAncestor.Parent) {
         if ($ccsAncestor.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
             throw 'Reparse-point ancestor refused'
+        }
+        if (Test-Path -LiteralPath (Join-Path $ccsAncestor.FullName '.git')) {
+            throw 'Git checkout ancestor refused'
         }
     }
     if (Test-Path -LiteralPath $ccsDirectory) {

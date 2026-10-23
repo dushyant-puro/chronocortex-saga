@@ -104,8 +104,9 @@ C:\Users\dushi\AppData\Local\ChronoCortexSaga-StripeSandbox\stripe-test.key
 ```
 
 Use the path actually printed. The helper refuses existing directories/files,
-network/removable drives, relative paths, missing parents and reparse-point
-ancestors. It does not reset an existing installation's ACL or overwrite a key.
+network/removable drives, relative/drive-relative paths, missing parents,
+reparse-point ancestors and Git checkout/worktree ancestors. It does not reset
+an existing installation's ACL or overwrite a key.
 You can select a new folder with `-Directory 'C:\absolute\new-folder'`; its parent
 must already exist on a local fixed disk and must be trusted. Keep it outside the
 checkout and shared/synchronized folders. Administrative elevation is normally

@@ -111,7 +111,7 @@ def test_file_created_during_input_is_not_overwritten(tmp_path):
     assert KEY not in result.stdout + result.stderr
 
 
-@pytest.mark.parametrize("target", ["relative-folder", "\\\\server\\share\\ccs", "missing-parent"])
+@pytest.mark.parametrize("target", ["relative-folder", "C:drive-relative-folder", "\\\\server\\share\\ccs", "missing-parent"])
 def test_unsafe_paths_are_rejected_before_prompt_or_creation(tmp_path, target):
     if target == "missing-parent":
         target = tmp_path / "absent" / "nested"
@@ -119,6 +119,22 @@ def test_unsafe_paths_are_rejected_before_prompt_or_creation(tmp_path, target):
     assert result.returncode == 1 and "UNSAFE_DIRECTORY" in result.stderr
     if isinstance(target, Path):
         assert not target.exists() and not target.parent.exists()
+
+
+@pytest.mark.parametrize("marker_type", ["directory", "worktree-file"])
+def test_git_ancestor_is_rejected_before_prompt_even_for_nested_directory(tmp_path, marker_type):
+    checkout = tmp_path / "checkout"
+    nested = checkout / "nested"
+    nested.mkdir(parents=True)
+    marker = checkout / ".git"
+    if marker_type == "directory":
+        marker.mkdir()
+    else:
+        marker.write_text("gitdir: SIMULATED-worktree", encoding="ascii")
+    directory = nested / "private"
+    result = invoke(directory, input_body="throw 'must not prompt'")
+    assert result.returncode == 1 and "UNSAFE_DIRECTORY" in result.stderr
+    assert not directory.exists()
 
 
 def test_junction_ancestor_is_rejected_before_prompt_or_creation(tmp_path):
