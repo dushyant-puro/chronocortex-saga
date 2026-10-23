@@ -27,11 +27,20 @@ jobs:
       - run: python -m pip check
       - run: python -m pytest -q -p no:cacheprovider
       - run: python -m eval.voice_replay --output results/voice-evidence-scorecard.json
+      - run: python -m eval.provider_faults --output results/provider-process-scorecard.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: simulated-voice-evidence-${{ matrix.os }}
           path: results/voice-evidence-scorecard.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: simulated-provider-process-${{ matrix.os }}
+          path: results/provider-process-scorecard.json
           if-no-files-found: ignore
           retention-days: 7
 

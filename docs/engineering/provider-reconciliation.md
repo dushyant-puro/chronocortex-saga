@@ -275,8 +275,11 @@ regressions do not replace the real acceptance gates below.
    agree. No automatic creation, confirmation, capture, refund or inverse action.
 4. In a controlled local proxy/test transport, discard the mutation response
    after forwarding it, restart the host, then query the known resource. Compare
-   provider request logs to ensure only one POST. A proxy-driven live drill is
-   separate from the deterministic in-process fixtures and is not yet built.
+   provider request logs to ensure only one POST. The
+   [offline process fault evaluator](provider-process-faults.md) now exercises
+   independent worker/service/proxy processes over loopback TCP with its own
+   SIMULATED effect ledger. It does not contact Stripe. A proxy-driven live
+   drill still requires a separately reviewed interception setup and is not built.
 5. Verify stale conversational intent, lease loss, key revocation and an open
    or missing read remain safe under the actual provider. Release deployment
    only after these gates are independently repeatable. A sandbox does not
