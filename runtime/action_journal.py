@@ -3,8 +3,8 @@
 Each action update and its event commit in one transaction. SQL CAS and key
 claims serialize writers sharing this database, not arbitrary provider clients.
 """
-from contextlib import contextmanager
-from dataclasses import dataclass
+from contextlib import contextmanager, nullcontext
+from dataclasses import dataclass, field
 import json
 from pathlib import Path
 import sqlite3
@@ -36,6 +36,7 @@ class WorkerLease:
     """Trusted host capability, not authentication or a provider fencing token."""
     owner: str
     generation: int
+    _lifecycle: Any = field(default=None, repr=False, compare=False)
 
 
 _APP_ID = 0x43435341
@@ -83,6 +84,7 @@ class SQLiteActionJournal:
         self.timeout = timeout
         self._clock_ms = clock_ms if clock_ms is not None else lambda: time.time_ns() // 1_000_000
         self._lease = None
+        self._lifecycle = None
         try:
             with self._transaction(initialize=True) as db:
                 version = db.execute("PRAGMA user_version").fetchone()[0]
@@ -197,8 +199,29 @@ class SQLiteActionJournal:
                        (owner, generation, now + ttl_ms, now))
             db.execute("INSERT INTO worker_events(owner,generation,kind,observed_ms) VALUES (?,?,'ACQUIRED',?)",
                        (owner, generation, now))
-        self._lease = WorkerLease(owner, generation)
+        self._lease = WorkerLease(owner, generation, self._lifecycle)
         return self._lease
+
+    def install_lifecycle(self, lifecycle):
+        """Trusted host wiring, once, before lease acquisition. Not authentication."""
+        if (self._lease is not None or self._lifecycle is not None or
+                not callable(getattr(lifecycle, "check", None)) or
+                not callable(getattr(lifecycle, "operation", None))):
+            raise JournalLeaseError("Install one lifecycle before acquiring worker ownership")
+        self._lifecycle = lifecycle
+
+    def operation_scope(self, kind):
+        return self._lifecycle.operation(kind) if self._lifecycle is not None else nullcontext()
+
+    def _guard_new_work(self, db):
+        if self._lifecycle is not None:
+            self._lifecycle.check(db)
+
+    def observe_worker(self, kind, details):
+        if kind not in {"HOST_STARTING", "HOST_READY", "HOST_HEARTBEAT", "HOST_DRAINING", "HOST_STOPPED", "HOST_FAILED", "HOST_ABANDONED"}:
+            raise JournalError("Unknown host observation")
+        with self._transaction(writer_kind=kind, subject=_json(details)):
+            pass
 
     def bind_lease(self, lease: WorkerLease) -> None:
         """Share one trusted worker's authority across connections, never across workers."""
@@ -208,6 +231,9 @@ class SQLiteActionJournal:
             raise JournalLeaseError("Invalid lease binding or journal already bound")
         # Bind once, even on failure: this object must not acquire newer authority.
         self._lease = lease
+        if self._lifecycle is not None and self._lifecycle is not lease._lifecycle:
+            raise JournalLeaseError("Worker lifecycle binding mismatch")
+        self._lifecycle = lease._lifecycle
         with self._transaction(writer_kind="BOUND"):
             pass
 
@@ -329,6 +355,8 @@ class SQLiteActionJournal:
                     # never action/task/chain changes or a successful write event.
                     db.execute("COMMIT")
                     raise
+                if writer_kind in {"STAGED", "DISPATCH_INTENT", "COMPENSATION_INTENT"}:
+                    self._guard_new_work(db)
             yield db
             if writer_kind is not None:
                 db.execute("INSERT INTO worker_events(owner,generation,kind,subject,observed_ms) VALUES (?,?,?,?,?)",
@@ -512,6 +540,8 @@ class SQLiteActionJournal:
             raise JournalError("Task checkpoint identity mismatch")
         payload = _json(checkpoint)
         with self._transaction(writer_kind="TASK_CHECKPOINT", subject=task_id) as db:
+            if expected_version is None:
+                self._guard_new_work(db)
             contract = checkpoint.get("workflow_contract")
             if contract is not None:
                 try:

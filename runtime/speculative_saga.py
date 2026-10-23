@@ -49,6 +49,8 @@ import json
 import logging
 import time
 import uuid
+from functools import wraps
+from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
 from enum import Enum, auto
 from typing import Any, Awaitable, Callable, Optional
@@ -277,6 +279,18 @@ def _compute_idempotency_key(tool_name: str, args: dict[str, Any]) -> str:
         separators=(",", ":"),
     )
     return hashlib.sha256(payload.encode()).hexdigest()[:24]
+
+
+def _supervised(kind):
+    """Track the entire owned call, including awaits and outcome persistence."""
+    def decorate(method):
+        @wraps(method)
+        async def run(self, *args, **kwargs):
+            scope = self.journal.operation_scope(kind) if self.journal is not None else nullcontext()
+            with scope:
+                return await method(self, *args, **kwargs)
+        return run
+    return decorate
 
 
 class SpeculativeSagaManager:
@@ -760,6 +774,7 @@ class SpeculativeSagaManager:
             if self.journal is not None:
                 self._persist_action(action, "ABORTED_BEFORE_DISPATCH")
 
+    @_supervised("FORWARD")
     async def commit_write(
         self,
         action_id: str,
@@ -1008,6 +1023,7 @@ class SpeculativeSagaManager:
             logger.critical("Automatic repair fenced for %s: %s; manual reconciliation required",
                             action.action_id, type(exc).__name__)
 
+    @_supervised("COMPENSATION")
     async def compensate_action(self, action_id: str, *, auth_context=None) -> None:
         """Make at most one automatic compensation attempt in this process.
 
@@ -1091,6 +1107,7 @@ class SpeculativeSagaManager:
 
     # ---- reconciliation ---------------------------------------------------
 
+    @_supervised("STATUS_QUERY")
     async def reconcile_write(
         self,
         action_id: str,
