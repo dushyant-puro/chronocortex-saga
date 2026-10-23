@@ -385,6 +385,33 @@ main {
   padding: 14px 17px;
   margin-bottom: 22px;
 }
+.worker-inspector {
+  border: 1px solid var(--line);
+  background: white;
+  border-radius: 9px;
+  padding: 14px 17px;
+  margin: -8px 0 22px;
+  font-size: 12px;
+}
+.worker-inspector summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.worker-inspector summary:focus-visible {
+  outline: 3px solid #8877df;
+  outline-offset: 3px;
+}
+.worker-inspector summary .badge {
+  margin-left: 12px;
+}
+.worker-inspector p {
+  color: var(--muted);
+  max-width: 760px;
+  font-size: 11px;
+}
+.worker-inspector .details-list {
+  grid-template-columns: 150px minmax(0, 1fr);
+}
 .outline-dot {
   width: 8px;
   height: 8px;

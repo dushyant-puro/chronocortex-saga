@@ -5,6 +5,7 @@ The ordinary runtime suite does not require a browser installation.
 """
 from contextlib import closing
 from concurrent.futures import ThreadPoolExecutor
+import asyncio
 from pathlib import Path
 import socket
 import sqlite3
@@ -17,6 +18,9 @@ import uvicorn
 
 from control.app import ControlConfig, create_app
 from tests.control_test_support import seed_control
+from runtime.action_journal import SQLiteActionJournal
+from runtime.worker_supervisor import WorkerSupervisor
+from worker.__main__ import recovery_runtime
 
 
 @pytest.fixture(scope="module")
@@ -203,3 +207,49 @@ def test_mobile_and_keyboard_review_and_visual_artifacts(console):
     page.keyboard.press("Escape")
     expect(page.locator("#decision-dialog")).not_to_be_visible()
     expect(button).to_be_focused()
+
+
+def test_supervision_view_distinguishes_manual_lease_live_reports_and_stopped_host(console):
+    env, page, _, _ = console
+    connect(env, page)
+    page.locator(".worker-inspector summary").click()
+    expect(page.locator("#worker-details")).to_contain_text("NOT_OBSERVED")
+    expect(page.locator("#worker-state")).to_have_text("LEASE CURRENT")
+    expect(page.locator("#worker-health")).to_contain_text("NOT READY")
+    env.journal.release_lease()
+    env.journal.security.update_principal("executor", permissions={"ccs:work", "test:write", "ccs:repair", "ccs:reconcile"})
+    ready, stop = threading.Event(), threading.Event()
+    failures = []
+    def run_host():
+        async def run():
+            host = WorkerSupervisor(SQLiteActionJournal(env.journal.path), env.worker.token)
+            try:
+                await host.start(recovery_runtime)
+                ready.set()
+                await asyncio.to_thread(stop.wait)
+            finally:
+                await host.stop()
+        try:
+            asyncio.run(run())
+        except Exception as exc:
+            failures.append(type(exc).__name__)
+            ready.set()
+    thread = threading.Thread(target=run_host, daemon=True)
+    thread.start()
+    try:
+        assert ready.wait(10) and not failures
+        page.get_by_role("button", name="Refresh", exact=True).click()
+        expect(page.locator("#worker-health")).to_contain_text("READY REPORTED")
+        expect(page.locator("#worker-details")).to_contain_text("FRESH")
+        expect(page.locator(".worker-inspector")).to_contain_text("not proof of process liveness")
+        artifacts = Path("results/console-visual")
+        artifacts.mkdir(parents=True, exist_ok=True)
+        page.screenshot(path=str(artifacts / "supervised-worker.png"), full_page=True)
+    finally:
+        stop.set()
+        thread.join(timeout=10)
+    assert not thread.is_alive() and not failures
+    page.get_by_role("button", name="Refresh", exact=True).click()
+    expect(page.locator("#worker-state")).to_have_text("LEASE EXPIRED")
+    expect(page.locator("#worker-health")).to_contain_text("NOT READY")
+    expect(page.locator("#worker-details")).to_contain_text("STOPPED")

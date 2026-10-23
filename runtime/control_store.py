@@ -8,6 +8,7 @@ import uuid
 
 from runtime.policy_engine import PolicyError, PermissionDeniedError
 from runtime.workflow_contract import canonical, validate_record, WorkflowContractError
+from runtime.worker_health import worker_view
 
 
 class ControlError(PolicyError):
@@ -219,10 +220,9 @@ class ControlStore:
             for command in commands:
                 command["result"] = json.loads(command["result"])
             commands = [command for command in commands if self._command_visible(db, actor, command["kind"], command["target_id"])]
-            lease = db.execute("SELECT owner,generation,expires_ms FROM worker_lease WHERE singleton=1").fetchone()
             return {"server_time_ms": now, "window_limit": self.WINDOW, "provider": "NOT_CONFIGURED",
                     "reconciler": "NOT_CONNECTED", "evidence_mode": "JOURNAL_RECORDS",
-                    "worker": {"owner": lease[0], "generation": lease[1], "state": "LEASE_CURRENT" if now < lease[2] else "LEASE_EXPIRED"} if lease else {"state": "NO_LEASE"},
+                    "worker": worker_view(db, now),
                     "actions": actions, "tasks": tasks, "approvals": approvals, "commands": commands}
 
     def detail(self, token, kind, record_id):

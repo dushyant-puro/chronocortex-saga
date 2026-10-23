@@ -128,6 +128,16 @@
             </div>
             <span id="worker-state" class="badge">Checking lease</span>
           </div>
+          <details class="worker-inspector">
+            <summary>
+              Worker supervision <span id="worker-health">Not observed</span>
+            </summary>
+            <p>
+              Heartbeat freshness is observed evidence, not proof of process
+              liveness or provider health. Dispatch always rechecks authority.
+            </p>
+            <dl id="worker-details" class="details-list"></dl>
+          </details>
           <div id="stale-banner" class="stale-banner" role="alert" hidden>
             Journal read unavailable. Displayed evidence may be stale. All
             decision controls are paused until refresh succeeds.

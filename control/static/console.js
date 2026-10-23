@@ -139,6 +139,9 @@ function disconnected() {
   $("#detail").hidden = true;
   $("#content-grid").classList.remove("with-detail");
   $("#metrics").replaceChildren();
+  $("#worker-details").replaceChildren();
+  $("#worker-health").textContent = "Not observed";
+  $("#worker-state").textContent = "Not observed";
   $("#principal").textContent = "";
   $("#session-expiry").textContent = "";
   $("#read-time").textContent = "No completed read yet.";
@@ -339,6 +342,25 @@ function render() {
   $("#worker-state").textContent = snapshot.worker.state.replaceAll("_", " ");
   $("#worker-state").title =
     "A current lease is execution authority, not proof of worker liveness.";
+  const worker = snapshot.worker;
+  const observation = worker.supervision;
+  $("#worker-health").replaceChildren(badge(worker.readiness));
+  $("#worker-details").replaceChildren(
+    ...detailsList([
+      ["Lease", worker.state],
+      ["Owner", worker.owner],
+      ["Generation", worker.generation],
+      ["Lease expires", time(worker.expires_ms)],
+      ["Heartbeat", worker.heartbeat],
+      [
+        "Last report",
+        observation ? time(observation.observed_ms) : "Not observed",
+      ],
+      ["Reported phase", observation?.phase],
+      ["Active operations at report", observation?.active_operations],
+      ["Failure code", observation?.failure_code],
+    ]).childNodes,
+  );
   $("#view-title").textContent = titles[state.view][0];
   $("#view-description").textContent = titles[state.view][1];
   const content = $("#record-content");

@@ -36,5 +36,7 @@ Earlier invariants and validation are documented in the
 [workflow contract](docs/engineering/workflow-contract-versioning.md),
 [worker ownership](docs/engineering/worker-lease-fencing.md), and
 [durable action intent](docs/engineering/durable-action-intent.md) reports.
-The next release gate is supervised worker operation and recovery; real provider,
-voice, identity and independent evaluation work remains.
+The [worker supervision runbook](docs/engineering/worker-supervision.md) covers
+owned operation lifetimes, drain/timeout behavior, a recovery-only host command,
+and observed heartbeat health. Real provider, voice, identity, deployment and
+independent evaluation gates remain.

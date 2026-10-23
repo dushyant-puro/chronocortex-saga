@@ -92,6 +92,75 @@ Core regression command, from PowerShell:
 .\.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider
 ```
 
+## Recovery host and managed credential input
+
+The provided command is deliberately **RECOVERY_ONLY**: no provider adapter,
+remote status handler, task queue or voice session is connected. It authenticates,
+owns/renews a lease, projects recovered action evidence without replay, and waits
+for shutdown. Its startup inventory is a record count, not a recovered-task
+completion claim. Integrators supply an explicit trusted adapter to the library
+after provider and workflow contracts have been reviewed.
+
+Use a separate worker principal, not the operator's credential. First prepare the
+protected local directory/journal using the
+[Windows ACL setup](operator-control-console.md#windows-setup-new-local-installation).
+For that existing directory, create a new worker credential offline:
+
+```powershell
+$env:CCS_JOURNAL = Join-Path $env:LOCALAPPDATA 'ChronoCortexSaga\ccs.db'
+$ccsWorkerSecret = Join-Path $env:LOCALAPPDATA 'ChronoCortexSaga\worker.secret'
+.\.venv\Scripts\python.exe -m control.provision --journal $env:CCS_JOURNAL --principal local-worker --permission ccs:work --no-console-access --credential-file $ccsWorkerSecret
+.\.venv\Scripts\python.exe -m worker --journal $env:CCS_JOURNAL --credential-file $ccsWorkerSecret --check
+.\.venv\Scripts\python.exe -m worker --journal $env:CCS_JOURNAL --credential-file $ccsWorkerSecret
+```
+
+The parked host needs ccs:work only. A later adapter additionally needs its
+operation's domain grants and explicit forward/repair approvals. Provisioning a
+worker with --no-console-access does not silently add ccs:observe. The check mode
+actually tests startup/ownership/hydration/release; it refuses a current worker's
+lease, never force-takes ownership, and makes no provider calls.
+
+Credentials are read from a bounded regular, single-link file; malformed input,
+symlinks and directories are rejected. POSIX additionally checks current-user
+ownership and owner-only permissions. On Windows the administrator must protect
+the directory and inherited file ACL, as in the prior runbook; this reader does
+not certify Windows ACLs or a hostile filesystem. Credential bytes are not CLI
+arguments, output, logs or environment variables. Missing/expired/revoked authority
+fails closed. Rotation requires a controlled restart with a newly supplied
+credential and fresh runtime; there is no automatic token replacement or fallback.
+The journal must already exist at schema 6; this command never initializes or
+migrates a deployment implicitly.
+
+Ctrl+C schedules a graceful stop. Windows SIGBREAK and POSIX SIGTERM are mapped
+to the same request. Signal handlers only schedule event-loop work, then restore
+the previous handlers on exit. A Windows process kill is a hard stop and does not
+run this drain protocol. A service manager must distinguish graceful control from
+forced termination. CLI exit 0 requires a drained, released, non-failed stop;
+failure, abandoned operations or persistence/authority loss return nonzero.
+
+## Observability boundary
+
+Authenticated console snapshots read lease and supervision evidence in the same
+SQLite transaction. Existing lease-state fields remain compatible. The new view
+shows generation, expiry, last report, bounded heartbeat freshness, reported phase,
+reported active-operation count and a non-secret failure code. A manually held
+lease reports NOT_OBSERVED rather than supervised readiness. Observations from
+older generations cannot describe a replacement. Malformed/unknown evidence,
+clock rollback, stale reports, expired leases, stopping/failed phases and failure
+codes cannot report READY_REPORTED. Final stop/failure events cannot claim ready
+through a conflicting summary.
+
+READY_REPORTED means only that a current generation recently reported readiness.
+It is not proof of process liveness, authoritative dispatch eligibility or provider
+health. Death/stall is detected only after an observation becomes stale or a lease
+expires; active counts are snapshots, not a live census of remote effects.
+The console retains stale/offline labeling and never changes lifecycle evidence
+or dispatches a provider operation from a health badge.
+
+Chromium tests run the real supervisor alongside the real HTTP/SQLite console:
+manual lease -> fresh reported readiness -> graceful stop and expired lease.
+Existing offline, response-loss, review, XSS, keyboard and responsive tests remain.
+
 On regression, stop admission/dispatch, retain the current schema-6 journal,
 lease generation, operation identities and security/control/effect evidence.
 Use a compatible reader and reconcile current facts before any new mutation.
