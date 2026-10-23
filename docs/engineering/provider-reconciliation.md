@@ -70,3 +70,76 @@ keys must be restricted `rk_test_` keys. See the provider's
 Only provider-backed sandbox runs may be labeled REAL PROVIDER (sandbox): the
 provider API is real, the transactions are test objects and move no real money.
 In-process HTTP fixtures must always be labeled SIMULATED.
+
+## Adapter boundary
+
+`providers/stripe_sandbox.py` has one fixed HTTPS origin, no redirects, ambient
+proxy/env-key discovery, Connect headers or transport retries. The effective key
+account is checked through GET `/v1/account` before every operation, then the
+exact PaymentIntent ID is requested. This endpoint was also checked against
+[Stripe's official OpenAPI specification](https://github.com/stripe/openapi/blob/master/openapi/spec3.json).
+Only restricted test-key syntax is accepted. Test-key syntax proves neither
+account ownership nor isolation: select a separate sandbox in the Dashboard,
+pin its account ID, and verify the actual API before claiming that gate.
+
+Responses require HTTP 200, JSON, identity encoding, a bounded request reference
+and the pinned API version when returned. Raw response bytes are capped at 64
+KiB before parsing; duplicate keys, nonfinite values, malformed JSON, mismatched
+objects/IDs, live-mode objects and invalid terminal evidence fail closed. A
+terminal receipt includes the requested scope, deterministic idempotency key,
+request ID and cancellation timestamp. Account email, customer information,
+client secrets and unfiltered provider errors are not retained. Connection/read
+errors, HTTP errors (including 4xx, rate limit and 5xx), redirects, parser failures
+and timeouts never become proof of nonexecution.
+
+For this one irreversible goal, the operation key is deterministic from the
+account, known resource and versioned contract; the supported `stage` helper
+does not accept a replacement key. A new API/contract version is a deployment
+change, not permission to bypass old unresolved work. The adapter's status
+callback rejects changed keys, payloads and tool names. Runtime key claims,
+durable current credentials, `payments:cancel_sandbox` and a separate exact
+forward approval apply before execution. New integration hosts must use
+WorkerSupervisor; the default recovery worker stays unconfigured.
+
+The provider's at-least-24-hour idempotency retention is not an eternal lock.
+There is no retry loop inside this adapter, including preflight failures. The
+15-second overall provider deadline and 5-second I/O timeouts limit local waits;
+they do not bound remote execution or prove remote cancellation. Only GET
+reconciliation is repeatable. A current open intent, succeeded intent or missing
+resource never returns False. No automatic repair handler is registered.
+
+This Python adapter is a trusted host capability, not a sandbox for arbitrary
+Python. Direct HTTP or direct executor use can bypass CCS authorization. Do not
+expose the object or provider key to model/ASR text, plugins or the browser. The
+restricted provider key still authorizes more than a single cancellation; the
+CCS manifest/approval layer narrows use inside the host. Egress enforcement,
+external key rotation and secret-store deployment remain operational gates.
+
+## Test and acceptance matrix
+
+| Layer | Evidence | Gate |
+| --- | --- | --- |
+| Core receipt resolution | Real SQLite, operation/digest seal, atomic receipt/state, reload, concurrent resolution, stale epoch | Automated local/CI |
+| Provider protocol | SIMULATED transport: exact request, account scope, key rejection, bounded parser, 4xx/5xx/redirects, lost ack, cancellation, delayed apply | Automated local/CI |
+| Provider after restart | SIMULATED independent effect ledger; only GET recovery; original POST count remains one | Automated local/CI |
+| Real sandbox | Protected restricted test key, separate sandbox account, known test PaymentIntent; status and explicit mutation drill | Not yet verified; credentials/assets required |
+| Production deployment | Live payment actions, settlement/refund claims, voice, dispatcher, identity/TLS/OS service | Outside this adapter's release gate |
+
+No throughput, availability or financial correctness rates follow from these
+tests. Fixture responses are deliberately small protocol models; real sandbox
+behavior and permission setup must be verified independently.
+
+## Rollback and compatibility
+
+Disable provider admission/stop the host, drain owned operations under its lease,
+and retain schema-6 journal/action/event/key/approval evidence and provider IDs.
+The default recovery-only host is a compatible safe reader, but has no provider
+status binding. Do not clear claims, remove consumed approvals, replay POSTs,
+restore an older journal or create a replacement PaymentIntent as rollback.
+Use an authenticated, version-compatible GET status adapter to gather current
+facts. Unknown facts stay parked. Completed terminal cancellation is irreversible.
+
+Existing Boolean status callbacks remain supported; their truth remains the
+adapter's responsibility. Provider receipts do not change stored action identity
+or workflow contracts. A deployment changing API/provider/argument semantics
+requires a new explicit workflow contract and review of unresolved older work.

@@ -40,3 +40,10 @@ The [worker supervision runbook](docs/engineering/worker-supervision.md) covers
 owned operation lifetimes, drain/timeout behavior, a recovery-only host command,
 and observed heartbeat health. Real provider, voice, identity, deployment and
 independent evaluation gates remain.
+
+The [provider reconciliation contract](docs/engineering/provider-reconciliation.md)
+selects a restricted Stripe test-mode adapter for terminal cancellation of an
+existing, known PaymentIntent. It is available as a trusted Python integration,
+requires durable intent and exact approval, and is not connected to the console,
+voice agent or default worker. Automated HTTP fixtures remain **SIMULATED**;
+live sandbox acceptance is a separate gate. Unknown mutations are never retried.
