@@ -51,6 +51,17 @@ live sandbox acceptance is a separate gate. Unknown mutations are never retried.
 GET-only command for one previously recorded compatible operation; it cannot
 create or replay a cancellation.
 
+`python -m providers.preflight_stripe --help` describes a separate GET-only
+setup check. It needs a protected restricted test-key file and the expected
+sandbox account ID; an existing PaymentIntent ID is optional. It never opens a
+journal or creates, cancels or reconciles an operation. Read access does not
+prove write permission, and preflight success is not the real cancellation
+acceptance gate.
+Follow the [Windows Stripe sandbox setup guide](docs/engineering/stripe-sandbox-setup.md)
+to create a dedicated sandbox, save its restricted key through a masked prompt
+outside the checkout, and run account-only preflight. The key helper makes no
+provider calls; the preflight command contacts the real API only when explicitly run.
+
 The [voice evidence boundary](docs/engineering/voice-evidence.md) replaces the
 unsafe live demo path with a proposal-only LiveKit word-evidence hook. Missing
 confidence/timing stays unavailable, revisions replace previous hypotheses,

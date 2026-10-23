@@ -158,19 +158,48 @@ class StripeSandboxCancellation:
             raise ProviderProtocolError("STRIPE_RESPONSE_UNAVAILABLE_OR_INVALID") from None
 
     async def _account(self):
-        data, _ = await self._request("GET", "/v1/account")
+        data, reference = await self._request("GET", "/v1/account")
         if data.get("object") != "account" or data.get("id") != self._config.account_id:
             raise ProviderProtocolError("STRIPE_ACCOUNT_MISMATCH")
+        return reference
 
-    def _receipt(self, data, request_id, args, method):
-        if (data.get("object") != "payment_intent" or data.get("id") != args["payment_intent_id"] or
+    def _intent_status(self, data, payment_intent_id):
+        if (data.get("object") != "payment_intent" or data.get("id") != payment_intent_id or
                 data.get("livemode") is not False or type(data.get("status")) is not str or data["status"] not in _STATUSES):
             raise ProviderProtocolError("STRIPE_PAYMENT_INTENT_MISMATCH")
-        if data["status"] != "canceled":
-            return None
-        if (type(data.get("canceled_at")) is not int or data["canceled_at"] <= 0 or
+        if data["status"] == "canceled" and (type(data.get("canceled_at")) is not int or data["canceled_at"] <= 0 or
                 type(data.get("amount_capturable")) is not int or data["amount_capturable"] != 0):
             raise ProviderProtocolError("STRIPE_TERMINAL_EVIDENCE_INVALID")
+        return data["status"]
+
+    async def preflight(self, payment_intent_id=None):
+        """GET-only setup inspection; never a journal receipt or a write grant.
+
+        Account-only success attests identity, not the mode of any remote object.
+        Supplying a known PaymentIntent additionally verifies its test mode and
+        current status. Neither query proves that the key can perform a POST.
+        """
+        if payment_intent_id is not None:
+            self.arguments(payment_intent_id)  # Validate the complete scope before HTTP.
+        try:
+            async with asyncio.timeout(15):
+                reference = await self._account()
+                summary = {"account_id": self._config.account_id, "api_version": API_VERSION,
+                           "account_request_id": reference, "object_mode_verified": False,
+                           "payment_intent": None}
+                if payment_intent_id is not None:
+                    data, reference = await self._request("GET", "/v1/payment_intents/" + payment_intent_id)
+                    status = self._intent_status(data, payment_intent_id)
+                    summary["payment_intent"] = {"id": payment_intent_id, "status": status,
+                                                 "livemode": False, "request_id": reference}
+                    summary["object_mode_verified"] = True
+                return summary
+        except TimeoutError:
+            raise ProviderUnavailable("STRIPE_DEADLINE_EXCEEDED") from None
+
+    def _receipt(self, data, request_id, args, method):
+        if self._intent_status(data, args["payment_intent_id"]) != "canceled":
+            return None
         return {"provider": "stripe", "mode": "test", **args,
                 "idempotency_key": self.operation_key(args), "status": "canceled",
                 "canceled_at": data["canceled_at"], "request_id": request_id,
