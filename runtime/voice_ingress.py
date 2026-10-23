@@ -1,6 +1,7 @@
 """Ephemeral, revision-aware voice proposals with no task or mutation capability."""
 from dataclasses import dataclass
 import threading
+import re
 
 from runtime.grounding_guard import GroundingGuard, TokenEvidence
 
@@ -33,9 +34,17 @@ class VoiceProposal:
 
 
 def bounded_text(text):
-    if type(text) is not str or len(text.encode("utf-8")) > 16_384:
+    if type(text) is not str or len(text) > 16_384:
         raise VoiceEvidenceError("VOICE_TEXT_INVALID_OR_TOO_LARGE")
-    return " ".join(text.split())
+    try:
+        if len(text.encode("utf-8")) > 16_384:
+            raise VoiceEvidenceError("VOICE_TEXT_INVALID_OR_TOO_LARGE")
+    except UnicodeError:
+        raise VoiceEvidenceError("VOICE_TEXT_INVALID_ENCODING") from None
+    words = text.split()
+    if len(words) > 4096:
+        raise VoiceEvidenceError("VOICE_TEXT_EXCEEDS_WORD_CAPACITY")
+    return " ".join(words)
 
 
 class VoiceIngress:
@@ -80,7 +89,7 @@ class VoiceIngress:
 
     def close_stream(self, stream):
         self._owned()
-        if stream == self._stream:
+        if type(stream) is int and stream == self._stream:
             self._open = False
             self.handle = self.latest = None
             self._clear()
@@ -100,7 +109,8 @@ class VoiceIngress:
         self._owned()
         self._guard.reset_turn()
         self._tokens, self._text, self._final = (), "", False
-        self._fault = reason
+        self._fault = (reason if type(reason) is str and len(reason) <= 64 and
+                       re.fullmatch(r"[A-Z_]+", reason) else "VOICE_INPUT_REJECTED")
         self.latest = None
 
     def _current(self, handle):

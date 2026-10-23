@@ -163,3 +163,10 @@ microphone/WebRTC/provider tests, calibrated confidence, participant identity,
 ambiguous provider ordering, room access/privacy, authenticated proposal-to-task
 binding, durable voice evidence retention and independently sourced evaluation
 assets remain acceptance gates. The live voice placeholder remains skipped.
+
+Final boundary review additionally checks raw character size before UTF-8
+encoding, rejects invalid Unicode and applies the 4096-word cap to text-only
+completions as well as scored revisions. A rejected completion cannot fall back
+to older scored words. Diagnostic reasons accept bounded code strings only,
+and a boolean cannot impersonate stream generation 1 when closing a pipeline.
+These checks protect capacity and log integrity even when acoustic data is absent.

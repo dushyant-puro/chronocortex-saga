@@ -135,3 +135,23 @@ def test_other_thread_cannot_mutate_voice_scope():
         with pytest.raises(VoiceEvidenceError, match="OWNING_THREAD"):
             pool.submit(voice.begin_turn, stream).result(timeout=3)
     assert voice.handle == turn
+
+
+@pytest.mark.parametrize("text", ["x" * 16385, "界" * 6000, "a " * 4097, "bad\ud800encoding"],
+                         ids=["character-capacity", "utf8-capacity", "word-capacity", "invalid-unicode"])
+def test_completion_bounds_apply_before_unscored_fallback_and_discard_old_evidence(text):
+    voice, _, turn = started()
+    voice.replace(turn, 1, "Chennai", words("Chennai"), final=True)
+    with pytest.raises(VoiceEvidenceError):
+        voice.complete(turn, text)
+    assert not voice.complete(turn, "Chennai").grounded
+
+
+def test_diagnostics_cannot_smuggle_provider_payload_and_bool_is_not_stream_identity():
+    voice, _, turn = started()
+    voice.close_stream(True)
+    voice.replace(turn, 1, "Chennai", words("Chennai"), final=True)
+    voice.invalidate("PRIVATE:provider payload or transcript")
+    proposal = voice.complete(turn, "Chennai")
+    assert "PRIVATE" not in str(proposal.metadata())
+    assert proposal.reason == "VOICE_INPUT_REJECTED"
