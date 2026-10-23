@@ -25,6 +25,19 @@ def simulated(handler):
 
 
 @pytest.mark.asyncio
+async def test_falsey_test_factory_cannot_fall_through_to_real_transport(tmp_path, monkeypatch):
+    args = arguments(tmp_path)
+    class Factory:
+        def __bool__(self):
+            return False
+        def __call__(self, config):
+            return StripeSandboxCancellation(config, transport=httpx.MockTransport(lambda _: account()))
+    monkeypatch.setattr(command, "StripeSandboxCancellation", lambda _: pytest.fail("Unexpected real transport selection"))
+    result = await command.run(args, provider_factory=Factory())
+    assert result["source"] == "SIMULATED"
+
+
+@pytest.mark.asyncio
 async def test_account_only_has_one_get_no_journal_and_no_object_or_write_claim(tmp_path, monkeypatch):
     args = arguments(tmp_path)
     before = set(tmp_path.iterdir())

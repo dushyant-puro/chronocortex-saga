@@ -6,6 +6,7 @@ The ordinary runtime suite does not require a browser installation.
 from contextlib import closing
 from concurrent.futures import ThreadPoolExecutor
 import asyncio
+from types import SimpleNamespace
 from pathlib import Path
 import socket
 import sqlite3
@@ -15,12 +16,16 @@ import time
 import pytest
 from playwright.sync_api import sync_playwright, expect
 import uvicorn
+import httpx2 as httpx
 
 from control.app import ControlConfig, create_app
 from tests.control_test_support import seed_control
 from runtime.action_journal import SQLiteActionJournal
 from runtime.worker_supervisor import WorkerSupervisor
 from worker.__main__ import recovery_runtime
+from providers.sandbox_drill import run as run_sandbox_drill
+from providers.stripe_sandbox import StripeSandboxCancellation, PERMISSION
+from tests.test_stripe_sandbox import ACCOUNT, INTENT, KEY, account, intent, response
 
 
 @pytest.fixture(scope="module")
@@ -92,20 +97,94 @@ def test_login_journal_evidence_approval_review_and_logout(console):
     assert env.operator.token not in storage
     assert not context.storage_state()["origins"]
     assert all(cookie["httpOnly"] for cookie in context.cookies())
-    expect(page.get_by_text("Provider not configured", exact=True)).to_be_visible()
+    expect(page.get_by_text("Console records decisions", exact=True)).to_be_visible()
     inspect(page, "actions", env.pending.action_id)
     page.get_by_role("button", name="Approve forward operation", exact=True).click()
+    expect(page.locator("#decision-dialog")).to_contain_text("A supervised worker may dispatch after approval")
     expect(page.locator("#decision-evidence")).to_contain_text('"destination": "Pune"')
     expect(page.locator("#decision-evidence")).to_contain_text("test:write")
     page.get_by_label("Execution principal").fill("executor")
     confirm(page)
-    expect(page.locator("#notice")).to_contain_text("No executor was dispatched")
+    expect(page.locator("#notice")).to_contain_text("A supervised worker may execute the approved action")
     assert env.journal.records()[0][1]["state"] == "PENDING"
     page.get_by_role("button", name="Disconnect", exact=True).click()
     expect(page.locator("#connect")).to_be_visible()
     assert not page.locator("#metrics").text_content()
     assert not page.locator("#detail").text_content()
     assert not page.locator("#principal").text_content()
+
+
+def test_console_approval_drives_one_simulated_supervised_cancellation(console, tmp_path):
+    env, page, _, _ = console
+    env.journal.release_lease()
+    env.journal.security.update_principal("executor", permissions={"ccs:work", "ccs:reconcile", "ccs:repair", "test:write", PERMISSION})
+    env.journal.security.update_principal("operator", permissions={"ccs:observe", "ccs:approve", "ccs:reconcile", "test:write", PERMISSION})
+    for name, value in (("worker.key", env.worker.token), ("stripe.key", KEY)):
+        path = tmp_path / name
+        path.write_text(value, encoding="ascii")
+        path.chmod(0o600)
+    args = SimpleNamespace(journal=str(env.journal.path), credential_file=str(tmp_path / "worker.key"),
+                           stripe_key_file=str(tmp_path / "stripe.key"), account_id=ACCOUNT,
+                           payment_intent_id=INTENT, approval_wait_seconds=30, allow_sandbox_cancellation=True)
+    ready, stop = threading.Event(), threading.Event()
+    events, results, failures = [], [], []
+    ledger = {"post_count": 0, "applied": False}
+
+    def emit(event):
+        events.append(event)
+        if event["event"] == "STRIPE_SANDBOX_APPROVAL_REQUIRED":
+            ready.set()
+
+    def handler(request):
+        if request.url.path == "/v1/account":
+            return account()
+        if request.method == "POST":
+            action_id = next(e["action_id"] for e in events if e["event"] == "STRIPE_SANDBOX_APPROVAL_REQUIRED")
+            assert env.journal.events(action_id)[-1]["kind"] == "DISPATCH_INTENT"
+            ledger["post_count"] += 1
+            ledger["applied"] = True
+            return response(intent())
+        return response(intent() if ledger["applied"] else intent(status="requires_payment_method", canceled_at=None))
+
+    def worker():
+        try:
+            results.append(asyncio.run(run_sandbox_drill(
+                args, provider_factory=lambda config: StripeSandboxCancellation(config, transport=httpx.MockTransport(handler)),
+                event_sink=emit, clock=lambda: time.monotonic() + (300 if stop.is_set() else 0), handle_signals=False)))
+        except Exception as error:
+            failures.append(type(error).__name__)
+            ready.set()
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    try:
+        assert ready.wait(10) and not failures
+        staged = next(e for e in events if e["event"] == "STRIPE_SANDBOX_APPROVAL_REQUIRED")
+        assert ledger["post_count"] == 0
+        connect(env, page)
+        inspect(page, "actions", staged["action_id"])
+        page.get_by_role("button", name="Approve forward operation", exact=True).click()
+        expect(page.locator("#decision-dialog")).to_contain_text("A supervised worker may dispatch after approval")
+        page.get_by_label("Execution principal").fill("executor")
+        confirm(page)
+        thread.join(timeout=15)
+        assert not thread.is_alive() and not failures and results == [0]
+        assert ledger["post_count"] == 1
+        page.get_by_role("button", name="Refresh", exact=True).click()
+        expect(page.locator("#worker-health")).to_contain_text("NOT READY")
+        inspect(page, "actions", staged["action_id"])
+        expect(page.locator("#detail")).to_contain_text("COMMITTED")
+        expect(page.locator("#notice")).to_be_hidden()
+        expect(page.locator("#detail")).to_contain_text("req_Simulated12345")
+        expect(page.get_by_role("button", name="Approve compensation", exact=True)).to_be_disabled()
+        assert next(e for e in events if e["event"] == "STRIPE_SANDBOX_DRILL_FINISHED")["readback_verified"] is True
+        artifacts = Path("results/console-visual")
+        artifacts.mkdir(parents=True, exist_ok=True)
+        page.screenshot(path=str(artifacts / "simulated-stripe-drill.png"), full_page=True)
+    finally:
+        stop.set()
+        thread.join(timeout=10)
+        assert not thread.is_alive()
 
 
 def test_initial_session_lookup_finishes_before_login_can_be_submitted(console):
@@ -195,6 +274,25 @@ def test_stale_review_is_rejected_without_optimistic_cancellation(console):
     assert env.journal.load_task(env.task.task_id)[1]["state"] != "CANCELLED"
 
 
+def test_changed_evidence_notice_clears_only_after_successful_detail_read(console):
+    env, page, context, _ = console
+    connect(env, page)
+    inspect(page, "tasks", env.task.task_id)
+    version, checkpoint = env.journal.load_task(env.task.task_id)
+    checkpoint["error"] = "SIMULATED new checkpoint evidence"
+    env.journal.save_task(env.task.task_id, checkpoint, version)
+    page.get_by_role("button", name="Refresh", exact=True).click()
+    expect(page.locator("#notice")).to_contain_text("Selected evidence changed")
+    context.set_offline(True)
+    page.get_by_role("button", name="Refresh evidence", exact=True).click()
+    expect(page.locator("#notice")).to_be_visible()
+    context.set_offline(False)
+    page.get_by_role("button", name="Refresh", exact=True).click()
+    inspect(page, "tasks", env.task.task_id)
+    expect(page.locator("#detail")).to_contain_text(checkpoint["error"])
+    expect(page.locator("#notice")).to_be_hidden()
+
+
 def test_unavailable_post_response_is_never_automatically_retried(console):
     env, page, _, _ = console
     connect(env, page)
@@ -213,6 +311,8 @@ def test_unavailable_post_response_is_never_automatically_retried(console):
     page.get_by_role("button", name="Refresh", exact=True).click()
     page.locator("#navigation").get_by_role("button", name="Decision history").click()
     expect(page.locator("#record-content")).to_contain_text("REQUESTED")
+    inspect(page, "actions", env.unknown.action_id)
+    expect(page.locator("#notice")).to_contain_text("No automatic retry was sent")
     assert len(attempts) == 1
     assert env.journal.records()[1][1]["state"] == "IN_FLIGHT_UNKNOWN"
 

@@ -6,8 +6,8 @@ durable work or make uncertain remote effects safe to retry.
 This branch contains a stacked research safety implementation and an
 authenticated local operator console. **PUBLIC MAIN VERIFIED** is still Phase 0
 at `4162ec17f4bda15c13de3fa1f0e1e33e3fe35591`; the safety PRs are unmerged.
-Provider-effect tests are **SIMULATED**. No **REAL PROVIDER** is enabled and the
-live voice test remains a skipped placeholder. This is not a production-readiness
+Provider-effect tests are **SIMULATED**. **REAL PROVIDER** acceptance has not been
+run, and the live voice test remains a skipped placeholder. This is not a production-readiness
 claim.
 
 The console reads the SQLite journal, reviews exact operation evidence, issues
@@ -15,6 +15,7 @@ scoped approvals, records cancellation intent, and records investigation request
 It does not dispatch or retry provider mutations. Cancellation cannot roll back
 a remote effect; UNKNOWN evidence remains unresolved until authoritative
 reconciliation.
+An explicitly started supervised worker can act on a recorded exact approval.
 
 Python 3.13 / PowerShell:
 
@@ -43,10 +44,9 @@ independent evaluation gates remain.
 
 The [provider reconciliation contract](docs/engineering/provider-reconciliation.md)
 selects a restricted Stripe test-mode adapter for terminal cancellation of an
-existing, known PaymentIntent. It is available as a trusted Python integration,
-requires durable intent and exact approval, and is not connected to the console,
-voice agent or default worker. Automated HTTP fixtures remain **SIMULATED**;
-live sandbox acceptance is a separate gate. Unknown mutations are never retried.
+existing, known PaymentIntent. It requires durable intent and exact approval;
+the voice boundary and default worker do not dispatch it. Automated HTTP fixtures remain **SIMULATED**;
+real sandbox acceptance is a separate gate. Unknown mutations are never retried.
 `python -m providers.reconcile_stripe --help` describes the supervised,
 GET-only command for one previously recorded compatible operation; it cannot
 create or replay a cancellation.
@@ -61,6 +61,13 @@ Follow the [Windows Stripe sandbox setup guide](docs/engineering/stripe-sandbox-
 to create a dedicated sandbox, save its restricted key through a masked prompt
 outside the checkout, and run account-only preflight. The key helper makes no
 provider calls; the preflight command contacts the real API only when explicitly run.
+
+The [supervised sandbox drill](docs/engineering/supervised-stripe-drill.md) adds
+an explicitly enabled, one-known-resource cancellation host. It stages a fresh
+action, waits for an exact console approval, makes at most one cancel POST, and
+verifies readback without replay or compensation. The console records authority;
+the worker owns execution. This host is separate from the default recovery-only
+worker and has not passed real-provider acceptance.
 
 The [voice evidence boundary](docs/engineering/voice-evidence.md) replaces the
 unsafe live demo path with a proposal-only LiveKit word-evidence hook. Missing

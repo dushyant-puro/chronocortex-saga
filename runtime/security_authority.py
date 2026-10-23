@@ -303,6 +303,72 @@ class SecurityAuthority:
         self._event(db, "APPROVAL_REVOKED", now, approval_id=approval_id,
                     issuer_principal_id=issuer.principal_id)
 
+    def _validate_approval(self, db, approval_id, binding, actor, required, now):
+        """Check current authority without consuming; intent must recheck it."""
+        _identity(approval_id)
+        row = db.execute("SELECT record,revoked,consumed FROM approvals WHERE id=?", (approval_id,)).fetchone()
+        if row is None or row[1] != 0 or row[2] != 0:
+            raise ConfirmationRequiredError("Approval unavailable, revoked or consumed")
+        try:
+            approval = json.loads(row[0])
+            if (type(approval["expires_ms"]) is not int or now >= approval["expires_ms"] or
+                    _json(approval["binding"]) != _json(binding) or
+                    approval["executor_principal_id"] != actor.principal_id or
+                    type(approval["executor_version"]) is not int or approval["executor_version"] != actor.version):
+                raise ConfirmationRequiredError("Approval does not match the current operation or executor")
+            _, issuer = self._credential(db, approval["issuer_credential_id"], now)
+            if (issuer.principal_id != approval["issuer_principal_id"] or
+                    type(approval["issuer_version"]) is not int or issuer.version != approval["issuer_version"] or
+                    not (required | {"ccs:approve"}) <= issuer.granted_permissions):
+                raise ConfirmationRequiredError("Approval issuer authority changed")
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ConfirmationRequiredError("Invalid stored approval") from exc
+
+    def find_forward_approval(self, executor_token, action_id):
+        """Find the latest console decision for this worker's pending action.
+
+        A returned lookup ID is not dispatch authorization. The journal rechecks
+        and consumes approval atomically with DISPATCH_INTENT. No fallback to an
+        older approval, event insertion, mutation callback or approval issuance.
+        """
+        _identity(action_id)
+        with self.journal._transaction() as db:
+            now = self._now(db)
+            actor = self._authenticate(db, executor_token, now)
+            if "ccs:work" not in actor.granted_permissions:
+                raise PermissionDeniedError("Current worker permission required")
+            row = db.execute("SELECT record FROM actions WHERE action_id=?", (action_id,)).fetchone()
+            if row is None:
+                raise PermissionDeniedError("Operation unavailable")
+            old = json.loads(row[0])
+            required, _ = self._operation(old, "FORWARD")
+            if not required <= actor.granted_permissions:
+                raise PermissionDeniedError("Principal lacks current operation permissions")
+            chain = db.execute("SELECT status FROM chains WHERE chain_id=?", (old["chain_id"],)).fetchone()
+            if chain is None or chain[0] != "OPEN":
+                raise PermissionDeniedError("Action chain is closed")
+            self.journal._task_projection_guard(db, old)
+            binding = self._binding(db, old, "FORWARD")
+            # The target index narrows command candidates; the INTEGER PRIMARY
+            # KEY audit sequence orders same-clock decisions across rowid rewrites.
+            decision = db.execute(
+                "SELECT c.result FROM control_commands c JOIN control_events e "
+                "ON e.principal_id=c.principal_id AND e.operation_id=c.operation_id "
+                "AND e.kind=c.kind AND e.target_id=c.target_id "
+                "WHERE c.kind='APPROVE' AND c.target_id=? ORDER BY e.seq DESC LIMIT 1",
+                (action_id,)).fetchone()
+            if decision is None:
+                return None
+            result = json.loads(decision[0])
+            if (type(result) is not dict or set(result) != {"state", "approval_id", "execution"} or
+                    result["state"] != "RECORDED" or result["execution"] != "NOT_DISPATCHED"):
+                raise PermissionDeniedError("Invalid recorded approval decision")
+            try:
+                self._validate_approval(db, result["approval_id"], binding, actor, required, now)
+            except (ConfirmationRequiredError, PermissionDeniedError):
+                return None
+            return result["approval_id"]
+
     def authorize(self, db, record, old, request):
         """Called only inside the journal's dispatch/repair intent transaction."""
         if (type(request) is not AuthRequest or type(request.required_permissions) is not tuple or
@@ -321,24 +387,7 @@ class SecurityAuthority:
         if approval_id is None and (confirmation or request.require_approval):
             raise ConfirmationRequiredError("Durable action-bound approval required")
         if approval_id is not None:
-            _identity(approval_id)
-            row = db.execute("SELECT record,revoked,consumed FROM approvals WHERE id=?", (approval_id,)).fetchone()
-            if row is None or row[1] != 0 or row[2] != 0:
-                raise ConfirmationRequiredError("Approval unavailable, revoked or consumed")
-            try:
-                approval = json.loads(row[0])
-                if (type(approval["expires_ms"]) is not int or now >= approval["expires_ms"] or
-                        _json(approval["binding"]) != _json(binding) or
-                        approval["executor_principal_id"] != actor.principal_id or
-                        type(approval["executor_version"]) is not int or approval["executor_version"] != actor.version):
-                    raise ConfirmationRequiredError("Approval does not match the current operation or executor")
-                _, issuer = self._credential(db, approval["issuer_credential_id"], now)
-                if (issuer.principal_id != approval["issuer_principal_id"] or
-                        type(approval["issuer_version"]) is not int or issuer.version != approval["issuer_version"] or
-                        not (required | {"ccs:approve"}) <= issuer.granted_permissions):
-                    raise ConfirmationRequiredError("Approval issuer authority changed")
-            except (KeyError, TypeError, ValueError) as exc:
-                raise ConfirmationRequiredError("Invalid stored approval") from exc
+            self._validate_approval(db, approval_id, binding, actor, required, now)
             changed = db.execute("UPDATE approvals SET consumed=1 WHERE id=? AND revoked=0 AND consumed=0", (approval_id,))
             if changed.rowcount != 1:
                 raise ConfirmationRequiredError("Approval already consumed")
