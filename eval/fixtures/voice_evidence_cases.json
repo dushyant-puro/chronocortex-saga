@@ -1,0 +1,107 @@
+{
+  "schema": 1,
+  "label": "SIMULATED",
+  "cases": [
+    {
+      "id": "same_length_revision",
+      "events": [
+        {"type": "start"},
+        {"type": "interim", "text": "Chennai", "scored": true},
+        {"type": "final", "text": "Bengaluru", "scored": true},
+        {"type": "complete", "text": "Bengaluru"}
+      ],
+      "expected": {"grounded": true, "text": "Bengaluru"}
+    },
+    {
+      "id": "missing_word_confidence",
+      "events": [
+        {"type": "start"},
+        {"type": "final", "text": "Chennai", "scored": false},
+        {"type": "complete", "text": "Chennai"}
+      ],
+      "expected": {"grounded": false, "text": "Chennai"}
+    },
+    {
+      "id": "missing_word_timing",
+      "events": [
+        {"type": "start"},
+        {"type": "final", "text": "Chennai", "scored": true, "timed": false},
+        {"type": "complete", "text": "Chennai"}
+      ],
+      "expected": {"grounded": false, "text": "Chennai"}
+    },
+    {
+      "id": "silence_is_not_final",
+      "events": [
+        {"type": "start"},
+        {"type": "interim", "text": "Chennai", "scored": true},
+        {"type": "end"},
+        {"type": "complete", "text": "Chennai"}
+      ],
+      "expected": {"grounded": false, "text": "Chennai"}
+    },
+    {
+      "id": "late_final_after_end_hint",
+      "events": [
+        {"type": "start"},
+        {"type": "interim", "text": "Chennai", "scored": true},
+        {"type": "end"},
+        {"type": "final", "text": "Chennai", "scored": true},
+        {"type": "complete", "text": "Chennai"}
+      ],
+      "expected": {"grounded": true, "text": "Chennai"}
+    },
+    {
+      "id": "corrected_repandum_excluded",
+      "events": [
+        {"type": "start"},
+        {"type": "final", "text": "Chennai wait Bengaluru", "scored": true},
+        {"type": "complete", "text": "Chennai wait Bengaluru"}
+      ],
+      "expected": {"grounded": true, "text": "wait Bengaluru"}
+    },
+    {
+      "id": "segments_and_duplicate_final",
+      "events": [
+        {"type": "start"},
+        {"type": "final", "text": "truck-17", "scored": true},
+        {"type": "final", "text": "truck-17", "scored": true},
+        {"type": "final", "text": "and Chennai", "scored": true, "offset": 0.5},
+        {"type": "complete", "text": "truck-17 and Chennai"}
+      ],
+      "expected": {"grounded": true, "text": "truck-17 and Chennai"}
+    },
+    {
+      "id": "old_pipeline_cannot_overwrite_new",
+      "events": [
+        {"type": "start"},
+        {"type": "interim", "text": "Chennai", "scored": true},
+        {"type": "restart"},
+        {"type": "start"},
+        {"type": "final", "text": "Bengaluru", "scored": true},
+        {"type": "old_final", "text": "Chennai", "scored": true},
+        {"type": "old_close"},
+        {"type": "complete", "text": "Bengaluru"}
+      ],
+      "expected": {"grounded": true, "text": "Bengaluru"}
+    },
+    {
+      "id": "invalid_confidence_invalidates_turn",
+      "events": [
+        {"type": "start"},
+        {"type": "final", "text": "Chennai", "scored": true, "confidence": 1.1},
+        {"type": "complete", "text": "Chennai"}
+      ],
+      "expected": {"grounded": false, "text": "Chennai"}
+    },
+    {
+      "id": "framework_final_text_unaligned",
+      "events": [
+        {"type": "start"},
+        {"type": "final", "text": "Chennai", "scored": true},
+        {"type": "complete", "text": "Bengaluru"}
+      ],
+      "expected": {"grounded": false, "text": "Bengaluru"}
+    }
+  ]
+}

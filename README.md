@@ -57,3 +57,6 @@ confidence/timing stays unavailable, revisions replace previous hypotheses,
 and speech endpoints never authorize mutations or complete durable tasks.
 The old `python -m agent` entrypoint is disabled; its fleet harness remains
 explicitly SIMULATED. No new voice provider or microphone is enabled.
+Run `python -m eval.voice_replay` for the credential-free, deterministic voice
+protocol scorecard. Its bundled synthetic cases are separate from ASR quality
+and live audio acceptance.

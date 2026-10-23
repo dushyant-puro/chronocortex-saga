@@ -119,3 +119,47 @@ hooks and a session subclass with SIMULATED data; it tests segment accumulation,
 late finals, old streams, ambiguous overlap, absent word metadata, reply
 suppression, redacted logs and fail-closed legacy entrypoints. These are SDK
 contract tests, not microphone, WebRTC, live STT or real-provider acceptance.
+
+## Deterministic offline evaluation
+
+After the README's Python 3.13 environment setup, run in PowerShell:
+
+```powershell
+& .\.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider
+& .\.venv\Scripts\python.exe -m eval.voice_replay `
+  --output results/voice-evidence-scorecard.json
+Get-Content results/voice-evidence-scorecard.json
+```
+
+The versioned bundled fixture `eval/fixtures/voice_evidence_cases.json` supplies
+ten explicit, independent expectations: same-length replacement, missing word
+confidence/timing, silence without final evidence, late final, corrected
+repandum, multiple/duplicate final segments, old pipeline events, invalid
+confidence and final-text misalignment. The runner constructs pinned SDK events
+and invokes the actual ingress/bridge. No STT inference, provider, microphone,
+audio corpus, model credentials or FDB assets are used.
+
+The scorecard is labeled SIMULATED, hashes canonical fixture semantics (stable
+across Windows/Linux line endings), records pass/fail reasons, and omits raw
+transcript values. It writes atomically. Invalid/oversized/ambiguous fixture
+schemas fail with exit 2; a violated expectation exits 1; all expectations pass
+with exit 0. The CI runtime matrix runs this command and retains the explicitly
+simulated JSON scorecard for seven days. `tests/test_voice_replay.py` deliberately
+changes an expectation and checks failure, plus parsing, bounds and redaction.
+
+`tests/test_voice_task_isolation.py` runs an actual WorkerSupervisor and SQLite
+two-step workflow with an independent SIMULATED effect ledger. While step one
+awaits, voice revisions/new turns/disconnect leave its epoch and work unchanged.
+Successful work finishes both steps; lost acknowledgement stays UNKNOWN and the
+second step is parked. Spoken yes/cancel cannot release an exact-approval gate
+or cancel the durable objective. This tests the voice/task boundary; it is not
+evidence that task corrections can already be inferred and applied from speech.
+
+These ten protocol cases are a regression corpus, not held-out ASR evaluation,
+voice quality evidence, a production SLO, a latency/word-error measurement or a
+novelty claim. The existing adversarial task scorecard and its parked restart
+trials have not been replaced or inflated with these synthetic cases. Actual
+microphone/WebRTC/provider tests, calibrated confidence, participant identity,
+ambiguous provider ordering, room access/privacy, authenticated proposal-to-task
+binding, durable voice evidence retention and independently sourced evaluation
+assets remain acceptance gates. The live voice placeholder remains skipped.
