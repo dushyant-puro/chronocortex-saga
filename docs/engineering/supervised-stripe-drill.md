@@ -226,9 +226,11 @@ unrelated successful lookup or automatically retried.
 ```
 
 These are protocol/integration checks, not measured Stripe behavior, acoustic
-accuracy or performance numbers. Independent processes/network response-loss
-proxy drills, actual sandbox permissions/approval rules/request logs, known
-resource setup and externally repeatable real-provider acceptance remain open.
+accuracy or performance numbers. The [offline process fault evaluator](provider-process-faults.md)
+adds independent worker/service/proxy processes and real loopback response-loss
+drills with a SIMULATED effect oracle. Actual sandbox permissions/approval
+rules/request logs, known resource setup, live response-loss interception and
+externally repeatable real-provider acceptance remain open.
 
 To roll back, stop this explicit host, drain owned work and retain the schema-6
 journal, claims, approvals, receipts and provider IDs. Return to the preceding

@@ -69,6 +69,12 @@ verifies readback without replay or compensation. The console records authority;
 the worker owns execution. This host is separate from the default recovery-only
 worker and has not passed real-provider acceptance.
 
+Run `python -m eval.provider_faults` for independent worker/service/proxy process
+drills over real loopback TCP. The **SIMULATED** service has its own durable
+effect ledger; lost responses, process death and hidden status visibility must
+recover with GET only. The [process fault runbook](docs/engineering/provider-process-faults.md)
+documents reproduction, evidence and remaining real-provider gates.
+
 The [voice evidence boundary](docs/engineering/voice-evidence.md) replaces the
 unsafe live demo path with a proposal-only LiveKit word-evidence hook. Missing
 confidence/timing stays unavailable, revisions replace previous hypotheses,

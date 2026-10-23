@@ -132,3 +132,21 @@ def test_scorecard_cli_has_no_live_or_transport_override():
                             capture_output=True, text=True, timeout=15)
     assert result.returncode == 2
     assert "unrecognized arguments" in result.stderr
+
+
+def test_unavailable_git_cannot_claim_clean_source(monkeypatch):
+    def unavailable(*args, **kwargs):
+        raise FileNotFoundError()
+    monkeypatch.setattr(evaluation.subprocess, "run", unavailable)
+    identity = evaluation.provenance()
+    assert identity["source_commit"] is None and identity["source_dirty"] is None
+    assert identity["python"] and identity["sqlite"]
+
+
+def test_uncommitted_source_is_explicit_in_provenance(monkeypatch):
+    from types import SimpleNamespace
+    results = iter([SimpleNamespace(returncode=0, stdout="a" * 40 + "\n"),
+                    SimpleNamespace(returncode=0, stdout=" M runtime/speculative_saga.py\n")])
+    monkeypatch.setattr(evaluation.subprocess, "run", lambda *a, **kw: next(results))
+    identity = evaluation.provenance()
+    assert identity["source_commit"] == "a" * 40 and identity["source_dirty"] is True

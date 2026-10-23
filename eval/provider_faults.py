@@ -10,7 +10,9 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import platform
 import queue
+import re
 import sqlite3
 import subprocess
 import sys
@@ -305,11 +307,28 @@ def score():
     digest = hashlib.sha256()
     for path in (Path(__file__), Path(__file__).with_name("provider_fault_peer.py")):
         digest.update(path.name.encode() + b"\0" + path.read_bytes().replace(b"\r\n", b"\n"))
-    return {"schema": 1, "label": "SIMULATED", "harness_sha256": digest.hexdigest(), "case_count": len(cases),
+    return {"schema": 1, "label": "SIMULATED", "harness_sha256": digest.hexdigest(), "provenance": provenance(),
+            "case_count": len(cases),
             "cases_passed": sum(c["passed"] for c in cases), "cases_failed": sum(not c["passed"] for c in cases),
             "checks_passed": sum(sum(c["checks"].values()) for c in cases),
             "checks_failed": sum(sum(not v for v in c["checks"].values()) for c in cases), "cases": cases,
             "real_provider": "NOT_RUN", "real_audio": "NOT_RUN", "performance_claim": "NONE"}
+
+
+def provenance():
+    result = {"python": platform.python_version(), "sqlite": sqlite3.sqlite_version,
+              "platform": platform.system(), "source_commit": None, "source_dirty": None}
+    try:
+        revision = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, timeout=5)
+        status = subprocess.run(["git", "status", "--porcelain", "--untracked-files=all"],
+                                cwd=ROOT, capture_output=True, text=True, timeout=5)
+        if revision.returncode == 0 and re.fullmatch(r"[0-9a-f]{40,64}", revision.stdout.strip()):
+            result["source_commit"] = revision.stdout.strip()
+        if status.returncode == 0:
+            result["source_dirty"] = bool(status.stdout)
+    except (OSError, subprocess.TimeoutExpired):
+        pass  # Unavailable source identity is never represented as clean.
+    return result
 
 
 def write_report(path, report):
