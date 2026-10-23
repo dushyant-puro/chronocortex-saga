@@ -67,6 +67,7 @@ from runtime.policy_engine import (
 )
 from runtime.action_journal import JournalError, JournalDuplicate, SQLiteActionJournal
 from runtime.security_authority import AuthRequest
+from runtime.reconciliation import ReconciledEffect
 
 logger = logging.getLogger("ccs.saga")
 
@@ -261,7 +262,7 @@ class DuplicateOperationError(RuntimeError):
 
 ReadExecutor = Callable[[dict[str, Any]], Awaitable[Any]]
 WriteExecutor = Callable[[dict[str, Any]], Awaitable[Any]]
-StatusCheck = Callable[["StagedAction"], Awaitable[Optional[bool]]]
+StatusCheck = Callable[["StagedAction"], Awaitable[bool | None | ReconciledEffect]]
 
 _READ_DEBOUNCE_SECONDS = 0.18  # suppress flicker from interim ASR re-firing
 
@@ -1117,7 +1118,8 @@ class SpeculativeSagaManager:
         """Serialize status resolution and saga compensation for one action.
 
         Repeated resolution of a resolved action is a no-op. Status callbacks
-        must return exactly True, False or None and must not re-enter resolution
+        may return operation-bound ReconciledEffect or exactly True, False or
+        None and must not re-enter resolution
         for the same action. False requires authoritative absence, including no
         delayed future application; an eventually consistent miss is insufficient.
         """
@@ -1162,9 +1164,10 @@ class SpeculativeSagaManager:
                    attempt if available, never repeat an existing attempt
           False -> remote confirms it was rolled back; set COMPENSATED
 
-        NEVER use reconcile_write to re-attempt the original executor.
-        If you need to redo the operation, call stage_write + commit_write
-        with the appropriate idempotency key cleared.
+        ReconciledEffect is positive status with a redacted receipt. A missing
+        receipt is filled in the same durable transition as the resolved state;
+        existing forward receipts are retained (including repair approval binding).
+        NEVER use reconciliation or a new key to bypass an unknown mutation.
         """
         action_id = action.action_id
         if (action.state not in (ActionState.IN_FLIGHT_UNKNOWN, ActionState.COMMITTED_STALE)
@@ -1175,8 +1178,12 @@ class SpeculativeSagaManager:
             )
 
         outcome = await status_check(action)
+        receipt = None
+        if type(outcome) is ReconciledEffect:
+            receipt = outcome.validated_receipt(action)
+            outcome = True
         if outcome is not None and type(outcome) is not bool:
-            raise TypeError("status_check must return exactly True, False, or None")
+            raise TypeError("status_check must return exactly True, False, or None, or ReconciledEffect")
 
         if outcome is None:
             logger.info(
@@ -1187,6 +1194,8 @@ class SpeculativeSagaManager:
             return
 
         if outcome is True:
+            if receipt is not None and action.result is None:
+                action.result = receipt
             # Remote confirms the operation executed.
             if action.state == ActionState.IN_FLIGHT_UNKNOWN:
                 # Classify based on current epoch vs capture epoch.
