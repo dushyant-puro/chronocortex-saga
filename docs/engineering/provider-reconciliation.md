@@ -143,3 +143,89 @@ Existing Boolean status callbacks remain supported; their truth remains the
 adapter's responsibility. Provider receipts do not change stored action identity
 or workflow contracts. A deployment changing API/provider/argument semantics
 requires a new explicit workflow contract and review of unresolved older work.
+
+## GET-only recovery command (Windows)
+
+The operator has requested offline validation first and has no sandbox account
+yet. No provider secret or `.env` file is configured in this workspace, and no
+REAL PROVIDER call has been run. The following is a future integration runbook,
+not evidence that the real sandbox gate passed.
+
+`python -m providers.reconcile_stripe` starts a WorkerSupervisor, acquires a
+fresh lease, hydrates evidence without executors, and queries exactly one
+compatible recorded action. It has no creation, forward execution or repair
+command. Credentials need current `ccs:work`, `ccs:reconcile` and
+`payments:cancel_sandbox`. An incompatible provider/account/version/key, unknown
+action or existing repair attempt is rejected. The original worker must release
+its lease or expire naturally; this command cannot force takeover.
+
+Use the protected state-directory ACL instructions in
+[worker-supervision.md](worker-supervision.md) before creating either secret
+file. Issue a separate worker credential offline using `control.provision`
+with explicit permissions and `--no-console-access`. Keep the Stripe restricted
+test key outside Git and use a separate sandbox with only the required account
+read and PaymentIntent read/write permissions; recovery itself only reads.
+Confirm the exact permission setup against the actual sandbox API. No secret
+values belong in argv, environment variables, browser URLs, transcripts or logs.
+Secret files contain the exact ASCII token with no trailing newline. POSIX
+owner-only mode is enforced; Windows protection depends on the directory ACL.
+
+After a future approved supervised integration has recorded a compatible action:
+
+```powershell
+$ccsPython = '.\.venv\Scripts\python.exe'
+& $ccsPython -m providers.reconcile_stripe `
+  --journal 'C:\CCS\state\ccs.db' `
+  --credential-file 'C:\CCS\state\reconciler.key' `
+  --stripe-key-file 'C:\CCS\state\stripe-test.key' `
+  --account-id 'acct_REPLACE_WITH_SANDBOX_ACCOUNT' `
+  --action-id 'REPLACE_WITH_RECORDED_ACTION_ID'
+$LASTEXITCODE
+```
+
+Exit 0 means positive status was durably recorded and ownership released. A
+recovered action remains COMMITTED_STALE; 0 never means the task is valid to
+resume or that cancellation was reversed. Exit 2 means this query found no
+positive terminal proof; UNKNOWN stays UNKNOWN and any historical receipt/state
+is retained. Keep unresolved key claims and investigate. Exit 1 means failure; inspect journal
+facts and authority/provider configuration before retrying a **GET query**.
+The command sanitizes errors and prints stop/release metadata. It labels real
+default-transport observations REAL_PROVIDER_TEST_MODE, which is a provider
+test object, not live money or a production certification. Tests inject a
+SIMULATED transport and explicitly label it as such.
+
+Trusted Python hosts may register `provider.manifest()`, stage through
+`provider.stage(saga, known_id)` and submit `saga.commit_write(action_id,
+provider.execute, timeout=20.0)` through the existing supervisor **after** exact
+durable operator approval. Keep the API client open until owned work drains.
+This is an integration API, not an enabled dispatcher. A successful executor
+return still requires inspecting durable action/task state: an epoch advance
+can retain its receipt as COMMITTED_STALE. Do not infer business success from
+the Python return value alone. A process restart does not authorize executing
+a recovered PENDING/UNKNOWN action; use GET-only reconciliation.
+
+## Remaining acceptance gates
+
+1. Create an isolated sandbox and known disposable test PaymentIntent through
+   a separately reviewed setup procedure. Its creation is itself a remote
+   mutation; a lost creation acknowledgement must not be blindly repeated.
+2. Verify restricted-key permissions, account attestation, pinned API version,
+   object mode and real request references with GET-only access first.
+3. Run one explicitly approved, supervised terminal cancellation. Preserve the
+   journal and provider request logs; verify direct response and subsequent GET
+   agree. No automatic creation, confirmation, capture, refund or inverse action.
+4. In a controlled local proxy/test transport, discard the mutation response
+   after forwarding it, restart the host, then query the known resource. Compare
+   provider request logs to ensure only one POST. A proxy-driven live drill is
+   separate from the deterministic in-process fixtures and is not yet built.
+5. Verify stale conversational intent, lease loss, key revocation and an open
+   or missing read remain safe under the actual provider. Release deployment
+   only after these gates are independently repeatable. A sandbox does not
+   certify live payment/settlement behavior.
+
+Offline reproduction uses the README's Python 3.13 setup with no provider
+credentials. `pytest -q` collects all protocol/core/command tests, and
+`pytest browser/console_cases.py -q` collects browser regressions after installing
+`requirements-browser.txt` and Chromium. The existing live voice placeholder is
+the only intentionally skipped test. Real provider acceptance has not been run;
+it is not counted as a passing simulated test.

@@ -47,3 +47,6 @@ existing, known PaymentIntent. It is available as a trusted Python integration,
 requires durable intent and exact approval, and is not connected to the console,
 voice agent or default worker. Automated HTTP fixtures remain **SIMULATED**;
 live sandbox acceptance is a separate gate. Unknown mutations are never retried.
+`python -m providers.reconcile_stripe --help` describes the supervised,
+GET-only command for one previously recorded compatible operation; it cannot
+create or replay a cancellation.
