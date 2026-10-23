@@ -49,6 +49,8 @@ def test_complete_coverage_of_all_targets_profiles_and_unique_graphs(tmp_path, m
     prepare(tmp_path)
     monkeypatch.setenv("PIP_AUDIT_OUTPUT", "PRIVATE-UNAPPROVED-OUTPUT")
     monkeypatch.setenv("UV_INDEX", "https://example.invalid")
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "PRIVATE-PROVIDER-KEY")
+    monkeypatch.setenv("OPENAI_API_KEY", "PRIVATE-PROVIDER-KEY")
     scanner = Scanner()
     report = execute(tmp_path, scanner)
     assert report["source"] == "SIMULATED" and report["passed"] and report["coverage_complete"]
@@ -58,6 +60,18 @@ def test_complete_coverage_of_all_targets_profiles_and_unique_graphs(tmp_path, m
     assert len(scanner.calls) == len(command.inventory(tmp_path)) == 5
     assert report["automatic_remediation"] is False and report["package_security_certified"] is False
     assert "PRIVATE" not in json.dumps(report)
+
+
+def test_scanner_child_has_no_provider_credentials_or_ambient_netrc(tmp_path, monkeypatch):
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "PRIVATE-PROVIDER-KEY")
+    monkeypatch.setenv("OPENAI_API_KEY", "PRIVATE-PROVIDER-KEY")
+    monkeypatch.setenv("NETRC", "PRIVATE-NETRC-PATH")
+    monkeypatch.setenv("HTTPS_PROXY", "https://PRIVATE.example.invalid")
+    env = command.scanner_environment(tmp_path)
+    assert not {"STRIPE_SECRET_KEY", "OPENAI_API_KEY", "HTTPS_PROXY"} & env.keys()
+    assert env["HOME"] == env["USERPROFILE"] == str(tmp_path)
+    assert Path(env["NETRC"]).read_text() == ""
+    assert "PRIVATE" not in json.dumps(env)
 
 
 def test_falsey_runner_never_selects_real_scanner(tmp_path, monkeypatch):

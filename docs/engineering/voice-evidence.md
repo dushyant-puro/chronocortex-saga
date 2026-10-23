@@ -36,7 +36,13 @@ durable effect.
 
 ## SDK boundary references
 
-The installed/pinned `livekit-agents==1.8.3` source was inspected directly.
+The original hook inspected `livekit-agents==1.8.3` directly. The
+[dependency advisory phase](dependency-advisories.md) moves the verified guard
+and pinned agent/plugin pair to `1.8.8` so its declared OpenTelemetry range can
+include the telemetry parsing fix. SDK-object, proposal, interruption and
+no-authority regressions are rerun against that installed release; earlier or
+unverified SDK versions fail before connection. This remains protocol evidence,
+not real audio acceptance.
 High-level `UserInputTranscribedEvent` has text/finality/item/speaker/language
 and receipt time, but no per-word acoustic confidence or media timing. Raw
 `stt.SpeechData.words` may carry `TimedString` metadata; its missing-value

@@ -21,9 +21,15 @@ system libraries are not locked by Python requirements. CI follows the Python
 | `requirements/browser.in` | Runtime input plus the Playwright direct pin. |
 | `requirements.txt` | Complete generated runtime graph, markers and SHA-256 archive hashes. |
 | `requirements-browser.txt` | Complete generated browser graph, with every shared runtime version identical. |
+| `requirements/security.in` / `requirements-security.txt` | Isolated, hash-locked advisory tool graph; never mixed into the application environment. |
 | `requirements-dev.txt` | Compatibility alias for the locked runtime test environment. |
 | `requirements/locking.txt` | Separately hash-pinned maintenance resolver/parser; never an application dependency. |
 | `requirements/manifest.json` | Resolver/index/cutoff, input identities and normalized output hashes. |
+
+Manifest schema 2 binds all three profiles. Checkout the matching source and
+manifest together; no implicit source/lock migration or runtime-journal migration
+is performed. The [advisory gate](dependency-advisories.md) records known-advisory
+queries and the compatible security update that followed its first finding.
 
 The initial resolution uses versions from the preceding verified Windows
 environment. The universal resolver includes platform markers; the audit still
@@ -138,7 +144,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Maintenance tool installation failed' }
 
 Normal regeneration preserves the recorded cutoff and uses committed pins as
 resolver preferences. It strips ambient uv/pip configuration and uses the fixed
-PyPI index. Both candidates are validated before publishing either. The explicit
+PyPI index. All candidates are validated before publishing any. The explicit
 `--upgrade` option advances the cutoff and deliberately re-resolves the graph:
 
 ```powershell
@@ -166,13 +172,15 @@ by the injected-failure tests.
 ## Rollback and remaining release gates
 
 Stop/drain workers before changing their environment. Restore the preceding
-reviewed dependency bundle and compatible source in a fresh venv; preserve its
-install/audit evidence. Removing this installer gate does not resolve unknown
+reviewed dependency bundle and compatible source in a fresh venv only after
+advisory review; never restore a known-vulnerable version merely to recover green
+tests. Follow the [advisory response runbook](dependency-advisories.md) for the
+telemetry remediation. Preserve install/audit evidence. Removing this installer gate does not resolve unknown
 remote effects. Keep journal schema 6, claims, approvals and receipts unchanged;
 never restore an older action database or replay a mutation as dependency rollback.
 Do not return to unsafe public main.
 
-Release work remains for vulnerability/advisory review, publisher attestations,
+Release work remains for ongoing advisory review, publisher attestations,
 archived wheels, pinned deployment images/native dependencies, backup/restore
 drills, authenticated remote identity/TLS, real provider acceptance and real
 audio evaluation. No dependency-safety, full-host reproducibility, financial

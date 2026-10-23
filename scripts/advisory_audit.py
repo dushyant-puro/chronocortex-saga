@@ -37,6 +37,18 @@ def utc_now():
     return datetime.now(timezone.utc).isoformat()
 
 
+def scanner_environment(temporary):
+    # Child tools need OS/locale settings, not application/provider credentials.
+    # A private empty netrc also avoids implicit authentication to the public feed.
+    allowed = {"PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "LANG", "LC_ALL", "TZ"}
+    env = {key: value for key, value in os.environ.items() if key.upper() in allowed}
+    netrc = temporary / "empty.netrc"
+    netrc.write_text("", encoding="ascii")
+    env.update({"HOME": str(temporary), "USERPROFILE": str(temporary), "NETRC": str(netrc),
+                "TEMP": str(temporary), "TMP": str(temporary), "XDG_CACHE_HOME": str(temporary / "cache")})
+    return env
+
+
 def target_environment(target):
     if target not in {"windows-amd64", "linux-x86_64"}:
         raise AdvisoryError("UNSUPPORTED_TARGET")
@@ -158,7 +170,7 @@ def run(*, root=ROOT, runner=None, tool_version=None, environment_check=None):
         # suppress a new query. Within-run reuse is bounded by the run lifetime.
         with tempfile.TemporaryDirectory(prefix="ccs-advisories-") as directory:
             temporary = Path(directory)
-            env = {key: value for key, value in os.environ.items() if not key.startswith(("PIP_", "UV_"))}
+            env = scanner_environment(temporary)
             for index, group in enumerate(groups):
                 requirement_file, output = temporary / f"graph-{index}.txt", temporary / f"report-{index}.json"
                 requirement_file.write_text("".join(name + "==" + version + "\n" for name, version in group["packages"].items()), encoding="utf-8")
