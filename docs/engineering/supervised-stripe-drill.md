@@ -216,6 +216,9 @@ lease takeover, redacted output, readback contradiction/persistence failure,
 enablement validation and separation of provider observations from host readiness.
 The Chromium integration clicks the real approval UI, verifies the single
 SIMULATED mutation, refreshes journal evidence and checks the recorded receipt.
+Successful detail refresh clears only the superseded-evidence notice; a failed
+read cannot clear it, and an unavailable decision response is not cleared by an
+unrelated successful lookup or automatically retried.
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/test_forward_approval_lookup.py tests/test_sandbox_drill.py tests/test_worker_health.py -q -p no:cacheprovider

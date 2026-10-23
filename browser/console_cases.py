@@ -174,6 +174,7 @@ def test_console_approval_drives_one_simulated_supervised_cancellation(console, 
         expect(page.locator("#worker-health")).to_contain_text("NOT READY")
         inspect(page, "actions", staged["action_id"])
         expect(page.locator("#detail")).to_contain_text("COMMITTED")
+        expect(page.locator("#notice")).to_be_hidden()
         expect(page.locator("#detail")).to_contain_text("req_Simulated12345")
         expect(page.get_by_role("button", name="Approve compensation", exact=True)).to_be_disabled()
         assert next(e for e in events if e["event"] == "STRIPE_SANDBOX_DRILL_FINISHED")["readback_verified"] is True
@@ -273,6 +274,25 @@ def test_stale_review_is_rejected_without_optimistic_cancellation(console):
     assert env.journal.load_task(env.task.task_id)[1]["state"] != "CANCELLED"
 
 
+def test_changed_evidence_notice_clears_only_after_successful_detail_read(console):
+    env, page, context, _ = console
+    connect(env, page)
+    inspect(page, "tasks", env.task.task_id)
+    version, checkpoint = env.journal.load_task(env.task.task_id)
+    checkpoint["error"] = "SIMULATED new checkpoint evidence"
+    env.journal.save_task(env.task.task_id, checkpoint, version)
+    page.get_by_role("button", name="Refresh", exact=True).click()
+    expect(page.locator("#notice")).to_contain_text("Selected evidence changed")
+    context.set_offline(True)
+    page.get_by_role("button", name="Refresh evidence", exact=True).click()
+    expect(page.locator("#notice")).to_be_visible()
+    context.set_offline(False)
+    page.get_by_role("button", name="Refresh", exact=True).click()
+    inspect(page, "tasks", env.task.task_id)
+    expect(page.locator("#detail")).to_contain_text(checkpoint["error"])
+    expect(page.locator("#notice")).to_be_hidden()
+
+
 def test_unavailable_post_response_is_never_automatically_retried(console):
     env, page, _, _ = console
     connect(env, page)
@@ -291,6 +311,8 @@ def test_unavailable_post_response_is_never_automatically_retried(console):
     page.get_by_role("button", name="Refresh", exact=True).click()
     page.locator("#navigation").get_by_role("button", name="Decision history").click()
     expect(page.locator("#record-content")).to_contain_text("REQUESTED")
+    inspect(page, "actions", env.unknown.action_id)
+    expect(page.locator("#notice")).to_contain_text("No automatic retry was sent")
     assert len(attempts) == 1
     assert env.journal.records()[1][1]["state"] == "IN_FLIGHT_UNKNOWN"
 

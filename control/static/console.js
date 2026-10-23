@@ -65,11 +65,12 @@ function time(value) {
       });
 }
 
-function notice(message, error = false) {
+function notice(message, error = false, reason = "") {
   const node = $("#notice");
   node.textContent = message;
   node.className = error ? "notice error-notice" : "notice";
-  node.hidden = false;
+  node.dataset.reason = reason;
+  node.hidden = !message;
 }
 
 async function api(path, body) {
@@ -194,6 +195,7 @@ async function refresh() {
         notice(
           "Selected evidence changed. Refresh the evidence panel before deciding.",
           true,
+          "evidence_changed",
         );
       }
     }
@@ -485,6 +487,7 @@ async function inspect(kind, id) {
     const record = await api(`/api/records/${kind}/${encodeURIComponent(id)}`);
     if (state.inspection !== inspection || state.session !== identity) return;
     state.detail = { kind, record };
+    if ($("#notice").dataset.reason === "evidence_changed") notice("");
     const detail = $("#detail");
     detail.replaceChildren();
     const top = element("div", undefined, "detail-top");
