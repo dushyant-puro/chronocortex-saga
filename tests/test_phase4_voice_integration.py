@@ -1,3 +1,4 @@
+"""Legacy SIMULATED fleet demo; not evidence of live STT confidence or timing."""
 import pytest
 import asyncio
 from runtime.speculative_saga import ActionState
@@ -52,7 +53,8 @@ def ccs_setup(monkeypatch):
     
     # Mirror the entrypoint event attachments manually for the test
     def on_transcribed(ev):
-        ccs.on_interim_transcript(ev.transcript, getattr(ev, "is_final", False), 1.0, 0.0, 0.0)
+        # Explicit simulation data, never a production event conversion.
+        ccs.on_interim_transcript(ev.transcript, getattr(ev, "is_final", False), 0.99, 0.0, 0.4)
     session.on("user_input_transcribed", on_transcribed)
     
     def on_state(ev):
