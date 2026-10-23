@@ -206,6 +206,9 @@ a recovered PENDING/UNKNOWN action; use GET-only reconciliation.
 
 ## Read-only setup preflight
 
+For account creation, restricted-key permissions, protected Windows key entry
+and troubleshooting, follow [stripe-sandbox-setup.md](stripe-sandbox-setup.md).
+
 `python -m providers.preflight_stripe` checks sandbox access without requiring
 an existing CCS action, worker credential or journal. It has no database path,
 creation, cancellation, reconciliation, transport override or retry option.
