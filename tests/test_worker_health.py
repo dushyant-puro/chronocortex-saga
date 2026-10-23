@@ -29,6 +29,16 @@ def test_opening_a_journal_or_manually_holding_a_lease_does_not_claim_supervisio
     assert view["heartbeat"] == "NOT_OBSERVED" and view["readiness"] == "NOT_READY"
 
 
+def test_provider_readback_cannot_manufacture_or_replace_host_readiness(journal):
+    journal.acquire_lease("SIMULATED-worker")
+    journal.observe_worker("PROVIDER_READBACK", {"terminal_observed": True})
+    assert read(journal)["heartbeat"] == "NOT_OBSERVED"
+    journal.observe_worker("HOST_FAILED", {**SUMMARY, "phase": "FAILED", "failure_code": "RENEWAL_FAILED"})
+    journal.observe_worker("PROVIDER_READBACK", {"terminal_observed": True})
+    assert read(journal)["readiness"] == "NOT_READY"
+    assert read(journal)["supervision"]["phase"] == "FAILED"
+
+
 def test_fresh_observation_can_be_stale_while_lease_is_still_current(journal):
     journal.acquire_lease("SIMULATED-supervised-worker")
     journal.observe_worker("HOST_HEARTBEAT", SUMMARY)

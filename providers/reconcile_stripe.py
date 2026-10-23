@@ -20,7 +20,7 @@ async def run(args, *, provider_factory=None):
     credential = read_credential_file(args.credential_file)
     config = StripeSandboxConfig.from_file(args.account_id, args.stripe_key_file)
     host = WorkerSupervisor(SQLiteActionJournal(args.journal), credential)
-    make_provider = provider_factory or StripeSandboxCancellation
+    make_provider = StripeSandboxCancellation if provider_factory is None else provider_factory
     outcome = None
     async with make_provider(config) as provider:
         registry = ToolRegistry()

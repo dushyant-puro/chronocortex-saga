@@ -218,8 +218,8 @@ class SQLiteActionJournal:
             self._lifecycle.check(db)
 
     def observe_worker(self, kind, details):
-        if kind not in {"HOST_STARTING", "HOST_READY", "HOST_HEARTBEAT", "HOST_DRAINING", "HOST_STOPPED", "HOST_FAILED", "HOST_ABANDONED"}:
-            raise JournalError("Unknown host observation")
+        if kind not in {"HOST_STARTING", "HOST_READY", "HOST_HEARTBEAT", "HOST_DRAINING", "HOST_STOPPED", "HOST_FAILED", "HOST_ABANDONED", "PROVIDER_READBACK"}:
+            raise JournalError("Unknown worker observation")
         with self._transaction(writer_kind=kind, subject=_json(details)):
             pass
 

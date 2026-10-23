@@ -253,6 +253,16 @@ objects, terminal evidence, malformed/bounded responses, 3xx/4xx/5xx, cancellati
 deadline, output redaction, unsafe CLI arguments and absence of journal assets.
 Existing mutation/reconciliation tests protect the shared validation refactor.
 
+## Explicit supervised acceptance host
+
+`python -m providers.sandbox_drill --help` describes the opt-in, one-known-resource
+host. It waits for an exact durable console approval, owns dispatch and cleanup,
+and records a separate readback observation without POST retry or compensation.
+It cannot create a payment object, adopt a recovered executor or complete a task.
+The default worker remains recovery-only. Follow the
+[supervised drill runbook](supervised-stripe-drill.md); simulated command/browser
+regressions do not replace the real acceptance gates below.
+
 ## Remaining acceptance gates
 
 1. Create an isolated sandbox and known disposable test PaymentIntent through

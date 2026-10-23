@@ -548,7 +548,7 @@ async function inspect(kind, id) {
               "APPROVE",
               record,
               "Approve forward operation",
-              "Approve this exact staged payload for one execution principal. Recording approval does not dispatch it.",
+              "Approve this exact staged payload for one execution principal. A supervised worker may dispatch after approval.",
               "FORWARD",
             ),
         ),
@@ -696,12 +696,12 @@ $("#decision-form").addEventListener("submit", async (event) => {
     if (state.session !== identity) return;
     $("#decision-dialog").close();
     const messages = {
-      APPROVE: "Approval recorded. No executor was dispatched.",
+      APPROVE: "Approval recorded. A supervised worker may execute the approved action.",
       REVOKE: "Approval revocation recorded. Remote effects remain unchanged.",
       CANCEL:
         "Cancellation intent recorded. Inspect the action evidence for unresolved or retained effects.",
       RECONCILE:
-        "Reconciliation request recorded. No reconciler is connected; the effect remains unresolved.",
+        "Reconciliation request recorded. This console does not run provider queries; inspect fresh journal evidence.",
     };
     notice(
       `${messages[current.kind]}${result.replayed ? " This operation had already been recorded." : ""}`,

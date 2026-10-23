@@ -224,7 +224,9 @@ The subsequent drill must use a supervised worker, durable action identity,
 exact scoped approval, one cancellation attempt, persisted receipt and GET-only
 recovery. The existing `providers.reconcile_stripe` command requires a recorded
 CCS action ID, not merely a `pi_` ID; it is not an initial setup command. There is
-currently no all-in-one forward cancellation CLI. The remaining acceptance,
+an explicit [one-known-resource supervised host](supervised-stripe-drill.md)
+for the later approved cancellation, with no payment-object creation or executor
+replay. The remaining acceptance,
 response-loss and rollback requirements are in
 [provider-reconciliation.md](provider-reconciliation.md#remaining-acceptance-gates).
 Creating credentials or passing preflight does not complete those gates, and

@@ -8,6 +8,7 @@ import httpx2 as httpx
 import pytest
 
 from providers.reconcile_stripe import run
+from providers import reconcile_stripe as command
 from providers.stripe_sandbox import StripeSandboxCancellation, ProviderUnavailable, PERMISSION
 from runtime.action_journal import SQLiteActionJournal
 from runtime.policy_engine import PermissionDeniedError
@@ -63,6 +64,19 @@ async def test_command_acquires_ownership_and_records_status_without_post(tmp_pa
     other = SQLiteActionJournal(args.journal)
     other.acquire_lease("next-worker")
     other.release_lease()
+
+
+@pytest.mark.asyncio
+async def test_falsey_test_factory_never_selects_the_real_transport(tmp_path, monkeypatch):
+    env, action, args = await setup(tmp_path)
+    class Factory:
+        def __bool__(self):
+            return False
+        def __call__(self, config):
+            return StripeSandboxCancellation(config, transport=httpx.MockTransport(
+                lambda request: account() if request.url.path == "/v1/account" else response(intent())))
+    monkeypatch.setattr(command, "StripeSandboxCancellation", lambda _: pytest.fail("Unexpected real transport selection"))
+    assert await run(args, provider_factory=Factory()) == 0
 
 
 @pytest.mark.asyncio
