@@ -50,3 +50,10 @@ live sandbox acceptance is a separate gate. Unknown mutations are never retried.
 `python -m providers.reconcile_stripe --help` describes the supervised,
 GET-only command for one previously recorded compatible operation; it cannot
 create or replay a cancellation.
+
+The [voice evidence boundary](docs/engineering/voice-evidence.md) replaces the
+unsafe live demo path with a proposal-only LiveKit word-evidence hook. Missing
+confidence/timing stays unavailable, revisions replace previous hypotheses,
+and speech endpoints never authorize mutations or complete durable tasks.
+The old `python -m agent` entrypoint is disabled; its fleet harness remains
+explicitly SIMULATED. No new voice provider or microphone is enabled.

@@ -63,3 +63,59 @@ On regression, disable voice proposal ingestion and retain the durable task and
 action journal. Do not roll back provider state, clear unknown key claims or
 restore stale approvals. Voice turn state is ephemeral and must be reacquired;
 never recreate a mutation from a saved transcript as process recovery.
+
+## Revision and SDK proposal protocol
+
+`runtime/voice_ingress.py` has no journal, saga, provider, approval or task
+reference. It holds one bounded current hypothesis and one immutable proposal.
+Opening a new stream/turn invalidates prior ephemeral candidates. Local handles
+fence stale callbacks; increasing revisions replace complete hypotheses.
+Duplicate identical revisions are no-ops, stale revisions are ignored, and a
+conflicting or malformed current update invalidates the turn. Text is capped
+at 16 KiB, words at 4096 and revisions at 10,000 per turn. A completed proposal
+requires a final hypothesis aligned with the framework's final text. Unsupported
+or conflicting evidence stays ungrounded. Metadata logs omit transcript values.
+
+`voice/livekit_observer.py` uses the pinned SDK's actual `Agent.stt_node` and
+`on_user_turn_completed` hooks. It captures SpeechData word metadata before
+yielding events back to the SDK. It never copies utterance confidence or event
+creation time onto words. Missing TimedString values, text/word misalignment,
+unsupported timing offsets and ambiguous overlapping utterances are ungrounded.
+Known media times cannot move behind completed-segment/previous-turn boundaries.
+This is local SDK stream ordering, not a provider-independent guarantee that
+arbitrary delayed or reordered network events have correct utterance identity.
+Provider request IDs are deliberately not treated as utterance IDs. Real
+provider behavior/diarization/timing calibration remains an acceptance gate.
+
+Multiple final segments accumulate until the SDK turn-completion hook. Duplicate
+finals do not append twice. END_OF_SPEECH/listening never seals a proposal, and
+a final arriving after the end hint may still supply evidence. Stream generations
+exclude old pipeline data and old finalizers from a new stream. Disconnect clears
+ephemeral proposals. Corrections remove repandum tokens from the proposal, but
+this is not a claim to erase every prior model cache or conversation item.
+
+The observer has no LLM/TTS/tools; its completion hook raises the SDK's
+StopResponse to suppress generation. A speaking event only interrupts playback.
+It never advances a durable task's epoch or calls task cancellation/repair.
+`start_observer(ctx, stt_provider)` requires an explicitly supplied streaming,
+word-aligned STT instance and the verified SDK version before connecting. It
+disables session recording. Provider selection, secret injection, room identity,
+audio consent/retention, SDK logging configuration and real audio tests are
+separate deployment gates. Word alignment capability alone does not promise
+confidence availability; missing per-word metadata is still ungrounded.
+
+No new dependency or provider is auto-selected. The previous live entrypoint
+fabricated confidence/times, treated silence as commit and configured an
+unverified STT pipeline. It is retired and fails before connection. Existing
+CCSAgent fleet demo methods require explicit simulation. They remain regression
+fixtures for prior saga/policy fixes, not the production voice integration.
+Callers must migrate to the observer and a separately authenticated durable
+workflow boundary; synthetic scalar confidence is not a compatibility fallback.
+
+`tests/test_voice_ingress.py` exercises full revisions, stale handles, duplicates,
+conflicts, rejected updates, final-text alignment, unavailable data and proposal
+scope. `tests/test_livekit_voice_observer.py` uses real pinned SDK dataclasses,
+hooks and a session subclass with SIMULATED data; it tests segment accumulation,
+late finals, old streams, ambiguous overlap, absent word metadata, reply
+suppression, redacted logs and fail-closed legacy entrypoints. These are SDK
+contract tests, not microphone, WebRTC, live STT or real-provider acceptance.

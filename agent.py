@@ -1,19 +1,10 @@
 import asyncio
 import logging
-import os
-import time
 import uuid
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from livekit import agents
-from livekit.agents import AgentSession, JobContext, WorkerOptions, cli, UserInputTranscribedEvent, UserStateChangedEvent
-
-# We only have livekit-plugins-openai verified
-try:
-    from livekit.plugins import openai
-except ImportError:
-    openai = None
+from livekit.agents import AgentSession, JobContext
 
 from runtime.speculative_saga import ActionState, SpeculativeSagaManager, TurnEpochClock, StaleEpochError
 from runtime.grounding_guard import GroundingGuard, zero_hop_repair, RepairOutcome
@@ -37,8 +28,10 @@ class PendingSlot:
 
 
 class CCSAgent:
+    """Legacy SIMULATED fleet harness; production voice uses VoiceObserverAgent."""
     def __init__(self, *, auth_context: Optional[AuthorizationContext] = None,
                  journal: Optional[SQLiteActionJournal] = None, simulation: bool = False) -> None:
+        self._simulation = simulation
         self.epoch_clock = TurnEpochClock()
         self.saga = SpeculativeSagaManager(self.epoch_clock, registry=TOOL_REGISTRY,
                                            auth_context=auth_context, journal=journal, simulation=simulation)
@@ -93,6 +86,8 @@ class CCSAgent:
         """
         Invoked when user starts speaking (user_state_changed -> speaking).
         """
+        if not self._simulation:
+            raise PolicyError("Legacy voice interruption requires explicit simulation")
         logger.info("barge-in detected — cutting playback, advancing epoch")
         if self._backchannel_task and not self._backchannel_task.done():
             self._backchannel_task.cancel()
@@ -114,6 +109,8 @@ class CCSAgent:
         """
         Invoked when user stops speaking (user_state_changed -> listening).
         """
+        if not self._simulation:
+            raise PolicyError("Legacy voice dispatch is restricted to explicit simulation")
         await self._commit_all_pending_slots()
         await self.epoch_clock.advance(reason="endpoint")
         # Turn boundary confirmed, candidates are cleared
@@ -126,8 +123,10 @@ class CCSAgent:
 
     def on_interim_transcript(self, transcript: str, is_final: bool, confidence: float, start_ts: float, end_ts: float) -> None:
         """
-        Handles real `user_input_transcribed` events.
+        Legacy synthetic scalar-metadata interface; never a live event adapter.
         """
+        if not self._simulation:
+            raise PolicyError("Live transcripts require the word-evidence observer")
         # Split by spaces and commas so clause boundaries like 'Chennai,' remain distinct or at least are processed
         # For simplicity, we just split by space and let the guard handle regex matches
         words = transcript.strip().split()
@@ -194,6 +193,8 @@ class CCSAgent:
         return field_name
 
     async def _commit_all_pending_slots(self) -> None:
+        if not self._simulation:
+            raise PolicyError("Voice evidence cannot authorize legacy mutation dispatch")
         by_tool: dict[str, dict[str, Any]] = {}
         for slot in self._pending_slots.values():
             # Crucially, we must re-resolve against the GroundingGuard to ensure it wasn't tombstoned!
@@ -249,81 +250,14 @@ class CCSAgent:
 # --------------------------------------------------------------------------
 
 async def entrypoint(ctx: JobContext) -> None:
-    await ctx.connect()
-
-    journal_path = os.environ.get("CCS_ACTION_JOURNAL")
-    ccs = CCSAgent(journal=SQLiteActionJournal(journal_path) if journal_path else None)
-
-    has_openai = bool(os.environ.get("OPENAI_API_KEY"))
-    if not has_openai:
-        logger.warning("LIVE PROVIDER EXECUTION NOT VERIFIED IN THIS ENVIRONMENT.")
-        # Minimal mock session initialization if we lack credentials
-        session = AgentSession(
-            stt=None,
-            llm=None,
-            tts=None,
-            vad=None,
-        )
-    else:
-        # We would wire real OpenAI plugins here
-        session = AgentSession(
-            stt=openai.STT(),
-            llm=openai.LLM(),
-            tts=openai.TTS(),
-            vad=None,  # VAD would typically be silero, but omitting since we only verified openai
-        )
-
-    ccs.session = session
-
-    # Hook real LiveKit events
-    @session.on("user_input_transcribed")
-    def on_transcribed(ev: UserInputTranscribedEvent):
-        # KNOWN SAFETY GAP — CONFIDENCE FAKING (New Phase 2 audit finding):
-        #
-        # UserInputTranscribedEvent (livekit-agents 1.8.3) only exposes:
-        #   transcript: str, is_final: bool, item_id, speaker_id, language, created_at
-        # It does NOT carry per-word confidence scores or per-word timing data.
-        #
-        # Real per-word confidence IS available at the lower-level STT layer:
-        #   stt.SpeechData.words → list[TimedString] where each TimedString has:
-        #     text: str, start_time: float, end_time: float, confidence: float
-        #   stt.SpeechData also has: confidence (utterance-level), start_time, end_time
-        #
-        # However, SpeechData lives on stt.SpeechEvent (the raw STT pipeline event),
-        # NOT on AgentSession's "user_input_transcribed" event. Wiring real confidence
-        # requires intercepting the STT pipeline directly (e.g. via session.stt and
-        # subscribing to its stream), which is a larger integration change beyond
-        # this phase's scope.
-        #
-        # CONSEQUENCE: GroundingGuard's confidence-floor rejection is currently a
-        # no-op against real speech input because confidence is faked as a constant
-        # 1.0 at this LiveKit integration layer. This is a known safety gap
-        # requiring real STT confidence wiring before production use.
-        ccs.on_interim_transcript(
-            transcript=ev.transcript,
-            is_final=getattr(ev, "is_final", False),
-            confidence=1.0,           # FAKED — see safety gap comment above
-            start_ts=time.monotonic(),  # FAKED — no real timing from this event
-            end_ts=time.monotonic()     # FAKED — no real timing from this event
-        )
-
-    @session.on("user_state_changed")
-    def on_state_changed(ev: UserStateChangedEvent):
-        if ev.new_state == "speaking":
-            ccs.on_barge_in()
-        elif ev.new_state == "listening":
-            asyncio.create_task(ccs._confirm_turn_boundary())
-
-    agent = agents.Agent(
-        instructions=(
-            "You are a fleet operations assistant for ChronoCortex-Saga. "
-            "Your job is to assist with fleet operations and use the existing fleet workflow. "
-            "You must respect corrected user intent and never treat stale or retracted information as current."
-        )
+    raise RuntimeError(
+        "Legacy voice mutation host retired. Configure an explicit streaming STT "
+        "and use voice.livekit_observer.start_observer; provider/audio validation is gated."
     )
 
-    await session.start(agent, room=ctx.room)
-    logger.info("CCS-Agent session started; epoch clock initialized at 0")
 
 if __name__ == "__main__":
-    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))
+    raise SystemExit(
+        "Legacy voice host is disabled. See docs/engineering/voice-evidence.md "
+        "for the proposal-only SDK integration and offline replay."
+    )
