@@ -25,11 +25,13 @@ def fixture(root):
     (root / "requirements").mkdir()
     (root / "requirements/runtime.in").write_text("sample==1.0\n")
     (root / "requirements/browser.in").write_text("-r runtime.in\nviewer==2.0\n")
+    (root / "requirements/security.in").write_text("auditor==4.0\n")
     (root / "requirements/locking.txt").write_text("uv==" + audit.UV_VERSION + " --hash=sha256:" + "a" * 64 + "\n")
     (root / "requirements-dev.txt").write_text("-r requirements.txt\n")
     (root / "requirements.txt").write_text(lock(["sample==1.0", "windows-only==3.0 ; sys_platform == 'win32'"]))
     (root / "requirements-browser.txt").write_text(lock(["sample==1.0", "windows-only==3.0 ; sys_platform == 'win32'", "viewer==2.0"]))
-    manifest = {"schema": 1, "python_series": "3.13", "targets": ["win32/AMD64", "linux/x86_64"],
+    (root / "requirements-security.txt").write_text(lock(["auditor==4.0"]))
+    manifest = {"schema": audit.SCHEMA_VERSION, "python_series": "3.13", "targets": ["win32/AMD64", "linux/x86_64"],
                 "resolver": {"name": "uv", "version": audit.UV_VERSION, "index": "https://pypi.org/simple", "cutoff": "2026-10-23T00:00:00Z"}}
     rewrite_manifest(root, manifest)
     return manifest
@@ -58,11 +60,12 @@ def installed(system="win32", browser=False):
     return values
 
 
-@pytest.mark.parametrize("system,browser", [("win32", False), ("linux", False), ("win32", True), ("linux", True)])
-def test_exact_graph_with_platform_markers_and_profile(tmp_path, system, browser):
+@pytest.mark.parametrize("system,profile", [(system, profile) for system in ("win32", "linux") for profile in audit.LOCKS])
+def test_exact_graph_with_platform_markers_and_profile(tmp_path, system, profile):
     fixture(tmp_path)
-    report = audit.audit("browser" if browser else "runtime", root=tmp_path, environment=environment(system),
-                         machine="AMD64" if system == "win32" else "x86_64", distributions=installed(system, browser), check=lambda: True)
+    values = ([Distribution("auditor", "4.0"), Distribution("pip", "25.2")] if profile == "security" else installed(system, profile == "browser"))
+    report = audit.audit(profile, root=tmp_path, environment=environment(system),
+                         machine="AMD64" if system == "win32" else "x86_64", distributions=values, check=lambda: True)
     assert report["passed"] and report["missing"] == report["unexpected"] == report["version_mismatches"] == []
     assert report["wheel_bytes_verified_by_this_audit"] is False and report["package_security_certified"] is False
     assert report["bootstrap_tools"] == {"pip": "25.2"}
@@ -172,6 +175,7 @@ def test_committed_locks_cover_both_reviewed_targets():
         _, active = audit.load_locks(environment=environment(system))
         assert active["runtime"]["httpx2"] == "2.16.0"
         assert active["browser"]["playwright"] == "1.64.0"
+        assert active["security"]["pip-audit"] == "2.10.1"
         assert "httpx2-jsfetch" not in active["runtime"]
 
 

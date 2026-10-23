@@ -1,4 +1,4 @@
-"""Explicit maintenance operation: regenerate both reviewed dependency locks.
+"""Explicit maintenance operation: regenerate the reviewed dependency locks.
 
 Requires the separate requirements/locking.txt environment. Normal installation
 and CI never resolve or update a lock. No provider configuration is read here.
@@ -14,7 +14,7 @@ import subprocess
 import sys
 import tempfile
 
-from scripts.dependency_audit import ROOT, UV_VERSION, INPUTS, LOCKS, MANIFEST, OPTIONS, digest, parse_lock, load_locks, selected
+from scripts.dependency_audit import ROOT, UV_VERSION, SCHEMA_VERSION, INPUTS, LOCKS, MANIFEST, OPTIONS, digest, parse_lock, load_locks, selected
 from packaging.markers import default_environment
 
 
@@ -61,7 +61,7 @@ def generate(*, upgrade=False):
             text = header + "\n".join(sorted(OPTIONS)) + "\n\n" + text
             destination.write_text(text, encoding="utf-8", newline="\n")
             outputs[target] = digest(destination)
-        manifest = {"schema": 1, "python_series": "3.13", "targets": ["win32/AMD64", "linux/x86_64"],
+        manifest = {"schema": SCHEMA_VERSION, "python_series": "3.13", "targets": ["win32/AMD64", "linux/x86_64"],
                     "resolver": {"name": "uv", "version": UV_VERSION, "index": "https://pypi.org/simple", "cutoff": cutoff},
                     "inputs": {path: digest(ROOT / path) for path in INPUTS}, "locks": outputs}
         # Validate the complete candidate bundle before touching committed locks.
@@ -96,7 +96,7 @@ def main():
         generate(upgrade=args.upgrade)
     except Exception:
         parser.exit(1, "Lock generation failed. Inspect the input diff and preserve existing locks; no automatic fallback.\n")
-    print("Both dependency locks and their manifest regenerated. Review and test before committing.")
+    print("All dependency locks and their manifest regenerated. Review and test before committing.")
 
 
 if __name__ == "__main__":

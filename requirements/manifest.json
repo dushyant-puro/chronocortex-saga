@@ -3,10 +3,12 @@
     "requirements-dev.txt": "856e8f9a1f1893ae6ce788f7156dfcdd17b03cae99443b67497e5008bed1ec7c",
     "requirements/browser.in": "3b98eeeb3b4f76ff1c1b90ae750b756e3c63089574def43d6307e303c500278e",
     "requirements/locking.txt": "0f8a1a194d6eb48372383a8b4b7c99b38ad2adb5bb4c2f98cf2a4cd19421bfa5",
-    "requirements/runtime.in": "5db8ca739d4af049164d72e843c95bba0cbdb8d8ca54a38672127d5dbc794585"
+    "requirements/runtime.in": "5db8ca739d4af049164d72e843c95bba0cbdb8d8ca54a38672127d5dbc794585",
+    "requirements/security.in": "84f64c4a205fdd1a97936b51a4763d2d7ae8d4a4b37564f300be2a0055a342ab"
   },
   "locks": {
     "requirements-browser.txt": "786846f6c55501b3c46ec434da8256d335094074a91b5e9a304b9c10c7c5da8b",
+    "requirements-security.txt": "bb48b856edd556e4490b113061c9ce9ff20fe058e6712711d01ecd030a9db327",
     "requirements.txt": "a7e16fc144f19ff53401107863ae1d5e3b6ea5f7eb2af04eaeb6349145c74810"
   },
   "python_series": "3.13",
@@ -16,7 +18,7 @@
     "name": "uv",
     "version": "0.13.5"
   },
-  "schema": 1,
+  "schema": 2,
   "targets": [
     "win32/AMD64",
     "linux/x86_64"

@@ -25,8 +25,9 @@ from packaging.version import Version
 
 ROOT = Path(__file__).resolve().parent.parent
 UV_VERSION = "0.13.5"
-INPUTS = ("requirements/runtime.in", "requirements/browser.in", "requirements/locking.txt", "requirements-dev.txt")
-LOCKS = {"runtime": "requirements.txt", "browser": "requirements-browser.txt"}
+SCHEMA_VERSION = 2
+INPUTS = ("requirements/runtime.in", "requirements/browser.in", "requirements/security.in", "requirements/locking.txt", "requirements-dev.txt")
+LOCKS = {"runtime": "requirements.txt", "browser": "requirements-browser.txt", "security": "requirements-security.txt"}
 OPTIONS = {"--require-hashes", "--only-binary :all:", "--index-url https://pypi.org/simple"}
 MANIFEST = "requirements/manifest.json"
 ALLOWED_TOOLS = {"pip"}  # CPython venv bootstrap; its actual version is reported.
@@ -119,7 +120,7 @@ def load_locks(root=ROOT, environment=None):
     root = Path(root)
     data = json.loads((root / MANIFEST).read_text(encoding="utf-8"))
     if (type(data) is not dict or set(data) != {"schema", "python_series", "targets", "resolver", "inputs", "locks"} or
-            type(data["schema"]) is not int or data["schema"] != 1 or data["python_series"] != "3.13" or
+            type(data["schema"]) is not int or data["schema"] != SCHEMA_VERSION or data["python_series"] != "3.13" or
             data["targets"] != ["win32/AMD64", "linux/x86_64"] or
             type(data["resolver"]) is not dict or set(data["resolver"]) != {"name", "version", "index", "cutoff"} or
             data["resolver"]["name"] != "uv" or data["resolver"]["version"] != UV_VERSION or
