@@ -1,2 +1,2 @@
-pytest
-pytest-asyncio
+# Compatibility alias: tests require the full verified runtime environment.
+-r requirements.txt
