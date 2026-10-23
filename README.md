@@ -21,10 +21,17 @@ Python 3.13 / PowerShell:
 
 ```powershell
 py -3.13 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+New-Item -ItemType Directory -Path results -Force | Out-Null
+.\.venv\Scripts\python.exe -m pip --isolated install --require-hashes --only-binary=:all: --report results/install-runtime.json -r requirements.txt
 .\.venv\Scripts\python.exe -m pip check
+.\.venv\Scripts\python.exe -m scripts.dependency_audit --profile runtime --output results/environment-runtime.json
 .\.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider
 ```
+
+Both runtime and browser requirements now lock the transitive graph and archive
+hashes. CI installs them into fresh environments and rejects metadata drift.
+Read the [locked environment runbook](docs/engineering/locked-environments.md)
+for supported targets, browser setup, reviewed updates, evidence and limits.
 
 For journal setup, protected offline credentials, running the console, browser
 tests, architecture, limitations, migration and rollback, read the

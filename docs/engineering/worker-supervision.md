@@ -206,8 +206,11 @@ credential can never enter a navigation URL; the JSON-only endpoint rejects the
 native POST without reflecting the secret.
 
 Deployment is still a local-host protocol. A Windows Service/systemd/container
-wrapper, external watchdog, TLS/identity deployment, full transitive dependency
-lock, audit retention/capacity evaluation and backup/restore drills remain.
+wrapper, external watchdog, TLS/identity deployment, audit retention/capacity
+evaluation and backup/restore drills remain. The later
+[locked environment gate](locked-environments.md) adds transitive Python locks,
+hash-checked wheel installation and exact metadata audits; native deployment
+images and the bootstrap interpreter remain separate release requirements.
 The next provider phase must select a documented sandbox with operation identity,
 idempotency retention, authoritative status lookup and delayed-application rules,
 then test real forward/status/repair uncertainty before connecting a dispatcher.

@@ -12,7 +12,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            python: .venv/bin/python
+          - os: windows-latest
+            python: .venv/Scripts/python.exe
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     env:
@@ -23,11 +27,28 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
-      - run: python -m pip install -r requirements.txt
-      - run: python -m pip check
-      - run: python -m pytest -q -p no:cacheprovider
-      - run: python -m eval.voice_replay --output results/voice-evidence-scorecard.json
-      - run: python -m eval.provider_faults --output results/provider-process-scorecard.json
+          cache-dependency-path: |
+            requirements.txt
+            requirements/manifest.json
+      - run: python -m venv .venv
+      - run: python -c "from pathlib import Path; Path('results').mkdir(exist_ok=True)"
+      - run: >-
+          ${{ matrix.python }} -m pip --isolated --disable-pip-version-check install
+          --require-hashes --only-binary=:all: --report results/install-runtime.json -r requirements.txt
+      - run: ${{ matrix.python }} -m pip --isolated check
+      - run: ${{ matrix.python }} -m scripts.dependency_audit --profile runtime --output results/environment-runtime.json
+      - run: ${{ matrix.python }} -m pytest -q -p no:cacheprovider
+      - run: ${{ matrix.python }} -m eval.voice_replay --output results/voice-evidence-scorecard.json
+      - run: ${{ matrix.python }} -m eval.provider_faults --output results/provider-process-scorecard.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dependency-evidence-runtime-${{ matrix.os }}
+          path: |
+            results/install-runtime.json
+            results/environment-runtime.json
+          if-no-files-found: ignore
+          retention-days: 7
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -48,7 +69,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            python: .venv/bin/python
+          - os: windows-latest
+            python: .venv/Scripts/python.exe
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
@@ -57,10 +82,27 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
-      - run: python -m pip install -r requirements-browser.txt
-      - run: python -m pip check
-      - run: python -m playwright install --with-deps chromium
-      - run: python -m pytest browser/console_cases.py -q -p no:cacheprovider
+          cache-dependency-path: |
+            requirements-browser.txt
+            requirements/manifest.json
+      - run: python -m venv .venv
+      - run: python -c "from pathlib import Path; Path('results').mkdir(exist_ok=True)"
+      - run: >-
+          ${{ matrix.python }} -m pip --isolated --disable-pip-version-check install
+          --require-hashes --only-binary=:all: --report results/install-browser.json -r requirements-browser.txt
+      - run: ${{ matrix.python }} -m pip --isolated check
+      - run: ${{ matrix.python }} -m scripts.dependency_audit --profile browser --output results/environment-browser.json
+      - run: ${{ matrix.python }} -m playwright install --with-deps chromium
+      - run: ${{ matrix.python }} -m pytest browser/console_cases.py -q -p no:cacheprovider
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dependency-evidence-browser-${{ matrix.os }}
+          path: |
+            results/install-browser.json
+            results/environment-browser.json
+          if-no-files-found: ignore
+          retention-days: 7
       - uses: actions/upload-artifact@v4
         if: always()
         with:

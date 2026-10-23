@@ -103,7 +103,10 @@ start a worker; revocation does not retract an intent already committed.
 
 ## Windows setup: new local installation
 
-Use Python 3.13. From this branch's repository root:
+Use Python 3.13. The generated requirements now include transitive pins/hashes;
+follow the [locked environment gate](locked-environments.md) for fresh installs,
+an exact runtime/browser metadata audit and retained installation evidence.
+From this branch's repository root:
 
 ```powershell
 py -3.13 -m venv .venv
