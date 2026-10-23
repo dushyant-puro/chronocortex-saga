@@ -187,3 +187,22 @@ shutdown protocol, secure transport/session/CSRF controls, identity-provider
 integration, real STT confidence/revisions, provider sandbox selection and
 independent operational evaluation remain release gates. No UI implementation
 or complete production-readiness claim is made by this security PR.
+
+## Worker discovery of a console approval
+
+`SecurityAuthority.find_forward_approval(executor_token, action_id)` is a
+non-consuming lookup for a currently authenticated worker with the recorded
+operation grants. It validates the pending action, open chain, task projection,
+exact binding, executor version, issuer authority and expiry. It selects only
+the latest committed console APPROVE decision for that action; a revoked,
+expired, consumed or incompatible latest decision never falls back to an older
+grant. Direct offline approvals remain available to explicitly configured trusted
+callers but are not discovered by this console-driven path.
+
+Polling does not issue approvals or append authentication/audit events. It updates
+the existing security clock high-water mark. The returned ID is not a reservation
+or permission snapshot: dispatch rechecks all authority and consumes approval
+inside the existing DISPATCH_INTENT transaction. Revocation, chain closure, epoch
+change or permission loss after lookup can still deny dispatch. No journal schema
+or authorization semantics change is needed. Regression cases use real SQLite
+and console decisions with SIMULATED provider callbacks.
