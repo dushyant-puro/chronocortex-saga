@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
 import time
 from dataclasses import dataclass, field
@@ -48,6 +49,27 @@ REPAIR_CUES = re.compile(
 )
 
 
+@dataclass(frozen=True)
+class TokenEvidence:
+    text: str
+    confidence: Optional[float] = None
+    start_ts: Optional[float] = None
+    end_ts: Optional[float] = None
+
+    def validate(self):
+        if type(self.text) is not str or not self.text or self.text.strip() != self.text or len(self.text) > 256:
+            raise ValueError("Invalid bounded token text")
+        for value in (self.confidence, self.start_ts, self.end_ts):
+            if value is not None and (type(value) not in (int, float) or not math.isfinite(value)):
+                raise ValueError("Evidence must be finite numeric data or unavailable")
+        if self.confidence is not None and not 0 <= self.confidence <= 1:
+            raise ValueError("Confidence must be between zero and one")
+        if ((self.start_ts is not None and self.start_ts < 0) or
+                (self.end_ts is not None and self.end_ts < 0) or
+                (self.start_ts is not None and self.end_ts is not None and self.end_ts <= self.start_ts)):
+            raise ValueError("Invalid media-relative token timing")
+
+
 @dataclass
 class TokenSpan:
     """Token-index range (inclusive start, exclusive end) into a running
@@ -55,12 +77,13 @@ class TokenSpan:
     start: int
     end: int
     tokens: list[str]
-    confidences: list[float]
-    start_ts: float
-    end_ts: float
+    confidences: list[Optional[float]]
+    start_ts: Optional[float]
+    end_ts: Optional[float]
 
     def mean_confidence(self) -> float:
-        return sum(self.confidences) / len(self.confidences) if self.confidences else 0.0
+        return (sum(self.confidences) / len(self.confidences)
+                if self.confidences and all(c is not None for c in self.confidences) else 0.0)
 
 
 @dataclass
@@ -86,16 +109,19 @@ class GroundingGuard:
         self.epoch_clock = epoch_clock
         self._on_eviction = on_eviction
         self._tokens: list[str] = []
-        self._confidences: list[float] = []
-        self._timestamps: list[tuple[float, float]] = []  # (start, end) per token
+        self._confidences: list[Optional[float]] = []
+        self._timestamps: list[tuple[Optional[float], Optional[float]]] = []
         self._tombstones: list[Tombstone] = []
         self._staged_candidates: dict[str, tuple[str, tuple[int, int], int]] = {}
         self._turn_id: int = 0
 
     # ---- ingestion ------------------------------------------------------
 
-    def ingest_token(self, token: str, confidence: float, start_ts: float, end_ts: float) -> int:
+    def ingest_token(self, token: str, confidence: Optional[float], start_ts: Optional[float], end_ts: Optional[float]) -> int:
         """Append one ASR token (interim or final). Returns its index."""
+        TokenEvidence(token, confidence, start_ts, end_ts).validate()
+        if len(self._tokens) >= 4096:
+            raise ValueError("Turn evidence exceeds token capacity")
         self._tokens.append(token)
         self._confidences.append(confidence)
         self._timestamps.append((start_ts, end_ts))
@@ -106,6 +132,30 @@ class GroundingGuard:
         if REPAIR_CUES.search(token.lower()):
             self._tombstone_preceding_clause(idx)
         return idx
+
+    def replace_tokens(self, evidence: tuple[TokenEvidence, ...]) -> None:
+        """Validate before replacement; every revision evicts old candidates.
+
+        Ingest callers must handle a rejected ASR update by invalidating that
+        input. This atomic primitive does not guess whether invalid input was a
+        revision. No old prefix survives a same-length or shorter hypothesis.
+        """
+        if type(evidence) not in (tuple, list) or len(evidence) > 4096:
+            raise ValueError("Invalid bounded token sequence")
+        for token in evidence:
+            if type(token) is not TokenEvidence:
+                raise ValueError("Explicit token evidence required")
+            token.validate()
+        evictions = [(name, value) for name, (value, _, _) in self._staged_candidates.items()]
+        self.reset_turn()
+        for name, value in evictions:
+            if self._on_eviction is not None:
+                try:
+                    self._on_eviction(name, value)
+                except Exception:
+                    logger.error("Candidate eviction callback failed")
+        for token in evidence:
+            self.ingest_token(token.text, token.confidence, token.start_ts, token.end_ts)
 
     def reset_turn(self) -> None:
         self._tokens.clear()
@@ -182,6 +232,9 @@ class GroundingGuard:
           1. its full source token range lies outside any tombstone, AND
           2. mean ASR confidence over that range clears the domain floor.
         """
+        if (type(source_token_range) not in (tuple, list) or len(source_token_range) != 2 or
+                any(type(v) is not int for v in source_token_range)):
+            return False, 0.0, "argument range must contain exact integers"
         start, end = source_token_range
         if any(self.is_tombstoned(i) for i in range(start, end)):
             return False, 0.0, "argument overlaps a tombstoned (retracted) span"
@@ -190,6 +243,10 @@ class GroundingGuard:
             return False, 0.0, "argument range out of bounds"
 
         confs = self._confidences[start:end]
+        if any(c is None for c in confs):
+            return False, 0.0, "ASR confidence unavailable"
+        if any(a is None or b is None for a, b in self._timestamps[start:end]):
+            return False, 0.0, "ASR token timing unavailable"
         mean_conf = sum(confs) / len(confs)
         floor = DOMAIN_CONFIDENCE_FLOOR.get(domain, DOMAIN_CONFIDENCE_FLOOR["default"])
         if mean_conf < floor:

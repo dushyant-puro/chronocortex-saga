@@ -7,7 +7,10 @@ from saga_test_support import SimulatedAuthorizedSaga as SpeculativeSagaManager
 
 def ingest_tokens(guard: GroundingGuard, tokens: list[str]) -> list[int]:
     """Helper to ingest tokens with a dummy clock."""
-    return [guard.ingest_token(tok, 0.9, 0.0, 0.0) for tok in tokens]
+    # Valid synthetic media intervals; zero-duration placeholders are not evidence.
+    offset = len(guard._tokens)
+    return [guard.ingest_token(tok, 0.9, (offset + i) * 0.5, (offset + i) * 0.5 + 0.4)
+            for i, tok in enumerate(tokens)]
 
 @pytest.mark.asyncio
 async def test_01_candidate_survives_correction_epoch_advance():
