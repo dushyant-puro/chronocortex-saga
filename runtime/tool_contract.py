@@ -74,7 +74,10 @@ Fields:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Literal, Optional
+from typing import Any, Awaitable, Callable, Literal, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from runtime.reconciliation import ReconciledEffect
 
 
 class ToolContractError(ValueError):
@@ -102,7 +105,7 @@ class ToolManifest:
     cancellable: bool = True
     requires_authoritative_commit: bool = False
     compensate: Optional[Callable[[Any], Awaitable[None]]] = None
-    reconciliation: Optional[Callable[[Any], Awaitable[Optional[bool]]]] = None
+    reconciliation: Optional[Callable[[Any], Awaitable[bool | None | ReconciledEffect]]] = None
     timeout: float = 4.0
     telemetry_category: str = "default"
     depends_on: list[str] = field(default_factory=list)
