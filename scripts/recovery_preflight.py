@@ -46,6 +46,11 @@ def inspect(path):
     try:
         source = Path(path).resolve(strict=True)
         require(source.is_file())
+        # Reject WAL before SQLite can create shared-memory sidecars for a
+        # read-only WAL connection. This is not a hostile-host path race guard.
+        with source.open('rb') as stream:
+            header = stream.read(20)
+        require(header[:16] == b'SQLite format 3\x00' and header[18:20] == b'\x01\x01')
         with closing(sqlite3.connect(source.as_uri() + '?mode=ro', uri=True,
                                      timeout=0.25, isolation_level=None)) as db:
             db.execute('PRAGMA query_only=ON')

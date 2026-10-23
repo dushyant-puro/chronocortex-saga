@@ -166,3 +166,13 @@ def test_empty_journal_and_cli_exit_contract(tmp_path):
     assert result.returncode == 0 and json.loads(result.stdout)['passed']
     result = subprocess.run([sys.executable, '-m', 'scripts.recovery_preflight', '--journal', str(path)+'absent'], capture_output=True, text=True)
     assert result.returncode == 2 and not json.loads(result.stdout)['passed']
+
+
+def test_wal_rejected_before_sqlite_connection(tmp_path, monkeypatch):
+    from scripts import recovery_preflight
+    path, _, _ = populate(tmp_path)
+    change(path, 'PRAGMA journal_mode=WAL')
+    before = {p.name:p.read_bytes() for p in tmp_path.iterdir() if p.is_file()}
+    monkeypatch.setattr(recovery_preflight.sqlite3, 'connect', lambda *a, **k: pytest.fail('Opened unsupported WAL'))
+    assert not inspect(path)['passed']
+    assert before == {p.name:p.read_bytes() for p in tmp_path.iterdir() if p.is_file()}

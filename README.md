@@ -12,6 +12,9 @@ claim.
 
 The console reads the SQLite journal, reviews exact operation evidence, issues
 scoped approvals, records cancellation intent, and records investigation requests.
+The [recovery preflight](docs/engineering/recovery-preflight.md) independently
+inspects local journal consistency through a bounded read-only connection. It
+reports uncertainty without authorizing restore, dispatch or mutation replay.
 It does not dispatch or retry provider mutations. Cancellation cannot roll back
 a remote effect; UNKNOWN evidence remains unresolved until authoritative
 reconciliation.
