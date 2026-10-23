@@ -2,7 +2,6 @@ import asyncio
 from contextlib import closing
 import json
 import os
-from pathlib import Path
 import signal
 import sqlite3
 import subprocess

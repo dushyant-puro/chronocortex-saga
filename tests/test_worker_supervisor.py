@@ -1,9 +1,10 @@
 """Real SQLite ownership and deterministic barriers; all effects SIMULATED."""
 import asyncio
-from contextlib import closing
+from contextlib import closing, contextmanager
 from dataclasses import replace
 import json
 import sqlite3
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -423,6 +424,134 @@ async def test_audit_failure_never_reports_successful_release(env, monkeypatch):
     assert report.drained and not report.lease_released
     assert report.state == "RECOVERY_REQUIRED" and report.failure_code == "STOP_PERSISTENCE_FAILED"
     assert not any(event["kind"] == "RELEASED" for event in env.journal.worker_events())
+
+
+@pytest.mark.asyncio
+async def test_cancelled_startup_waiter_cannot_abandon_acquisition_or_hydrate_after_stop(env, monkeypatch):
+    started, finish = threading.Event(), threading.Event()
+    original = env.journal.acquire_lease
+    hydrated = []
+    def acquire(*args, **kwargs):
+        started.set()
+        assert finish.wait(10)
+        return original(*args, **kwargs)
+    def build(*args):
+        hydrated.append(True)
+        return factory(*args)
+    monkeypatch.setattr(env.journal, "acquire_lease", acquire)
+    waiter = asyncio.create_task(env.host.start(build))
+    assert await asyncio.to_thread(started.wait, 10)
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    assert not env.host._start_task.cancelled()
+    finish.set()
+    await asyncio.wait_for(env.host.stopped.wait(), 10)
+    assert hydrated == [] and env.host.report.lease_released
+
+
+@pytest.mark.asyncio
+async def test_cancelled_renewal_waiter_retains_owned_io_until_shutdown(env, monkeypatch):
+    await env.host.start(factory)
+    started, finish = threading.Event(), threading.Event()
+    original = env.journal.renew_lease
+    def renew(**kwargs):
+        started.set()
+        assert finish.wait(10)
+        original(**kwargs)
+    monkeypatch.setattr(env.journal, "renew_lease", renew)
+    waiter = asyncio.create_task(env.host.pulse())
+    assert await asyncio.to_thread(started.wait, 10)
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    await env.host.stopping.wait()
+    assert not env.host._pulse_task.cancelled() and not env.host._stop_task.done()
+    assert not any(event["kind"] == "RELEASED" for event in env.journal.worker_events())
+    finish.set()
+    report = await env.host.stop()
+    assert report.lease_released and report.failure_code == "RENEWAL_WAITER_CANCELLED"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["host_role", "stop"])
+async def test_intent_rechecks_host_gate_after_preflight_validator(env, change):
+    def validate(_):
+        if change == "host_role":
+            env.journal.security.update_principal("worker", permissions={"test:write"})
+        else:
+            env.host.request_stop()
+    def build(journal, auth):
+        registry = ToolRegistry()
+        registry.register(ToolManifest("change", "write", required_permissions=["test:write"], validate_args=validate))
+        return SpeculativeSagaManager(TurnEpochClock(), registry=registry, journal=journal, auth_context=auth)
+    saga = await env.host.start(build)
+    action = saga.stage_write("change", {})
+    with pytest.raises((PermissionDeniedError, WorkerUnavailable)):
+        await saga.commit_write(action.action_id, lambda _: pytest.fail("preflight race dispatched"))
+    assert env.journal.records()[0][1]["state"] == "PENDING"
+    assert not any(event["kind"] == "DISPATCH_INTENT" for event in env.journal.worker_events())
+
+
+@pytest.mark.asyncio
+async def test_failed_heartbeat_drains_issued_forward_without_erasing_its_receipt(env):
+    saga = await env.host.start(factory)
+    action = saga.stage_write("change", {})
+    started, finish = asyncio.Event(), asyncio.Event()
+    async def execute(_):
+        started.set()
+        await finish.wait()
+        return {"provider": "SIMULATED", "receipt": "survived host authority loss"}
+    handle = env.host.submit(lambda runtime: runtime.commit_write(action.action_id, execute))
+    await started.wait()
+    env.journal.security.revoke_credential(env.credential.id)
+    with pytest.raises(PermissionDeniedError):
+        await env.host.pulse()
+    await env.host.stopping.wait()
+    assert not handle.done()
+    finish.set()
+    await handle.wait()
+    report = await env.host.stop()
+    assert report.drained and report.lease_released and report.failure_code == "RENEWAL_FAILED"
+    assert env.journal.records()[0][1]["result"]["receipt"] == "survived host authority loss"
+
+
+@pytest.mark.asyncio
+async def test_activity_registration_does_not_hold_gate_lock_while_waiting_for_sqlite(env, monkeypatch):
+    saga = await env.host.start(factory)
+    action = saga.stage_write("change", {"main": 1})
+    other = SQLiteActionJournal(env.path, clock_ms=lambda: env.clock.wall)
+    other.bind_lease(env.host._lease)
+    bound = factory(other, saga.auth_context)
+    entering, finished = threading.Event(), threading.Event()
+    failures = []
+    def writer():
+        try:
+            assert entering.wait(10)
+            bound.stage_write("change", {"bound": 1})
+        except BaseException as exc:
+            failures.append(type(exc).__name__)
+        finally:
+            finished.set()
+    thread = threading.Thread(target=writer, daemon=True)
+    thread.start()
+    original = env.journal._transaction
+    first = [True]
+    @contextmanager
+    def interleave(**kwargs):
+        if first[0]:
+            first[0] = False
+            entering.set()
+            assert finished.wait(10), "Lifecycle lock inverted with a bound SQLite writer"
+        with original(**kwargs) as db:
+            yield db
+    monkeypatch.setattr(env.journal, "_transaction", interleave)
+    try:
+        await saga.commit_write(action.action_id, lambda _: asyncio.sleep(0))
+    finally:
+        thread.join(timeout=10)
+    assert not failures and not thread.is_alive()
+    assert len(env.journal.records()) == 2
 
 
 @pytest.mark.parametrize("overrides", [{"lease_ttl_ms": True}, {"lease_ttl_ms": 999}, {"renew_interval_ms": 15_000}, {"safety_margin_ms": 30_000}, {"drain_timeout_ms": 0}, {"max_operations": 0}])

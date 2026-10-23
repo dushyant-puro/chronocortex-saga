@@ -57,6 +57,14 @@ timeout can persist while the old lease remains valid, but cannot reopen admissi
 After expiry/takeover, the old process may retain only an in-memory receipt;
 provider reconciliation remains necessary. No late-receipt inbox is claimed.
 
+Startup and renewal I/O have separate owned tasks. Cancelling a waiter cannot
+abandon acquisition or a renewal thread; shutdown awaits that owned I/O before
+release. A stop during acquisition prevents later runtime hydration. Both races
+have deterministic threading/event barriers. Final host role and admission are
+also tested after preflight validators change authority or request shutdown,
+before journaled intent. A heartbeat failure caused by credential revocation
+still drains an already-issued forward receipt while the lease remains valid.
+
 Async drain budgets do not interrupt a hung OS/disk call. A blocked event loop
 cannot run a signal handler or heartbeat. External process supervision is still
 needed to terminate an unresponsive process. Python runner cleanup/forced process
@@ -160,6 +168,37 @@ or dispatches a provider operation from a health badge.
 Chromium tests run the real supervisor alongside the real HTTP/SQLite console:
 manual lease -> fresh reported readiness -> graceful stop and expired lease.
 Existing offline, response-loss, review, XSS, keyboard and responsive tests remain.
+
+## Independent process drills and release gate
+
+Four process cases use an independently fsynced **SIMULATED** provider ledger:
+
+- Exit immediately after forward apply: dispatch intent survives; generation 2
+  hydrates UNKNOWN and cannot replay the original executor.
+- Exit immediately after compensation apply: repair intent survives; generation
+  2 projects compensation UNKNOWN and never repeats undo.
+- Request stop during a forward await: a second owner is denied until drain
+  retains the receipt and releases the lease.
+- Reach the drain deadline, then take over after expiry: the old process keeps
+  its late receipt in memory but cannot publish success; the journal keeps its
+  unresolved dispatch identity and the independent ledger has one forward apply.
+
+These are process-death and concurrency results, not real-provider, power-loss,
+multi-host or production performance claims. The live voice placeholder remains
+skipped. Baseline on the parent commit was 519 passing runtime cases and one
+skipped placeholder; exact-head final full-suite, browser, clean-environment and
+Windows/Linux CI evidence is recorded in the draft PR. Local final validation:
+**588 passed, 1 skipped**, including 39 lifecycle/process cases, plus **8 passed**
+in Chromium. The 69 added runtime cases cover supervisor, process, credential/CLI
+and health boundaries. No live provider assets or live voice credentials were used.
+
+Deployment is still a local-host protocol. A Windows Service/systemd/container
+wrapper, external watchdog, TLS/identity deployment, full transitive dependency
+lock, audit retention/capacity evaluation and backup/restore drills remain.
+The next provider phase must select a documented sandbox with operation identity,
+idempotency retention, authoritative status lookup and delayed-application rules,
+then test real forward/status/repair uncertainty before connecting a dispatcher.
+The current recovery host and UI do not claim those provider guarantees.
 
 On regression, stop admission/dispatch, retain the current schema-6 journal,
 lease generation, operation identities and security/control/effect evidence.

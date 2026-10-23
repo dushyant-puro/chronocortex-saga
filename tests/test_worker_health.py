@@ -1,8 +1,4 @@
 """Health is observed evidence, independent of lease expiry or remote effects."""
-from contextlib import closing
-import json
-import sqlite3
-
 import pytest
 from starlette.testclient import TestClient
 

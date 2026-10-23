@@ -86,7 +86,7 @@ class _Lifecycle:
                 self.failure = code
             if self.state not in {"STOPPED", "RECOVERY_REQUIRED"}:
                 self.state = "FAILED"
-        if self.host._loop is not None:
+        if self.host._loop is not None and not self.host._loop.is_closed():
             self.host._loop.call_soon_threadsafe(self.host.request_stop)
 
     def check(self, db=None):
@@ -124,11 +124,12 @@ class _Lifecycle:
         if asyncio.get_running_loop() is not self.host._loop:
             raise WorkerUnavailable("Worker operations must use the owning event loop")
         task = asyncio.current_task()
+        # Follow the journal's DB -> lifecycle-lock order. Holding the lifecycle
+        # lock while waiting for SQLite would invert a bound writer's locks.
+        with self.host.journal._transaction() as db:
+            self.check(db)
         with self.lock:
-            # Status queries also require current host authority. Mutations
-            # repeat this check atomically with their journaled intent.
-            with self.host.journal._transaction() as db:
-                self.check(db)
+            self.check()
             active = self.host._active_tasks()
             if task not in active and len(active) >= self.host.settings.max_operations:
                 raise WorkerUnavailable("Worker operation capacity reached")
@@ -162,6 +163,7 @@ class WorkerSupervisor:
         self._start_task = None
         self._stop_task = None
         self._heartbeat_task = None
+        self._pulse_task = None
         self._submitted = set()
         self._heartbeat_stop = asyncio.Event()
         self.stopping = asyncio.Event()
@@ -224,6 +226,8 @@ class WorkerSupervisor:
             began = self._gate.now()
             self._lease = await asyncio.to_thread(self.journal.acquire_lease, self.owner, ttl_ms=self.settings.lease_ttl_ms)
             self._gate.renewed(began)
+            if self.state != "STARTING":
+                raise WorkerUnavailable("Startup was stopped before hydration")
             await self._observe("HOST_STARTING")
             self._runtime = factory(self.journal, AuthorizationContext(credential=self._credential))
             if inspect.isawaitable(self._runtime):
@@ -264,6 +268,16 @@ class WorkerSupervisor:
 
     async def pulse(self):
         """One renewal/heartbeat. A failed or late attempt is never retried."""
+        if self._heartbeat_stop.is_set() or (self._pulse_task is not None and not self._pulse_task.done()):
+            raise WorkerUnavailable("Renewal is stopped or already in progress")
+        self._pulse_task = asyncio.create_task(self._pulse(), name="ccs-worker-renewal")
+        try:
+            return await asyncio.shield(self._pulse_task)
+        except asyncio.CancelledError:
+            self._gate.fault("RENEWAL_WAITER_CANCELLED")
+            raise
+
+    async def _pulse(self):
         async with self._pulse_lock:
             if self.state not in {"READY", "DRAINING"}:
                 raise WorkerUnavailable("Worker cannot renew")
@@ -294,6 +308,8 @@ class WorkerSupervisor:
         """Call on the event loop; signal handlers should schedule this callback."""
         if self._loop is None:
             raise WorkerUnavailable("No running worker loop")
+        if asyncio.get_running_loop() is not self._loop:
+            raise WorkerUnavailable("Schedule stop on the owning event loop")
         with self._gate.lock:
             if self.state in {"NEW", "STARTING", "READY"}:
                 self._gate.state = "DRAINING"
@@ -323,6 +339,8 @@ class WorkerSupervisor:
         self._heartbeat_stop.set()
         if self._heartbeat_task is not None:
             await asyncio.gather(self._heartbeat_task, return_exceptions=True)
+        if self._pulse_task is not None:
+            await asyncio.gather(self._pulse_task, return_exceptions=True)
         pending = self._active_tasks()
         released = False
         if self._lease is not None:
