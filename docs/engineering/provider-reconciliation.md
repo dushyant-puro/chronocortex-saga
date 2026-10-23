@@ -204,6 +204,52 @@ can retain its receipt as COMMITTED_STALE. Do not infer business success from
 the Python return value alone. A process restart does not authorize executing
 a recovered PENDING/UNKNOWN action; use GET-only reconciliation.
 
+## Read-only setup preflight
+
+`python -m providers.preflight_stripe` checks sandbox access without requiring
+an existing CCS action, worker credential or journal. It has no database path,
+creation, cancellation, reconciliation, transport override or retry option.
+The restricted key comes only from the protected file described above.
+
+```powershell
+.\.venv\Scripts\python.exe -m providers.preflight_stripe `
+  --stripe-key-file 'C:\CCS\state\stripe-test.key' `
+  --account-id 'acct_REPLACE_WITH_SANDBOX_ACCOUNT'
+```
+
+With no object ID, one `GET /v1/account` verifies the key's effective account
+and returns a redacted request reference. `object_mode_verified` stays false:
+account identity alone does not attest a remote PaymentIntent's test mode.
+Adding `--payment-intent-id 'pi_REPLACE_WITH_KNOWN_TEST_OBJECT'` performs a second
+GET only after the account matches, and requires the exact object identity,
+`livemode: false`, a recognized status, and valid terminal evidence if canceled.
+Invalid object IDs are rejected before any HTTP request. The existing bounded
+parser, pinned API header, fixed HTTPS origin, no redirects/environment proxies,
+no retries and 15-second operation deadline apply to both reads.
+
+Exit 0 means those selected reads passed; it does not mean the object is suitable
+for cancellation or that a mutation succeeded. `write_permission_verified`
+and `journal_updated` always remain false. A canceled object read is not attached
+to an action and does not resolve any UNKNOWN operation. Use the supervised
+reconciler for a compatible recorded action. Preflight does not acquire a worker
+lease or consume approval because it cannot change task/action state or issue a
+mutation. The Stripe key remains the authority for these provider reads.
+
+Exit 1 means input, scope, access, protocol or transport failure. Output contains
+only an allowlisted code, such as `CREDENTIAL_INPUT_INVALID`, `SCOPE_INVALID`,
+`STRIPE_HTTP_401`, `STRIPE_HTTP_403`, `STRIPE_ACCOUNT_MISMATCH` or
+`STRIPE_PAYMENT_INTENT_MISMATCH`. Provider error bodies, account email, client
+secrets and raw exception text are omitted. Exit 2 means invalid CLI arguments;
+the parser does not echo them. No failure causes a POST or an automatic retry.
+
+The default client labels successful observations `REAL_PROVIDER_TEST_MODE`;
+injected protocol fixtures label theirs `SIMULATED`. No REAL PROVIDER preflight
+has been run in this implementation phase. Regression tests exercise account-only
+and object inspection, invalid scope before HTTP, account substitution, live
+objects, terminal evidence, malformed/bounded responses, 3xx/4xx/5xx, cancellation,
+deadline, output redaction, unsafe CLI arguments and absence of journal assets.
+Existing mutation/reconciliation tests protect the shared validation refactor.
+
 ## Remaining acceptance gates
 
 1. Create an isolated sandbox and known disposable test PaymentIntent through
