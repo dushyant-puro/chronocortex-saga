@@ -5,6 +5,7 @@ The ordinary runtime suite does not require a browser installation.
 """
 from contextlib import closing
 from concurrent.futures import ThreadPoolExecutor
+import asyncio
 from pathlib import Path
 import socket
 import sqlite3
@@ -17,6 +18,9 @@ import uvicorn
 
 from control.app import ControlConfig, create_app
 from tests.control_test_support import seed_control
+from runtime.action_journal import SQLiteActionJournal
+from runtime.worker_supervisor import WorkerSupervisor
+from worker.__main__ import recovery_runtime
 
 
 @pytest.fixture(scope="module")
@@ -102,6 +106,49 @@ def test_login_journal_evidence_approval_review_and_logout(console):
     assert not page.locator("#metrics").text_content()
     assert not page.locator("#detail").text_content()
     assert not page.locator("#principal").text_content()
+
+
+def test_initial_session_lookup_finishes_before_login_can_be_submitted(console):
+    env, _, context, origin = console
+    page = context.new_page()
+    pending = []
+    logins = []
+    page.on("request", lambda request: logins.append(request) if request.url.endswith("/api/login") else None)
+    page.route("**/api/session", lambda route: pending.append(route))
+    with page.expect_request("**/api/session"):
+        page.goto(origin, wait_until="commit")
+    expect(page.locator("#credential")).to_be_visible()
+    expect(page.locator("#connect-button")).to_be_disabled()
+    page.get_by_label("Operator credential").fill(env.operator.token)
+    page.locator("#connect-form").evaluate("form => form.requestSubmit()")
+    page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+    assert not logins
+    assert len(pending) == 1
+    pending[0].fulfill(status=401, content_type="application/json", body='{"error":{"code":"session_required","message":"Connect with a valid operator credential."}}')
+    page.unroute("**/api/session")
+    expect(page.locator("#connect-button")).to_be_enabled()
+    connect(env, page)
+    assert len(logins) == 1
+
+
+def test_native_form_fallback_never_places_credential_in_navigation_url(console):
+    env, _, context, origin = console
+    page = context.new_page()
+    page.route("**/assets/console.js", lambda route: route.fulfill(status=503, content_type="text/javascript", body=""))
+    page.goto(origin)
+    page.get_by_label("Operator credential").fill(env.operator.token)
+    with page.expect_request(lambda request: request.is_navigation_request()) as navigation:
+        page.locator("#connect-form").evaluate("form => form.submit()")
+    request = navigation.value
+    assert request.method == "POST" and request.url == origin + "/api/login"
+    assert env.operator.token not in request.url
+    page.wait_for_load_state("load")
+    # Browsers may omit Origin under no-referrer policy. Either the origin
+    # boundary or the JSON-only boundary must reject this native submission.
+    response = request.response()
+    assert response.status in {403, 415}
+    assert response.json()["error"]["code"] in {"origin_rejected", "json_required"}
+    assert env.operator.token not in page.locator("body").text_content()
 
 
 def test_cancellation_retains_effect_evidence_and_records_history(console):
@@ -203,3 +250,49 @@ def test_mobile_and_keyboard_review_and_visual_artifacts(console):
     page.keyboard.press("Escape")
     expect(page.locator("#decision-dialog")).not_to_be_visible()
     expect(button).to_be_focused()
+
+
+def test_supervision_view_distinguishes_manual_lease_live_reports_and_stopped_host(console):
+    env, page, _, _ = console
+    connect(env, page)
+    page.locator(".worker-inspector summary").click()
+    expect(page.locator("#worker-details")).to_contain_text("NOT_OBSERVED")
+    expect(page.locator("#worker-state")).to_have_text("LEASE CURRENT")
+    expect(page.locator("#worker-health")).to_contain_text("NOT READY")
+    env.journal.release_lease()
+    env.journal.security.update_principal("executor", permissions={"ccs:work", "test:write", "ccs:repair", "ccs:reconcile"})
+    ready, stop = threading.Event(), threading.Event()
+    failures = []
+    def run_host():
+        async def run():
+            host = WorkerSupervisor(SQLiteActionJournal(env.journal.path), env.worker.token)
+            try:
+                await host.start(recovery_runtime)
+                ready.set()
+                await asyncio.to_thread(stop.wait)
+            finally:
+                await host.stop()
+        try:
+            asyncio.run(run())
+        except Exception as exc:
+            failures.append(type(exc).__name__)
+            ready.set()
+    thread = threading.Thread(target=run_host, daemon=True)
+    thread.start()
+    try:
+        assert ready.wait(10) and not failures
+        page.get_by_role("button", name="Refresh", exact=True).click()
+        expect(page.locator("#worker-health")).to_contain_text("READY REPORTED")
+        expect(page.locator("#worker-details")).to_contain_text("FRESH")
+        expect(page.locator(".worker-inspector")).to_contain_text("not proof of process liveness")
+        artifacts = Path("results/console-visual")
+        artifacts.mkdir(parents=True, exist_ok=True)
+        page.screenshot(path=str(artifacts / "supervised-worker.png"), full_page=True)
+    finally:
+        stop.set()
+        thread.join(timeout=10)
+    assert not thread.is_alive() and not failures
+    page.get_by_role("button", name="Refresh", exact=True).click()
+    expect(page.locator("#worker-state")).to_have_text("LEASE EXPIRED")
+    expect(page.locator("#worker-health")).to_contain_text("NOT READY")
+    expect(page.locator("#worker-details")).to_contain_text("STOPPED")
