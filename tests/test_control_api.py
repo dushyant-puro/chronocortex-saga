@@ -50,6 +50,28 @@ def test_console_is_public_but_journal_requires_authenticated_session(console):
     assert snapshot["provider"] == "NOT_CONFIGURED"
 
 
+@pytest.mark.parametrize("path", ["/api/session", "/api/snapshot", "/api/records/actions/missing"])
+@pytest.mark.parametrize("cookie", [None, "malformed"])
+def test_anonymous_console_reads_do_not_contend_for_a_journal_write_lock(console, path, cookie):
+    env, client = console
+    if cookie:
+        client.cookies.set(COOKIE, cookie)
+    with closing(sqlite3.connect(env.journal.path)) as blocker:
+        blocker.execute("BEGIN IMMEDIATE")
+        response = client.get(path)
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "session_required"
+
+
+def test_authenticated_reads_still_fail_closed_when_journal_is_busy(console):
+    env, client = console
+    login(env, client)
+    with closing(sqlite3.connect(env.journal.path)) as blocker:
+        blocker.execute("BEGIN IMMEDIATE")
+        response = client.get("/api/snapshot")
+    assert response.status_code == 503 and "actions" not in response.json()
+
+
 def test_login_cookie_and_headers_are_hardened_without_exposing_credentials(console):
     env, client = console
     response = client.post("/api/login", json={"credential": env.operator.token}, headers={"Origin": ORIGIN})

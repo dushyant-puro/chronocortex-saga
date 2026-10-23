@@ -1,5 +1,6 @@
 const $ = (selector) => document.querySelector(selector);
 const state = {
+  bootstrapping: true,
   session: null,
   snapshot: null,
   view: "overview",
@@ -729,6 +730,7 @@ $("#decision-form").addEventListener("submit", async (event) => {
 
 $("#connect-form").addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (state.bootstrapping) return;
   $("#connect-button").disabled = true;
   $("#connect-error").textContent = "";
   try {
@@ -786,4 +788,7 @@ try {
   await refresh();
 } catch {
   disconnected();
+} finally {
+  state.bootstrapping = false;
+  $("#connect-button").disabled = false;
 }

@@ -108,6 +108,49 @@ def test_login_journal_evidence_approval_review_and_logout(console):
     assert not page.locator("#principal").text_content()
 
 
+def test_initial_session_lookup_finishes_before_login_can_be_submitted(console):
+    env, _, context, origin = console
+    page = context.new_page()
+    pending = []
+    logins = []
+    page.on("request", lambda request: logins.append(request) if request.url.endswith("/api/login") else None)
+    page.route("**/api/session", lambda route: pending.append(route))
+    with page.expect_request("**/api/session"):
+        page.goto(origin, wait_until="commit")
+    expect(page.locator("#credential")).to_be_visible()
+    expect(page.locator("#connect-button")).to_be_disabled()
+    page.get_by_label("Operator credential").fill(env.operator.token)
+    page.locator("#connect-form").evaluate("form => form.requestSubmit()")
+    page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+    assert not logins
+    assert len(pending) == 1
+    pending[0].fulfill(status=401, content_type="application/json", body='{"error":{"code":"session_required","message":"Connect with a valid operator credential."}}')
+    page.unroute("**/api/session")
+    expect(page.locator("#connect-button")).to_be_enabled()
+    connect(env, page)
+    assert len(logins) == 1
+
+
+def test_native_form_fallback_never_places_credential_in_navigation_url(console):
+    env, _, context, origin = console
+    page = context.new_page()
+    page.route("**/assets/console.js", lambda route: route.fulfill(status=503, content_type="text/javascript", body=""))
+    page.goto(origin)
+    page.get_by_label("Operator credential").fill(env.operator.token)
+    with page.expect_request(lambda request: request.is_navigation_request()) as navigation:
+        page.locator("#connect-form").evaluate("form => form.submit()")
+    request = navigation.value
+    assert request.method == "POST" and request.url == origin + "/api/login"
+    assert env.operator.token not in request.url
+    page.wait_for_load_state("load")
+    # Browsers may omit Origin under no-referrer policy. Either the origin
+    # boundary or the JSON-only boundary must reject this native submission.
+    response = request.response()
+    assert response.status in {403, 415}
+    assert response.json()["error"]["code"] in {"origin_rejected", "json_required"}
+    assert env.operator.token not in page.locator("body").text_content()
+
+
 def test_cancellation_retains_effect_evidence_and_records_history(console):
     env, page, _, _ = console
     connect(env, page)

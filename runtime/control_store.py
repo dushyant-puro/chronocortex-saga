@@ -73,10 +73,14 @@ class ControlStore:
         return {"principal_id": actor.principal_id, "permissions": sorted(actor.granted_permissions),
                 "server_time_ms": now, "expires_ms": expires, "csrf_token": csrf}
 
-    def _session(self, db, token, csrf=None):
-        now = self.authority._now(db)
+    @staticmethod
+    def _session_token(token):
         if type(token) is not str or re.fullmatch(r"[A-Za-z0-9_-]{43}", token) is None:
             raise ControlError(401, "session_required", "Connect with a valid operator credential.")
+
+    def _session(self, db, token, csrf=None):
+        self._session_token(token)
+        now = self.authority._now(db)
         row = db.execute("SELECT csrf_salt,credential_id,principal_version,expires_ms,revoked FROM operator_sessions WHERE session_hash=?", (digest(token),)).fetchone()
         if row is None or row[4] or now >= row[3]:
             raise ControlError(401, "session_expired", "The operator session ended. Connect again.")
@@ -93,10 +97,12 @@ class ControlStore:
         return actor, now, self._identity(actor, now, row[3], expected)
 
     def session(self, token):
+        self._session_token(token)
         with self.journal._transaction() as db:
             return self._session(db, token)[2]
 
     def logout(self, token, csrf):
+        self._session_token(token)
         with self.journal._transaction() as db:
             actor, now, _ = self._session(db, token, csrf)
             db.execute("UPDATE operator_sessions SET revoked=1 WHERE session_hash=?", (digest(token),))
@@ -196,6 +202,7 @@ class ControlStore:
         return "AVAILABLE"
 
     def snapshot(self, token):
+        self._session_token(token)
         with self.journal._transaction() as db:
             actor, now, _ = self._session(db, token)
             actions, tasks, approvals = [], [], []
@@ -226,6 +233,7 @@ class ControlStore:
                     "actions": actions, "tasks": tasks, "approvals": approvals, "commands": commands}
 
     def detail(self, token, kind, record_id):
+        self._session_token(token)
         with self.journal._transaction() as db:
             actor, now, _ = self._session(db, token)
             if kind == "tasks":
@@ -270,6 +278,7 @@ class ControlStore:
             return False
 
     def command(self, token, csrf, kind, target, body):
+        self._session_token(token)
         required_keys = {"operation_id", "review_digest"} | ({"direction", "executor", "ttl_ms"} if kind == "APPROVE" else set())
         if type(body) is not dict or set(body) != required_keys:
             raise ControlError(400, "invalid_request", "The control request has invalid fields.")

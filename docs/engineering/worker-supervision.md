@@ -188,9 +188,22 @@ multi-host or production performance claims. The live voice placeholder remains
 skipped. Baseline on the parent commit was 519 passing runtime cases and one
 skipped placeholder; exact-head final full-suite, browser, clean-environment and
 Windows/Linux CI evidence is recorded in the draft PR. Local final validation:
-**588 passed, 1 skipped**, including 39 lifecycle/process cases, plus **8 passed**
-in Chromium. The 69 added runtime cases cover supervisor, process, credential/CLI
-and health boundaries. No live provider assets or live voice credentials were used.
+**595 passed, 1 skipped**, including 39 lifecycle/process cases, plus **10 passed**
+in Chromium. The 76 added runtime cases cover the worker and console boundaries.
+Final exact-head clean-environment and CI results are recorded in the draft PR.
+No live provider assets or live voice credentials were used.
+
+Windows CI then exposed a login-time journal-unavailable failure. Controlled
+SQLite-lock tests reproduced six anonymous/malformed-cookie reads taking the
+writer path (503 instead of an immediate 401). A held bootstrap response also
+reproduced login being enabled before the initial session lookup finished.
+Anonymous syntax rejection now occurs before any database transaction; valid
+sessions still recheck authority/time and fail closed with 503 when busy. The
+form stays disabled until bootstrap finishes, and its submit handler enforces
+the same gate. No timeout increase, automatic login retry or weaker authorization
+was introduced. A failed-script/native-form case additionally verifies that a
+credential can never enter a navigation URL; the JSON-only endpoint rejects the
+native POST without reflecting the secret.
 
 Deployment is still a local-host protocol. A Windows Service/systemd/container
 wrapper, external watchdog, TLS/identity deployment, full transitive dependency

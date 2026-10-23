@@ -33,7 +33,12 @@
         </p>
       </div>
       <div class="connect-form-wrap">
-        <form id="connect-form" class="connect-card">
+        <form
+          id="connect-form"
+          class="connect-card"
+          method="post"
+          action="/api/login"
+        >
           <p class="eyebrow">OPERATOR ACCESS</p>
           <h2 id="connect-title">Connect to the journal</h2>
           <p>
@@ -55,7 +60,7 @@
             Your credential is exchanged for an HttpOnly session. It is never
             saved in browser storage.
           </p>
-          <button type="submit" class="primary" id="connect-button">
+          <button type="submit" class="primary" id="connect-button" disabled>
             Connect to journal <span aria-hidden="true">↗</span>
           </button>
           <p id="connect-error" class="error" role="alert"></p>
