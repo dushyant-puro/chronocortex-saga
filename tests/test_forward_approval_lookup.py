@@ -123,6 +123,27 @@ async def test_latest_same_clock_decision_never_falls_back_to_older_authority(tm
 
 
 @pytest.mark.asyncio
+async def test_rewritten_command_rowids_cannot_resurrect_an_older_approval(tmp_path):
+    async with adapter(lambda _: pytest.fail("approval ordering performed HTTP")) as provider:
+        env = environment(tmp_path, provider)
+        first = approve(env)
+        latest = approve(env)
+        assert lookup(env) == latest
+        env.authority.revoke_approval(env.issuer.token, latest)
+        with env.journal._transaction() as db:
+            # Simulate maintenance copying an older command after a newer row.
+            # Durable control-event sequence still defines the console chronology.
+            row = next(row for row in db.execute("SELECT * FROM control_commands")
+                       if json.loads(row[5])["approval_id"] == first)
+            db.execute("DELETE FROM control_commands WHERE principal_id=? AND operation_id=?", row[:2])
+            db.execute("INSERT INTO control_commands VALUES (?,?,?,?,?,?,?)", row)
+        assert lookup(env) is None
+        with closing(sqlite3.connect(env.journal.path)) as db:
+            db.execute("VACUUM")
+        assert lookup(env) is None
+
+
+@pytest.mark.asyncio
 async def test_revocation_between_selection_and_dispatch_is_rechecked_atomically(tmp_path):
     async with adapter(lambda _: pytest.fail("revoked approval reached provider")) as provider:
         env = environment(tmp_path, provider)

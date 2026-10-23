@@ -196,8 +196,12 @@ operation grants. It validates the pending action, open chain, task projection,
 exact binding, executor version, issuer authority and expiry. It selects only
 the latest committed console APPROVE decision for that action; a revoked,
 expired, consumed or incompatible latest decision never falls back to an older
-grant. Direct offline approvals remain available to explicitly configured trusted
-callers but are not discovered by this console-driven path.
+grant. The durable control-event sequence orders decisions, including equal-clock
+decisions, independently of mutable command rowids. SQLite documents that
+[VACUUM can change implicit rowids](https://www.sqlite.org/lang_vacuum.html);
+the regression rewrites command rows and performs VACUUM without resurrecting
+older approval. Direct offline approvals remain available to explicitly
+configured trusted callers but are not discovered by this console-driven path.
 
 Polling does not issue approvals or append authentication/audit events. It updates
 the existing security clock high-water mark. The returned ID is not a reservation

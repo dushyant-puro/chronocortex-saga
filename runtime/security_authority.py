@@ -349,10 +349,14 @@ class SecurityAuthority:
                 raise PermissionDeniedError("Action chain is closed")
             self.journal._task_projection_guard(db, old)
             binding = self._binding(db, old, "FORWARD")
-            # Existing (kind,target_id) index bounds lookup to this action's
-            # decisions; rowid breaks same-clock ties by committed insert order.
-            decision = db.execute("SELECT result FROM control_commands WHERE kind='APPROVE' AND target_id=? ORDER BY rowid DESC LIMIT 1",
-                                  (action_id,)).fetchone()
+            # The target index narrows command candidates; the INTEGER PRIMARY
+            # KEY audit sequence orders same-clock decisions across rowid rewrites.
+            decision = db.execute(
+                "SELECT c.result FROM control_commands c JOIN control_events e "
+                "ON e.principal_id=c.principal_id AND e.operation_id=c.operation_id "
+                "AND e.kind=c.kind AND e.target_id=c.target_id "
+                "WHERE c.kind='APPROVE' AND c.target_id=? ORDER BY e.seq DESC LIMIT 1",
+                (action_id,)).fetchone()
             if decision is None:
                 return None
             result = json.loads(decision[0])

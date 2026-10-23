@@ -29,7 +29,7 @@ worker owns the request. Neither an LLM nor a transcript supplies authorization.
    1..300 seconds for a console approval. The default is 120 seconds. Existing
    claims remain decisive: opening a fresh host never authorizes replay of a
    recovered PENDING/UNKNOWN operation.
-4. Approval lookup is non-consuming and selects the latest committed console
+4. Approval lookup is non-consuming and uses the durable audit sequence to select the latest committed console
    APPROVE decision for this action. No older-decision fallback is allowed.
    Dispatch independently rechecks current issuer/executor authority, expiry,
    immutable operation binding, open chain and worker ownership, and consumes
