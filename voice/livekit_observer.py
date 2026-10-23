@@ -1,4 +1,4 @@
-"""LiveKit 1.8.3 word-evidence hook; no LLM/tools, approvals or durable tasks."""
+"""Verified LiveKit word-evidence hook; no LLM/tools, approvals or durable tasks."""
 from collections import deque
 from importlib.metadata import version
 import inspect
@@ -11,6 +11,7 @@ from runtime.grounding_guard import TokenEvidence
 from runtime.voice_ingress import VoiceIngress, VoiceEvidenceError, bounded_text
 
 logger = logging.getLogger("ccs.voice")
+VERIFIED_LIVEKIT_VERSION = "1.8.8"
 
 
 def _optional(value):
@@ -181,7 +182,7 @@ async def start_observer(ctx, stt_provider):
     No provider is auto-selected and no environment/model fallback is allowed.
     Tests exercise this with SDK objects and a stub session, not actual audio.
     """
-    if version("livekit-agents") != "1.8.3":
+    if version("livekit-agents") != VERIFIED_LIVEKIT_VERSION:
         raise ValueError("The voice hook requires the pinned, verified LiveKit SDK")
     if (not isinstance(stt_provider, stt.STT) or not stt_provider.capabilities.streaming or
             stt_provider.capabilities.aligned_transcript != "word"):

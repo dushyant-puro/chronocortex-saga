@@ -33,6 +33,13 @@ hashes. CI installs them into fresh environments and rejects metadata drift.
 Read the [locked environment runbook](docs/engineering/locked-environments.md)
 for supported targets, browser setup, reviewed updates, evidence and limits.
 
+The [dependency advisory gate](docs/engineering/dependency-advisories.md) checks
+all supported runtime, browser and isolated security-tool graphs against public
+PyPI advisory data. Missing or inconsistent evidence fails the gate. Its first
+online scan found a telemetry parsing advisory; the application locks now carry
+the compatible dependency fix. A complete scan with no known findings is not
+package-security certification or real provider/audio acceptance.
+
 For journal setup, protected offline credentials, running the console, browser
 tests, architecture, limitations, migration and rollback, read the
 [operator console runbook](docs/engineering/operator-control-console.md).
