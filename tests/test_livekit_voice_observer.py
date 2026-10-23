@@ -152,6 +152,17 @@ async def test_unconfigured_nonstreaming_host_fails_before_connection():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("sdk_version", ["1.8.3", "1.8.7", "9.0.0"])
+async def test_unverified_sdk_cannot_connect_even_if_installed(sdk_version, monkeypatch):
+    monkeypatch.setattr("voice.livekit_observer.version", lambda _: sdk_version)
+    class Context:
+        async def connect(self):
+            pytest.fail("Unverified SDK reached a voice connection")
+    with pytest.raises(ValueError, match="pinned, verified"):
+        await start_observer(Context(), None)
+
+
+@pytest.mark.asyncio
 async def test_legacy_entrypoint_and_mutation_helpers_are_closed_outside_simulation():
     from agent import CCSAgent, entrypoint
     from runtime.policy_engine import PolicyError

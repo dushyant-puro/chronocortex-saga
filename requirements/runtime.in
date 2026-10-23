@@ -1,7 +1,9 @@
-livekit-agents==1.8.3
-livekit-plugins-openai==1.8.3
+livekit-agents==1.8.8
+livekit-plugins-openai==1.8.8
 pytest==9.1.1
 pytest-asyncio==1.4.0
 starlette==1.9.0
 uvicorn==0.54.0
 httpx2==2.16.0
+# CVE-2026-114603 / GHSA-xcq7-p3pf-p88h: reject unbounded tracestate parsing.
+opentelemetry-api==1.45.1
