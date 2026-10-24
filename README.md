@@ -15,6 +15,9 @@ scoped approvals, records cancellation intent, and records investigation request
 The [recovery preflight](docs/engineering/recovery-preflight.md) independently
 inspects local journal consistency through a bounded read-only connection. It
 reports uncertainty without authorizing restore, dispatch or mutation replay.
+The [backup and restore-drill runbook](docs/engineering/journal-backup-drills.md)
+captures verified snapshot bundles and drills restoration into memory. Backup
+freshness and live recovery activation remain independent gates.
 It does not dispatch or retry provider mutations. Cancellation cannot roll back
 a remote effect; UNKNOWN evidence remains unresolved until authoritative
 reconciliation.

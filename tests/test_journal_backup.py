@@ -6,6 +6,7 @@ import sqlite3
 import struct
 import subprocess
 import sys
+import threading
 
 import pytest
 
@@ -164,3 +165,43 @@ def test_shared_posix_directory_refused(tmp_path):
     tmp_path.chmod(0o755)
     try: assert not backup.capture(path, target)['passed'] and not target.exists()
     finally: tmp_path.chmod(0o700)
+
+
+def test_writer_committing_during_capture_cannot_mix_snapshot_generations(tmp_path, monkeypatch):
+    path, _, _, target = setup(tmp_path)
+    connect = sqlite3.connect
+    with connect(path) as db:
+        before = db.execute('SELECT count(*) FROM security_events').fetchone()[0]
+    started, finished, errors = threading.Event(), threading.Event(), []
+    def write():
+        try:
+            with connect(path, timeout=5) as db:
+                db.execute("INSERT INTO security_events(kind,record) VALUES ('AFTER_SNAPSHOT','{}')")
+                db.execute('UPDATE security_clock SET last_seen_ms=last_seen_ms+1')
+                started.set()
+        except Exception as error:
+            errors.append(type(error).__name__)
+            started.set()
+        finally: finished.set()
+    worker = threading.Thread(target=write)
+    class SnapshotConnection(sqlite3.Connection):
+        def backup(self, destination, **kwargs):
+            worker.start()
+            assert started.wait(5)
+            # The writer has changed its private pages but cannot commit until
+            # the already-pinned source read transaction ends.
+            assert not finished.is_set()
+            return super().backup(destination, **kwargs)
+    def instrument(database, *args, **kwargs):
+        if str(database).startswith(path.resolve().as_uri()+'?'):
+            kwargs['factory'] = SnapshotConnection
+        return connect(database, *args, **kwargs)
+    monkeypatch.setattr(backup.sqlite3, 'connect', instrument)
+    try:
+        captured = backup.capture(path, target)
+    finally:
+        if worker.ident is not None: worker.join(6)
+    assert finished.is_set() and not errors and captured['passed']
+    assert captured['counts']['security_events'] == before
+    with connect(path) as db:
+        assert db.execute('SELECT count(*) FROM security_events').fetchone()[0] == before+1
