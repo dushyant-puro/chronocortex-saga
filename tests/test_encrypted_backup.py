@@ -95,7 +95,7 @@ def test_existing_encrypted_bundle_and_source_sidecars_never_overwritten(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_unknown_receipt_and_stale_encrypted_snapshot_never_authorize_replay(tmp_path):
+async def test_unknown_receipt_encrypted_snapshot_never_authorizes_replay(tmp_path):
     journal,key,bundle,storage,saga,action = setup(tmp_path)
     calls=[]
     async def execute(args):
@@ -161,3 +161,43 @@ def test_hard_linked_key_is_refused(tmp_path):
     journal,key,bundle,_,_,_=setup(tmp_path)
     os.link(key,key.parent/'alias.key')
     assert not encrypted.capture(journal,bundle,key)['passed'] and not bundle.exists()
+
+
+@pytest.mark.parametrize('operation', ['capture','drill'])
+def test_unavailable_crypto_backend_fails_with_sanitized_verdict(tmp_path,monkeypatch,operation):
+    from cryptography.exceptions import UnsupportedAlgorithm
+    journal,key,bundle,storage,_,_=setup(tmp_path)
+    if operation=='drill': assert encrypted.capture(journal,bundle,key)['passed']
+    def unavailable(*a,**k): raise UnsupportedAlgorithm('PRIVATE backend detail')
+    monkeypatch.setattr(Fernet,'encrypt' if operation=='capture' else 'decrypt',unavailable)
+    report=encrypted.capture(journal,bundle,key) if operation=='capture' else encrypted.drill(bundle,storage,key)
+    assert not report['passed'] and 'PRIVATE' not in json.dumps(report)
+    assert not list(storage.glob('.ccs-*'))
+    if operation=='capture': assert not bundle.exists()
+
+
+@pytest.mark.asyncio
+async def test_authenticated_old_snapshot_does_not_establish_freshness(tmp_path):
+    journal,key,bundle,storage,saga,action=setup(tmp_path)
+    assert encrypted.capture(journal,bundle,key)['passed']
+    async def execute(args): return {'receipt':'SIMULATED later effect'}
+    await saga.commit_write(action.action_id,execute)
+    report=encrypted.drill(bundle,storage,key)
+    assert report['passed'] and report['ciphertext_authenticated']
+    assert report['counts']['events']==1 and not report['freshness_verified'] and not report['restore_authorized']
+
+
+def test_documented_cli_round_trip_preserves_source_and_hides_secret(tmp_path):
+    journal,_,_=populate(tmp_path)
+    keys,storage=tmp_path/'keys',tmp_path/'storage'
+    keys.mkdir(mode=0o700); storage.mkdir(mode=0o700)
+    key,bundle=keys/'key01',storage/'snapshot.ccse'
+    before=journal.read_bytes()
+    commands=[('create-key','--key-file',str(key)),
+              ('capture','--journal',str(journal),'--bundle',str(bundle),'--key-file',str(key)),
+              ('drill','--bundle',str(bundle),'--workspace',str(storage),'--key-file',str(key))]
+    for command in commands:
+        result=subprocess.run([sys.executable,'-m','scripts.encrypted_backup',*command],capture_output=True,text=True)
+        assert result.returncode==0 and json.loads(result.stdout)['passed']
+        assert key.read_text() not in result.stdout+result.stderr
+    assert journal.read_bytes()==before

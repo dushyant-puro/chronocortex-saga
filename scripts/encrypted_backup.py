@@ -9,6 +9,7 @@ import stat
 import tempfile
 
 from cryptography.fernet import Fernet, InvalidToken
+from cryptography.exceptions import UnsupportedAlgorithm
 
 from runtime.credential_input import read_backup_key_file
 from scripts import journal_backup as plain
@@ -85,7 +86,7 @@ def capture(journal, bundle, key_file):
             plain.publish_no_clobber(pending, destination)
             report.update(passed=True, encrypted=True, counts=captured['counts'],
                           uncertain_actions=captured['uncertain_actions'])
-    except (OSError, ValueError, TypeError, KeyError, InvalidToken):
+    except (OSError, ValueError, TypeError, KeyError, InvalidToken, UnsupportedAlgorithm):
         report['passed'] = False
         report['failure'] = 'ENCRYPTED_BACKUP_UNVERIFIED'
     return report
@@ -110,7 +111,7 @@ def drill(bundle, workspace, key_file):
             report.update(passed=True, ciphertext_authenticated=True,
                           counts=restored['counts'], uncertain_actions=restored['uncertain_actions'],
                           restored_to_memory=True)
-    except (OSError, ValueError, TypeError, KeyError, InvalidToken):
+    except (OSError, ValueError, TypeError, KeyError, InvalidToken, UnsupportedAlgorithm):
         report['passed'] = False
         report['failure'] = 'ENCRYPTED_RESTORE_UNVERIFIED'
     return report
