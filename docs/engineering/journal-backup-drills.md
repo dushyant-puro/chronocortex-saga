@@ -1,5 +1,9 @@
 # Journal backup bundles and restore drills
 
+For new operational captures use the [authenticated encrypted backup path](encrypted-backups.md).
+The plaintext format below remains an explicit compatibility/forensic tool. An
+encrypted bundle is never automatically downgraded to this format.
+
 Status: **LOCAL BRANCH VERIFIED** implementation. Tests use real local SQLite
 files and **SIMULATED** external effects. Published-commit clean-checkout and
 Windows/Linux CI evidence belongs in the phase PR. No REAL PROVIDER or live-audio

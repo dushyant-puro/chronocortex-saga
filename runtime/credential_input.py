@@ -17,6 +17,11 @@ def read_stripe_key_file(path):
     return _read_private_secret(path, rb"rk_test_[A-Za-z0-9]{16,256}", 264)
 
 
+def read_backup_key_file(path):
+    """One generated Fernet key; no password, whitespace or environment fallback."""
+    return _read_private_secret(path, rb"[A-Za-z0-9_-]{43}=", 44).encode('ascii')
+
+
 def _read_private_secret(path, pattern, max_bytes):
     """Windows inherits the protected directory ACL; it is not certified here.
 
