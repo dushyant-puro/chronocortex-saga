@@ -73,6 +73,17 @@ def verdict(operation):
             'authenticity_verified': False}
 
 
+def publish_no_clobber(pending, destination):
+    """Publish a flushed file without replacing evidence; no copy fallback."""
+    os.link(pending, destination)
+    if os.name != 'nt':
+        descriptor = os.open(destination.parent, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+
 def capture(journal, bundle):
     report = verdict('CAPTURE')
     try:
@@ -104,13 +115,7 @@ def capture(journal, bundle):
                 os.fsync(stream.fileno())
             # Atomic no-clobber publication on supported local filesystems.
             # Never fall back to replace(), which could destroy existing evidence.
-            os.link(pending, destination)
-            if os.name != 'nt':
-                descriptor = os.open(parent, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
-                try:
-                    os.fsync(descriptor)
-                finally:
-                    os.close(descriptor)
+            publish_no_clobber(pending, destination)
             report.update(passed=True, snapshot_sha256=digest, snapshot_bytes=len(raw),
                           counts=evidence['counts'], uncertain_actions=evidence['uncertain_actions'])
     except (OSError, sqlite3.Error, ValueError, TypeError, KeyError, RecursionError):

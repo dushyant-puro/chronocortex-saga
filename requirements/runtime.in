@@ -7,3 +7,4 @@ uvicorn==0.54.0
 httpx2==2.16.0
 # CVE-2026-114603 / GHSA-xcq7-p3pf-p88h: reject unbounded tracestate parsing.
 opentelemetry-api==1.45.1
+cryptography==50.0.2
