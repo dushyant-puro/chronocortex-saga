@@ -18,6 +18,9 @@ reports uncertainty without authorizing restore, dispatch or mutation replay.
 The [backup and restore-drill runbook](docs/engineering/journal-backup-drills.md)
 captures verified snapshot bundles and drills restoration into memory. Backup
 freshness and live recovery activation remain independent gates.
+Use the [encrypted backup commands](docs/engineering/encrypted-backups.md) for new
+operational captures, with keys held outside backup storage. Ciphertext is
+authenticated before plaintext extraction; authentication does not prove freshness.
 It does not dispatch or retry provider mutations. Cancellation cannot roll back
 a remote effect; UNKNOWN evidence remains unresolved until authoritative
 reconciliation.
