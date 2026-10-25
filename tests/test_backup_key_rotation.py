@@ -103,7 +103,8 @@ def test_invalid_or_unchanged_keys_fail_before_plaintext(tmp_path, monkeypatch, 
 
 
 @pytest.mark.parametrize('location', ['source','destination','workspace'])
-def test_both_keys_must_be_outside_all_storage_and_workspace_trees(tmp_path, location):
+@pytest.mark.parametrize('key_index', [1,2])
+def test_both_keys_must_be_outside_all_storage_and_workspace_trees(tmp_path, location, key_index):
     values=list(prepared(tmp_path))
     if location=='source':
         new_storage=tmp_path/'new-storage'; new_storage.mkdir(mode=0o700)
@@ -114,8 +115,8 @@ def test_both_keys_must_be_outside_all_storage_and_workspace_trees(tmp_path, loc
         values[4]=new_storage/'rotated.ccse'
         key=new_storage/'colocated.key'
     else: key=values[5]/'colocated.key'
-    key.write_bytes(values[2].read_bytes()); key.chmod(0o600)
-    values[2]=key
+    key.write_bytes(values[key_index].read_bytes()); key.chmod(0o600)
+    values[key_index]=key
     assert not rotate(values)['passed'] and not values[4].exists()
 
 

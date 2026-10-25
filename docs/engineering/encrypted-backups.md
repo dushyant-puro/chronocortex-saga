@@ -66,9 +66,11 @@ if ($LASTEXITCODE -ne 0) { throw 'Encrypted restore drill unverified.' }
 The filenames identify a key generation without embedding key bytes. Keep that
 mapping in protected operational records. Losing the key makes retained bundles
 unreadable. Generating another key does not rotate existing bundles; keep old
-keys until every dependent bundle has been inventoried and migrated through a
-separately reviewed procedure. KMS/HSM integration and automated rotation are
-future gates, not features of this command.
+keys until every dependent bundle has been inventoried and migrated. The
+[offline rotation command](backup-key-rotation.md) validates and migrates one
+bundle to a separately named key/destination while preserving its original age
+and evidence. Key retirement, KMS/HSM custody and bulk rotation remain separate
+operational gates.
 
 ## Authentication and extraction boundary
 
