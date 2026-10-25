@@ -21,6 +21,9 @@ freshness and live recovery activation remain independent gates.
 Use the [encrypted backup commands](docs/engineering/encrypted-backups.md) for new
 operational captures, with keys held outside backup storage. Ciphertext is
 authenticated before plaintext extraction; authentication does not prove freshness.
+The [offline key-rotation runbook](docs/engineering/backup-key-rotation.md) migrates
+one validated encrypted bundle to a new key without overwriting the original or
+renewing the snapshot's age. Key retirement requires a separate inventory review.
 It does not dispatch or retry provider mutations. Cancellation cannot roll back
 a remote effect; UNKNOWN evidence remains unresolved until authoritative
 reconciliation.
