@@ -38,6 +38,18 @@ async def test_missing_epoch_notification_fails_current_validity_with_same_real_
 
 
 @pytest.mark.asyncio
+async def test_repetitions_preserve_raw_cells_and_do_not_inflate_scenario_diversity():
+    single=await comparison.evaluate()
+    repeated=await comparison.evaluate(2)
+    assert repeated['passed'] and repeated['cell_count']==40
+    assert repeated['plan_sha256']==single['plan_sha256']
+    for row in repeated['observations'][:20]: assert row['repetition']==0
+    for row in repeated['observations'][20:]: assert row['repetition']==1
+    for policy in comparison.POLICIES:
+        assert repeated['summaries'][policy]=={k:v*2 for k,v in single['summaries'][policy].items()}
+
+
+@pytest.mark.asyncio
 async def test_effect_oracle_is_independent_of_local_cancellation(tmp_path):
     endpoint=comparison.EffectLedger(tmp_path/'effects.db')
     task=asyncio.create_task(endpoint.execute({}))

@@ -110,3 +110,9 @@ explicitly SIMULATED. No new voice provider or microphone is enabled.
 Run `python -m eval.voice_replay` for the credential-free, deterministic voice
 protocol scorecard. Its bundled synthetic cases are separate from ASR quality
 and live audio acceptance.
+
+The [mutation comparison](docs/engineering/mutation-comparison.md) runs five
+deterministic schedules against two explicit toy policies, a production CCS
+epoch-signal ablation and the full mutation boundary. Independent simulated
+effect ledgers expose duplicates and false outcomes. Safe parking is reported
+separately from task completion; this is a small mechanism experiment.

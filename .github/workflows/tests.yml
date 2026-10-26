@@ -13,6 +13,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -53,6 +55,8 @@ jobs:
       PYTHONDONTWRITEBYTECODE: "1"
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -70,6 +74,7 @@ jobs:
       - run: ${{ matrix.python }} -m pytest -q -p no:cacheprovider
       - run: ${{ matrix.python }} -m eval.voice_replay --output results/voice-evidence-scorecard.json
       - run: ${{ matrix.python }} -m eval.provider_faults --output results/provider-process-scorecard.json
+      - run: ${{ matrix.python }} -m eval.mutation_comparison --output results/mutation-comparison.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -95,6 +100,14 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: simulated-mutation-comparison-${{ matrix.os }}
+          path: results/mutation-comparison.json
+          if-no-files-found: ignore
+          retention-days: 7
+
   browser:
     strategy:
       fail-fast: false
@@ -108,6 +121,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
