@@ -75,6 +75,7 @@ jobs:
       - run: ${{ matrix.python }} -m eval.voice_replay --output results/voice-evidence-scorecard.json
       - run: ${{ matrix.python }} -m eval.provider_faults --output results/provider-process-scorecard.json
       - run: ${{ matrix.python }} -m eval.mutation_comparison --output results/mutation-comparison.json
+      - run: ${{ matrix.python }} -m eval.durable_tasks --output results/durable-tasks.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -105,6 +106,14 @@ jobs:
         with:
           name: simulated-mutation-comparison-${{ matrix.os }}
           path: results/mutation-comparison.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: simulated-durable-tasks-${{ matrix.os }}
+          path: results/durable-tasks.json
           if-no-files-found: ignore
           retention-days: 7
 
