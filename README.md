@@ -116,3 +116,7 @@ deterministic schedules against two explicit toy policies, a production CCS
 epoch-signal ablation and the full mutation boundary. Independent simulated
 effect ledgers expose duplicates and false outcomes. Safe parking is reported
 separately from task completion; this is a small mechanism experiment.
+The [durable-task evaluation](docs/engineering/durable-task-evaluation.md) extends
+this to real three-step supervised workflows, voice/task isolation, consumer
+disconnects, explicit cancellation and conservative reconstruction. It reports
+completed, parked and cancelled simulated tasks separately.
