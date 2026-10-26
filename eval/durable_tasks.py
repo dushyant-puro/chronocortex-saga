@@ -186,6 +186,8 @@ async def run_case(directory,case):
             if case=='restart_unknown_second':
                 stopped=await host.stop()
                 stop_reports.append(stopped.drained and stopped.lease_released)
+                if not stop_reports[-1]:
+                    raise ValueError('Original worker lifetime unverified; reconstruction denied')
                 host=WorkerSupervisor(journal(),credential.token)
                 runtime=await host.start(factory)
                 task=runtime.tasks.restore_task(original_id,steps=definitions(),workflow=WORKFLOW)

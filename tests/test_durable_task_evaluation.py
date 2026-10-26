@@ -1,6 +1,7 @@
 """Real task/saga/supervisor boundary with independent SIMULATED effect evidence."""
 import asyncio
 import copy
+from dataclasses import replace
 from pathlib import Path
 import subprocess
 import sys
@@ -122,6 +123,28 @@ async def test_unverified_worker_lifetime_preserves_private_evidence(tmp_path,mo
         with pytest.raises(RuntimeError): await evaluation.evaluate()
     else: assert not (await evaluation.evaluate())['passed']
     assert len(roots)==1 and roots[0].is_dir()
+
+
+@pytest.mark.asyncio
+async def test_reconstruction_does_not_start_a_second_host_after_unverified_stop(tmp_path,monkeypatch):
+    started=[]
+    start=evaluation.WorkerSupervisor.start
+    stop=evaluation.WorkerSupervisor.stop
+    async def observe(self,*args,**kwargs):
+        started.append(self)
+        return await start(self,*args,**kwargs)
+    async def unverified(self,*args,**kwargs):
+        report=await stop(self,*args,**kwargs)
+        return replace(report,drained=False,lease_released=False)
+    monkeypatch.setattr(evaluation.WorkerSupervisor,'start',observe)
+    monkeypatch.setattr(evaluation.WorkerSupervisor,'stop',unverified)
+    directory=tmp_path/'reconstruction'
+    with pytest.raises(ValueError,match='reconstruction denied'):
+        await evaluation.run_case(directory,'restart_unknown_second')
+    assert len(started)==1
+    assert (directory/'journal.db').is_file() and (directory/'effects.db').is_file()
+    with evaluation.closing(evaluation.sqlite3.connect(directory/'effects.db')) as db:
+        assert db.execute('SELECT step FROM effects ORDER BY seq').fetchall()==[(0,),(1,)]
 
 
 def test_cli_never_overwrites_an_existing_report(tmp_path):

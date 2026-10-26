@@ -57,6 +57,8 @@ wait is distinct from cancelling the durable objective.
 Reconstruction occurs only after the original call stops and the first host
 drains/releases its lease. A new journal and supervisor acquire a new lease
 generation, hydrate the matching workflow and resume conservatively. The
+evaluator refuses to start that second host if the original stop is unverified.
+The
 first historical receipt remains available, but its loaded action is stale;
 both prior steps park and the task index returns to zero. Retained evidence
 does not restore current dispatch authority. This is controlled reconstruction,
