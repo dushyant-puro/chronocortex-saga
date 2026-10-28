@@ -28,7 +28,10 @@ jobs:
           .venv/bin/python -m pip --isolated --disable-pip-version-check install
           --require-hashes --only-binary=:all: --report results/install-security.json -r requirements-security.txt
       - run: .venv/bin/python -m scripts.dependency_audit --profile security --output results/environment-security.json
-      - run: .venv/bin/python -m pip --isolated --disable-pip-version-check download --no-deps --require-hashes --only-binary=:all: --dest results/wheel-source -r requirements-security.txt
+      - run: >-
+          .venv/bin/python -m pip --isolated --disable-pip-version-check download
+          --no-deps --require-hashes --only-binary=:all:
+          --dest results/wheel-source -r requirements-security.txt
       - run: .venv/bin/python -m scripts.wheelhouse capture --profile security --source results/wheel-source --output results/offline-wheels
       - run: .venv/bin/python -m scripts.wheelhouse verify --profile security --directory results/offline-wheels
       - run: .venv/bin/python -m scripts.advisory_audit --output results/dependency-advisories.json
@@ -75,7 +78,10 @@ jobs:
           --require-hashes --only-binary=:all: --report results/install-runtime.json -r requirements.txt
       - run: ${{ matrix.python }} -m pip --isolated check
       - run: ${{ matrix.python }} -m scripts.dependency_audit --profile runtime --output results/environment-runtime.json
-      - run: ${{ matrix.python }} -m pip --isolated --disable-pip-version-check download --no-deps --require-hashes --only-binary=:all: --dest results/wheel-source -r requirements.txt
+      - run: >-
+          ${{ matrix.python }} -m pip --isolated --disable-pip-version-check download
+          --no-deps --require-hashes --only-binary=:all:
+          --dest results/wheel-source -r requirements.txt
       - run: ${{ matrix.python }} -m scripts.wheelhouse capture --profile runtime --source results/wheel-source --output results/offline-wheels
       - run: ${{ matrix.python }} -m scripts.wheelhouse verify --profile runtime --directory results/offline-wheels
       - run: ${{ matrix.python }} -m pytest -q -p no:cacheprovider
@@ -154,7 +160,10 @@ jobs:
           --require-hashes --only-binary=:all: --report results/install-browser.json -r requirements-browser.txt
       - run: ${{ matrix.python }} -m pip --isolated check
       - run: ${{ matrix.python }} -m scripts.dependency_audit --profile browser --output results/environment-browser.json
-      - run: ${{ matrix.python }} -m pip --isolated --disable-pip-version-check download --no-deps --require-hashes --only-binary=:all: --dest results/wheel-source -r requirements-browser.txt
+      - run: >-
+          ${{ matrix.python }} -m pip --isolated --disable-pip-version-check download
+          --no-deps --require-hashes --only-binary=:all:
+          --dest results/wheel-source -r requirements-browser.txt
       - run: ${{ matrix.python }} -m scripts.wheelhouse capture --profile browser --source results/wheel-source --output results/offline-wheels
       - run: ${{ matrix.python }} -m scripts.wheelhouse verify --profile browser --directory results/offline-wheels
       - run: ${{ matrix.python }} -m playwright install --with-deps chromium
