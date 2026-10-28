@@ -57,7 +57,7 @@ def pinned_requirement(text):
         raise LockError("LOCK_PIN_INVALID") from None
 
 
-def parse_lock(text, *, require_policy=True):
+def parse_lock_records(text, *, require_policy=True):
     """Small strict subset of pip syntax; packaging owns PEP 508 semantics."""
     if type(text) is not str or len(text) > 1_048_576:
         raise LockError("LOCK_CAPACITY_EXCEEDED")
@@ -83,10 +83,15 @@ def parse_lock(text, *, require_policy=True):
         if (not hashes or len(set(hashes)) != len(hashes) or
                 any(re.fullmatch(r"--hash=sha256:[0-9a-f]{64}", value) is None for value in hashes)):
             raise LockError("LOCK_HASH_INVALID")
-        entries.append(pinned_requirement(head))
+        entries.append((pinned_requirement(head), frozenset(value.removeprefix('--hash=sha256:') for value in hashes)))
     if pending or not entries or (require_policy and options != OPTIONS):
         raise LockError("LOCK_POLICY_INCOMPLETE")
     return entries
+
+
+def parse_lock(text, *, require_policy=True):
+    """Compatibility view for resolvers/audits that do not consume archive bytes."""
+    return [entry for entry, _ in parse_lock_records(text, require_policy=require_policy)]
 
 
 def direct_inputs(root, profile):
