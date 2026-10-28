@@ -274,6 +274,33 @@ def test_stale_review_is_rejected_without_optimistic_cancellation(console):
     assert env.journal.load_task(env.task.task_id)[1]["state"] != "CANCELLED"
 
 
+def test_transient_read_notice_clears_only_after_fresh_snapshot(console):
+    env, page, _, _ = console
+    connect(env, page)
+    inspect(page, "actions", env.pending.action_id)
+    attempts = []
+    page.on("request", lambda request: attempts.append(request) if request.method == "POST" else None)
+    def unavailable(route):
+        route.fulfill(status=503, content_type="application/json",
+                      body='{"error":{"code":"journal_unavailable","message":"SIMULATED transient journal read failure"}}')
+    page.route("**/api/snapshot", unavailable)
+    page.get_by_role("button", name="Refresh", exact=True).click()
+    expect(page.locator("#notice")).to_contain_text("SIMULATED transient journal read failure")
+    expect(page.locator("#stale-banner")).to_be_visible()
+    # A record read alone does not restore global authority/evidence freshness.
+    inspect(page, "actions", env.pending.action_id)
+    expect(page.locator("#notice")).to_be_visible()
+    expect(page.get_by_role("button", name="Approve forward operation", exact=True)).to_be_disabled()
+    page.get_by_role("button", name="Refresh", exact=True).click()
+    expect(page.locator("#notice")).to_be_visible()
+    page.unroute("**/api/snapshot", unavailable)
+    page.get_by_role("button", name="Refresh", exact=True).click()
+    expect(page.locator("#sync-state")).to_have_text("Journal read current")
+    expect(page.locator("#notice")).to_be_hidden()
+    expect(page.get_by_role("button", name="Approve forward operation", exact=True)).to_be_enabled()
+    assert not attempts
+
+
 def test_changed_evidence_notice_clears_only_after_successful_detail_read(console):
     env, page, context, _ = console
     connect(env, page)
@@ -293,7 +320,8 @@ def test_changed_evidence_notice_clears_only_after_successful_detail_read(consol
     expect(page.locator("#notice")).to_be_hidden()
 
 
-def test_unavailable_post_response_is_never_automatically_retried(console):
+@pytest.mark.parametrize("failure", ["network", "invalid_json"])
+def test_unavailable_post_response_is_never_automatically_retried(console, failure):
     env, page, _, _ = console
     connect(env, page)
     inspect(page, "actions", env.unknown.action_id)
@@ -302,12 +330,22 @@ def test_unavailable_post_response_is_never_automatically_retried(console):
         attempts.append(route.request.post_data)
         response = route.fetch()
         assert response.status == 202
-        route.abort("failed")
+        if failure == "network":
+            route.abort("failed")
+        else:
+            route.fulfill(status=200, content_type="application/json", body="NOT JSON: SIMULATED lost receipt")
     page.route("**/api/commands/reconcile/*", lose_response)
     page.get_by_role("button", name="Request reconciliation", exact=True).click()
     confirm(page)
     expect(page.locator("#notice")).to_contain_text("No automatic retry was sent")
     page.unroute("**/api/commands/reconcile/*", lose_response)
+    notice_before = page.locator("#notice").text_content()
+    page.route("**/api/snapshot", lambda route: route.fulfill(status=503, content_type="application/json",
+               body='{"error":{"code":"journal_unavailable","message":"SIMULATED read failure after uncertain decision"}}'))
+    page.get_by_role("button", name="Refresh", exact=True).click()
+    expect(page.locator("#stale-banner")).to_be_visible()
+    expect(page.locator("#notice")).to_have_text(notice_before)
+    page.unroute("**/api/snapshot")
     page.get_by_role("button", name="Refresh", exact=True).click()
     page.locator("#navigation").get_by_role("button", name="Decision history").click()
     expect(page.locator("#record-content")).to_contain_text("REQUESTED")
@@ -315,6 +353,30 @@ def test_unavailable_post_response_is_never_automatically_retried(console):
     expect(page.locator("#notice")).to_contain_text("No automatic retry was sent")
     assert len(attempts) == 1
     assert env.journal.records()[1][1]["state"] == "IN_FLIGHT_UNKNOWN"
+
+
+def test_old_detail_read_failure_cannot_poison_a_new_operator_session(console):
+    env, page, _, _ = console
+    connect(env, page)
+    pending = []
+    pattern = "**/api/records/actions/*"
+    page.route(pattern, lambda route: pending.append(route))
+    page.locator("#lookup-kind").select_option("actions")
+    page.locator("#lookup-id").fill(env.pending.action_id)
+    with page.expect_request("**/api/records/actions/*"):
+        page.locator("#lookup").get_by_role("button", name="Inspect").click()
+    assert len(pending) == 1
+    page.get_by_role("button", name="Disconnect", exact=True).click()
+    expect(page.locator("#connect")).to_be_visible()
+    connect(env, page, env.viewer)
+    with page.expect_response("**/api/records/actions/*"):
+        pending[0].fulfill(status=503, content_type="application/json",
+                           body='{"error":{"code":"journal_unavailable","message":"OLD SESSION ERROR"}}')
+    page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+    expect(page.locator("#principal")).to_have_text("viewer")
+    expect(page.locator("#sync-state")).to_have_text("Journal read current")
+    expect(page.locator("#notice")).to_be_hidden()
+    page.unroute(pattern)
 
 
 def test_untrusted_evidence_is_text_and_viewer_is_read_only(console):

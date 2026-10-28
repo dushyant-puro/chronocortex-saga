@@ -73,6 +73,22 @@ function notice(message, error = false, reason = "") {
   node.hidden = !message;
 }
 
+function readNotice(message, reason) {
+  // A later GET cannot settle an uncertain command or erase its operation ID.
+  if ($("#notice").dataset.reason !== "decision_unconfirmed")
+    notice(message, true, reason);
+}
+
+function unavailable(body) {
+  const error = new Error(
+    body === undefined
+      ? "The journal could not be read."
+      : "The decision response is unavailable. Read decision history before another request. No automatic retry was sent.",
+  );
+  error.network = true;
+  return error;
+}
+
 async function api(path, body) {
   let response;
   try {
@@ -91,15 +107,15 @@ async function api(path, body) {
       signal: AbortSignal.timeout(10000),
     });
   } catch {
-    const error = new Error(
-      body === undefined
-        ? "The journal could not be read."
-        : "The decision response is unavailable. Read decision history before another request. No automatic retry was sent.",
-    );
-    error.network = true;
-    throw error;
+    throw unavailable(body);
   }
-  const data = response.status === 204 ? null : await response.json();
+  let data;
+  try {
+    data = response.status === 204 ? null : await response.json();
+  } catch {
+    // Receipt parsing can fail after a command has already been recorded.
+    throw unavailable(body);
+  }
   if (!response.ok) {
     const error = new Error(
       data?.error?.message || "The request could not be completed.",
@@ -192,9 +208,8 @@ async function refresh() {
           $("#decision-dialog").close();
           state.decision = null;
         }
-        notice(
+        readNotice(
           "Selected evidence changed. Refresh the evidence panel before deciding.",
-          true,
           "evidence_changed",
         );
       }
@@ -203,12 +218,14 @@ async function refresh() {
     state.failures = 0;
     render();
     freshness(true);
+    if ($("#notice").dataset.reason === "read_unavailable") notice("");
     $("#read-time").textContent =
       `Server read · ${time(state.snapshot.server_time_ms)}`;
   } catch (error) {
     state.failures += 1;
     freshness(false);
-    if (state.session) notice(error.message, true);
+    if (state.session)
+      readNotice(error.message, error.network || error.status >= 500 ? "read_unavailable" : "read_error");
   } finally {
     state.reading = false;
     $("#refresh").disabled = false;
@@ -629,7 +646,8 @@ async function inspect(kind, id) {
     title.focus();
     if (window.innerWidth < 1150) detail.scrollIntoView({ block: "start" });
   } catch (error) {
-    notice(error.message, true);
+    if (state.inspection !== inspection || state.session !== identity) return;
+    readNotice(error.message, error.network || error.status >= 500 ? "read_unavailable" : "read_error");
     if (error.network || error.status >= 500) freshness(false);
   }
 }
@@ -720,6 +738,7 @@ $("#decision-form").addEventListener("submit", async (event) => {
       notice(
         `${error.message} Operation ID: ${current.body.operation_id}`,
         true,
+        error.code === "stale_review" ? "evidence_changed" : "decision_unconfirmed",
       );
       freshness(false);
     }
