@@ -124,6 +124,42 @@ def test_reviewed_hash_does_not_replace_metadata_and_layout_validation(tmp_path,
     assert not (tmp_path/'escape').exists()
 
 
+@pytest.mark.parametrize('approval',['bound','unknown','renamed','wrong_digest'])
+def test_broad_platform_metadata_requires_an_explicit_filename_and_digest_pair(tmp_path,monkeypatch,approval):
+    root,source,target,hashes=setup(tmp_path)
+    policy=wheels.context('runtime',root)
+    tag=next(t for t in sorted(policy['tags'],key=str) if t.interpreter=='py3' and t.abi=='none' and t.platform!='any')
+    filename=f'sample-1.0-{tag}.whl'
+    sample=source/'sample-1.0-py3-none-any.whl'; sample.rename(source/filename)
+    reviewed={} if approval=='unknown' else {filename:'0'*64 if approval=='wrong_digest' else hashes['sample']}
+    monkeypatch.setattr(wheels,'BROAD_PLATFORM_METADATA',reviewed)
+    if approval=='renamed':
+        (source/filename).rename(source/f'sample-1.0-1-{tag}.whl')
+    report=wheels.capture(source,target,'runtime',root=root)
+    if approval!='bound':
+        assert not report['passed'] and not target.exists()
+        return
+    assert report['passed'] and report['metadata_tag_exceptions']==1
+    manifest=target/wheels.MANIFEST; data=json.loads(manifest.read_text())
+    assert data['schema']==2 and sum('metadata_tag_exception' in r for r in data['wheels'])==1
+    assert wheels.verify(target,'runtime',root=root)['passed']
+    # A disclosed compatibility record cannot be stripped into strict schema 1.
+    data['schema']=1
+    for record in data['wheels']: record.pop('metadata_tag_exception',None)
+    manifest.write_text(json.dumps(data))
+    assert not wheels.verify(target,'runtime',root=root)['passed']
+
+
+def test_filename_approval_cannot_waive_python_or_abi_metadata(tmp_path,monkeypatch):
+    root,source,target,hashes=setup(tmp_path)
+    policy=wheels.context('runtime',root)
+    tag=next(t for t in sorted(policy['tags'],key=str) if t.interpreter=='cp313' and t.abi=='cp313' and t.platform!='any')
+    filename=f'sample-1.0-{tag}.whl'
+    (source/'sample-1.0-py3-none-any.whl').rename(source/filename)
+    monkeypatch.setattr(wheels,'BROAD_PLATFORM_METADATA',{filename:hashes['sample']})
+    assert not wheels.capture(source,target,'runtime',root=root)['passed'] and not target.exists()
+
+
 @pytest.mark.parametrize('mutation',['tampered','missing','extra','target','profile','lock','version','bool_schema','float_size','duplicate_key','nonfinite'])
 def test_complete_archive_rejects_drift_and_ambiguous_manifest(tmp_path,mutation):
     root,source,target,_=setup(tmp_path)

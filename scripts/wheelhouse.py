@@ -27,6 +27,15 @@ MAX_WHEEL = 256 * 1024 * 1024
 MAX_TOTAL = 1024 * 1024 * 1024
 MAX_METADATA = 1024 * 1024
 MAX_MANIFEST = 256 * 1024
+# These reviewed, already-locked artifacts contain universal internal tags but
+# platform-specific payloads/filenames. Bind BOTH filename and bytes; never allow
+# arbitrary retagging or a broad metadata/ABI compatibility fallback.
+# Source: https://pypi.org/pypi/playwright/1.64.0/json
+BROAD_PLATFORM_METADATA = {
+    'playwright-1.64.0-py3-none-win_amd64.whl': '2c14d105548876b15bea5e7eca77bf0d8ff4ba0c607c1ae931067f3d1b010369',
+    'playwright-1.64.0-py3-none-manylinux1_x86_64.whl': '5a59af1b230b234008524a5d42b613b233d4256f73bc1dd25bf3f11db0c81b75',
+}
+TAG_NOTE = 'reviewed-platform-filename'
 
 
 def need(condition):
@@ -136,10 +145,16 @@ def inspect_wheel(path,policy):
             need(wheel.get_all('Wheel-Version')==['1.0'])
             declared=set()
             for value in wheel.get_all('Tag',[]): declared.update(parse_tag(str(value)))
-            need(declared==tags)
+            exception=declared!=tags
+            if exception:
+                need(BROAD_PLATFORM_METADATA.get(path.name)==checksum and
+                     declared==parse_tag('py3-none-any') and
+                     all(t.interpreter=='py3' and t.abi=='none' and t.platform!='any' for t in tags))
         after=os.fstat(stream.fileno())
         need((before.st_size,before.st_mtime_ns)==(after.st_size,after.st_mtime_ns))
-    return {'filename':path.name,'name':name,'version':version,'bytes':size,'sha256':checksum}
+    record={'filename':path.name,'name':name,'version':version,'bytes':size,'sha256':checksum}
+    if exception: record['metadata_tag_exception']=TAG_NOTE
+    return record
 
 
 def inventory(directory,policy,*,closed=False):
@@ -155,7 +170,8 @@ def inventory(directory,policy,*,closed=False):
 
 
 def document(policy,records):
-    return {'schema':1,'profile':policy['profile'],'target':policy['target'],
+    schema=2 if any('metadata_tag_exception' in r for r in records) else 1
+    return {'schema':schema,'profile':policy['profile'],'target':policy['target'],
             'lock_sha256':policy['lock_sha256'],'inputs_sha256':policy['inputs_sha256'],'wheels':records}
 
 
@@ -175,11 +191,13 @@ def verify_archive(directory,policy):
         raw=stream.read(MAX_MANIFEST+1)
     need(len(raw)<=MAX_MANIFEST)
     data=json.loads(raw,object_pairs_hook=pairs,parse_constant=reject)
-    need(type(data) is dict and type(data.get('schema')) is int and data['schema']==1)
+    need(type(data) is dict and type(data.get('schema')) is int and data['schema'] in (1,2))
     records=data.get('wheels')
     need(type(records) is list and 0<len(records)<=MAX_FILES)
     for record in records:
-        need(type(record) is dict and set(record)=={'filename','name','version','bytes','sha256'})
+        fields={'filename','name','version','bytes','sha256'}
+        need(type(record) is dict and (set(record)==fields or
+             (data['schema']==2 and set(record)==fields|{'metadata_tag_exception'} and record['metadata_tag_exception']==TAG_NOTE)))
         need(type(record['bytes']) is int and 0<record['bytes']<=MAX_WHEEL)
         need(all(type(record[k]) is str for k in ('filename','name','version','sha256')))
     actual=inventory(directory,policy,closed=True)
@@ -200,7 +218,8 @@ def verify(directory,profile,*,root=audit.ROOT):
     try:
         policy=context(profile,root)
         records=verify_archive(directory,policy)
-        report.update(passed=True,wheel_count=len(records),total_bytes=sum(r['bytes'] for r in records),lock_sha256=policy['lock_sha256'])
+        report.update(passed=True,wheel_count=len(records),total_bytes=sum(r['bytes'] for r in records),lock_sha256=policy['lock_sha256'],
+                      metadata_tag_exceptions=sum('metadata_tag_exception' in r for r in records))
     except ERRORS: report['failure']='WHEELHOUSE_UNVERIFIED'
     return report
 
@@ -233,7 +252,8 @@ def capture(source,output,profile,*,root=audit.ROOT):
                 descriptor=os.open(directory,os.O_RDONLY|getattr(os,'O_DIRECTORY',0))
                 try: os.fsync(descriptor)
                 finally: os.close(descriptor)
-        report.update(passed=True,wheel_count=len(records),total_bytes=sum(r['bytes'] for r in records),lock_sha256=policy['lock_sha256'])
+        report.update(passed=True,wheel_count=len(records),total_bytes=sum(r['bytes'] for r in records),lock_sha256=policy['lock_sha256'],
+                      metadata_tag_exceptions=sum('metadata_tag_exception' in r for r in records))
     except ERRORS: report['failure']='WHEELHOUSE_UNVERIFIED'
     return report
 

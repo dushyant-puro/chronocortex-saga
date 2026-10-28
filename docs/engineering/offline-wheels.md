@@ -77,11 +77,26 @@ authorize a wheel even when both packages share the same version number.
 
 Each wheel is bounded and hashed before ZIP/header parsing. Package name/version,
 single metadata directory, supported wheel format, declared tags, host-compatible
-filename tags and `Requires-Python` must agree. Duplicate ZIP members, traversal
+filename tags and `Requires-Python` are checked. Duplicate ZIP members, traversal
 paths, symlink entries, encrypted entries and oversized metadata are rejected.
 No ZIP member is extracted. These checks use the
 [PyPA wheel format](https://packaging.python.org/en/latest/specifications/binary-distribution-format/)
 and [packaging's filename parser](https://packaging.pypa.io/en/stable/utils.html#packaging.utils.parse_wheel_filename).
+
+The two pinned Playwright 1.64.0 Windows-x64/Linux-x64 wheels have broad
+`py3-none-any` internal metadata despite their platform-specific filenames. A
+reviewed exception binds each **exact filename and SHA-256**, checked against the
+lock and [release inventory](https://pypi.org/pypi/playwright/1.64.0/json). Filename
+host compatibility remains mandatory. No other hash/name pair, arbitrary
+retagging, Python/ABI mismatch or future version receives this exception. A
+renamed Linux payload therefore cannot be accepted as its Windows counterpart.
+Unknown mismatches fail closed. Future lock upgrades require explicit review.
+
+Strict archives retain schema 1 compatibility. An archive using the reviewed
+exception uses schema 2, discloses `metadata_tag_exception` on that wheel and
+reports the exception count. The note cannot be removed to masquerade as strict
+schema 1. This handles known packaging metadata without relaxing package hashes
+or pretending to certify upstream wheel conformance or publisher identity.
 
 Limits are 256 packages, 256 MiB per wheel, 1 GiB total archive bytes, 1 MiB per
 metadata member and 256 KiB for the manifest. Reviewed hashes narrow which ZIP
