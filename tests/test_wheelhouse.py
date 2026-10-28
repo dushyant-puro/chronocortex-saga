@@ -230,6 +230,21 @@ def test_corruption_during_copy_never_gets_a_completion_manifest(tmp_path,monkey
     assert target.is_dir() and not (target/wheels.MANIFEST).exists()
 
 
+def test_source_growth_cannot_exceed_the_validated_copy_budget(tmp_path,monkeypatch):
+    root,source,target,_=setup(tmp_path)
+    sample=source/'sample-1.0-py3-none-any.whl'; expected=sample.stat().st_size
+    original=wheels.inventory; changed=[]
+    def grow(directory,*args,**kwargs):
+        result=original(directory,*args,**kwargs)
+        if Path(directory)==source and not changed:
+            changed.append(True)
+            sample.write_bytes(sample.read_bytes()+b'X'*(2*1024*1024))
+        return result
+    monkeypatch.setattr(wheels,'inventory',grow)
+    assert not wheels.capture(source,target,'runtime',root=root)['passed']
+    assert (target/sample.name).stat().st_size<=expected and not (target/wheels.MANIFEST).exists()
+
+
 def test_real_offline_install_requires_exact_archives_and_no_index(tmp_path):
     root,source,target,_=setup(tmp_path)
     assert wheels.capture(source,target,'runtime',root=root)['passed']

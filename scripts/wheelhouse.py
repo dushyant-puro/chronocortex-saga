@@ -218,8 +218,9 @@ def capture(source,output,profile,*,root=audit.ROOT):
             with reader(source/record['filename']) as incoming, (destination/record['filename']).open('xb') as outgoing:
                 size=0
                 while raw:=incoming.read(1024*1024):
-                    size+=len(raw); need(size<=MAX_WHEEL)
+                    size+=len(raw); need(size<=record['bytes'])
                     outgoing.write(raw)
+                need(size==record['bytes'])
                 outgoing.flush(); os.fsync(outgoing.fileno())
         need(inventory(destination,policy)==records)
         metadata=json.dumps(document(policy,records),sort_keys=True,indent=2,allow_nan=False).encode()+b'\n'
