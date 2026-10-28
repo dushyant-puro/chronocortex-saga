@@ -9,6 +9,8 @@ at `4162ec17f4bda15c13de3fa1f0e1e33e3fe35591`; the safety PRs are unmerged.
 Provider-effect tests are **SIMULATED**. **REAL PROVIDER** acceptance has not been
 run, and the live voice test remains a skipped placeholder. This is not a production-readiness
 claim.
+The [production-readiness ledger](docs/engineering/production-readiness.md) tracks
+the seven remaining acceptance areas, required evidence and external-access gates.
 
 The console reads the SQLite journal, reviews exact operation evidence, issues
 scoped approvals, records cancellation intent, and records investigation requests.
@@ -44,6 +46,8 @@ Both runtime and browser requirements now lock the transitive graph and archive
 hashes. CI installs them into fresh environments and rejects metadata drift.
 Read the [locked environment runbook](docs/engineering/locked-environments.md)
 for supported targets, browser setup, reviewed updates, evidence and limits.
+The [offline-wheel guide](docs/engineering/offline-wheels.md) captures and verifies
+exact host-compatible archives for recovery without relying on a live index.
 
 The [dependency advisory gate](docs/engineering/dependency-advisories.md) checks
 all supported runtime, browser and isolated security-tool graphs against public
