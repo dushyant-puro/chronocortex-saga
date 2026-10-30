@@ -150,7 +150,7 @@ def test_drill_failure_constructor_never_accepts_arbitrary_diagnostic_text(code)
 
 
 @pytest.mark.parametrize("category,expected", [("SQLITE_BUSY", "SQLITE_BUSY"), ("PRIVATE PEER TEXT", "UNCLASSIFIED"), (True, "UNCLASSIFIED")])
-def test_peer_failure_transmits_only_allowlisted_category(category, expected):
+def test_peer_failure_transmits_only_allowlisted_category(category, expected, caplog):
     import queue
     peer = object.__new__(evaluation.Peer)
     peer.role = "worker"
@@ -161,9 +161,11 @@ def test_peer_failure_transmits_only_allowlisted_category(category, expected):
     assert failure.value.code == "PEER_ENDED_BEFORE_BARRIER"
     assert failure.value.diagnostic == {"category": expected, "peer_role": "worker", "wait": "BARRIER", "expected_event": "READY"}
     assert "PRIVATE" not in json.dumps(failure.value.diagnostic)
+    assert "PRIVATE" not in caplog.text
+    assert "SIMULATED peer failure" in caplog.text
 
 
-def test_peer_exit_timeout_reports_role_and_wait_without_process_arguments():
+def test_peer_exit_timeout_reports_role_and_wait_without_process_arguments(caplog):
     from types import SimpleNamespace
     def expired(**kwargs):
         assert kwargs == {"timeout": 20}  # Existing acceptance budget is unchanged.
@@ -176,6 +178,16 @@ def test_peer_exit_timeout_reports_role_and_wait_without_process_arguments():
     assert failure.value.code == "PEER_EXIT_TIMEOUT"
     assert failure.value.diagnostic == {"category": "TIMEOUT", "peer_role": "recover", "wait": "EXIT", "expected_event": None}
     assert "PRIVATE" not in str(failure.value)
+    assert "'peer_role': 'recover'" in caplog.text and "'wait': 'EXIT'" in caplog.text
+    assert "PRIVATE" not in caplog.text
+
+
+def test_peer_diagnostic_sink_failure_preserves_timeout(monkeypatch):
+    def broken(*_, **__): raise RuntimeError("PRIVATE LOGGER PAYLOAD")
+    monkeypatch.setattr(evaluation.logger, "error", broken)
+    peer = object.__new__(evaluation.Peer); peer.role = "recover"
+    failure = peer.failure("PEER_EXIT_TIMEOUT", wait="EXIT", category="TIMEOUT")
+    assert failure.code == "PEER_EXIT_TIMEOUT" and failure.diagnostic["category"] == "TIMEOUT"
 
 
 def test_real_peer_exception_returns_only_a_safe_category(tmp_path):

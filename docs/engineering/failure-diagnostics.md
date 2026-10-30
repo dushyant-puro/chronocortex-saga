@@ -42,6 +42,9 @@ the existing 20-second wait and reports `TIMEOUT`; it does not explain why the
 process was slow. Unrecognized exception text or arbitrary peer labels cannot
 become report data. Parent exceptions retain a category without invented peer
 context. The harness fingerprint now also includes the classifier source.
+Direct pytest callers also get this closed peer context in captured error logs,
+so a failure before scorecard generation does not lose the role/wait evidence.
+An ordinary peer diagnostic-sink failure cannot replace the original failure.
 
 Successful-case schema and the aggregate CLI summary remain compatible. Failure
 diagnostics are additive schema-1 fields; strict consumers must allow these

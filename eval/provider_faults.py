@@ -8,6 +8,7 @@ import argparse
 from contextlib import closing, ExitStack
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import platform
@@ -33,6 +34,7 @@ from runtime.failure_diagnostics import CATEGORIES, classify_failure
 CASES = ("lost_response_after_apply", "worker_killed_after_apply", "worker_killed_before_dispatch",
          "request_discarded_before_forward", "effect_hidden_from_status_reads")
 ROOT = Path(__file__).resolve().parent.parent
+logger = logging.getLogger("ccs.eval.provider_faults")
 
 
 class DrillFailure(RuntimeError):
@@ -52,6 +54,16 @@ class DrillFailure(RuntimeError):
 
 
 class Peer:
+    def failure(self, code, **details):
+        failure = DrillFailure(code, role=self.role, **details)
+        # Direct pytest callers may fail before score() writes JSON. Preserve
+        # the same bounded context in captured logs, never raw peer stderr.
+        try:
+            logger.error("SIMULATED peer failure; code=%s diagnostic=%s", failure.code, failure.diagnostic)
+        except Exception:
+            pass
+        return failure
+
     def __init__(self, role, *arguments):
         self.role = role
         env = os.environ.copy()
@@ -92,7 +104,7 @@ class Peer:
             self.process.stdin.write(command + "\n")
             self.process.stdin.flush()
         except (OSError, ValueError) as error:
-            raise DrillFailure("PEER_CONTROL_UNAVAILABLE", role=self.role, wait="CONTROL", category=classify_failure(error)) from None
+            raise self.failure("PEER_CONTROL_UNAVAILABLE", wait="CONTROL", category=classify_failure(error)) from None
 
     def receive(self, event):
         deadline = time.monotonic() + 20
@@ -102,21 +114,21 @@ class Peer:
             except queue.Empty:
                 break
             if record is None or record["event"] in {"PEER_FAILED", "BARRIER_EXPIRED", "HTTP_HANDLER_FAILED"}:
-                raise DrillFailure("PEER_ENDED_BEFORE_BARRIER", role=self.role, wait="BARRIER", event=event,
+                raise self.failure("PEER_ENDED_BEFORE_BARRIER", wait="BARRIER", event=event,
                                    category=None if record is None else record.get("failure_category"))
             if record["event"] == event:
                 return record
-        raise DrillFailure("PEER_BARRIER_TIMEOUT", role=self.role, wait="BARRIER", event=event, category="TIMEOUT")
+        raise self.failure("PEER_BARRIER_TIMEOUT", wait="BARRIER", event=event, category="TIMEOUT")
 
     def finish(self, expected):
         try:
             code = self.process.wait(timeout=20)
         except subprocess.TimeoutExpired:
-            raise DrillFailure("PEER_EXIT_TIMEOUT", role=self.role, wait="EXIT", category="TIMEOUT") from None
+            raise self.failure("PEER_EXIT_TIMEOUT", wait="EXIT", category="TIMEOUT") from None
         self._join()
         if code != expected or self.invalid_output:
             failure = next((e for e in reversed(self.events) if e["event"] == "PEER_FAILED"), {})
-            raise DrillFailure("PEER_EXIT_OR_PROTOCOL_MISMATCH", role=self.role, wait="EXIT", category=failure.get("failure_category"))
+            raise self.failure("PEER_EXIT_OR_PROTOCOL_MISMATCH", wait="EXIT", category=failure.get("failure_category"))
 
     def kill(self):
         self.process.kill()  # Fault injection/fixture teardown, never rollback.
@@ -127,7 +139,7 @@ class Peer:
         for thread in self.threads:
             thread.join(timeout=2)
         if any(thread.is_alive() for thread in self.threads):
-            raise DrillFailure("PEER_PIPE_DRAIN_TIMEOUT", role=self.role, wait="PIPE_DRAIN", category="TIMEOUT")
+            raise self.failure("PEER_PIPE_DRAIN_TIMEOUT", wait="PIPE_DRAIN", category="TIMEOUT")
 
     def close(self):
         try:
