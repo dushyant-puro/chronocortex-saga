@@ -6,6 +6,7 @@ The ordinary runtime suite does not require a browser installation.
 from contextlib import closing
 from concurrent.futures import ThreadPoolExecutor
 import asyncio
+import re
 from types import SimpleNamespace
 from pathlib import Path
 import socket
@@ -174,7 +175,9 @@ def test_console_approval_drives_one_simulated_supervised_cancellation(console, 
         expect(page.locator("#worker-health")).to_contain_text("NOT READY")
         inspect(page, "actions", staged["action_id"])
         expect(page.locator("#detail")).to_contain_text("COMMITTED")
-        expect(page.locator("#notice")).to_be_hidden()
+        # A successful approval acknowledgement may legitimately remain visible;
+        # its lifetime must not depend on whether polling observed the transition.
+        expect(page.locator("#notice")).not_to_have_class(re.compile(r"\berror-notice\b"))
         expect(page.locator("#detail")).to_contain_text("req_Simulated12345")
         expect(page.get_by_role("button", name="Approve compensation", exact=True)).to_be_disabled()
         assert next(e for e in events if e["event"] == "STRIPE_SANDBOX_DRILL_FINISHED")["readback_verified"] is True
@@ -275,14 +278,23 @@ def test_stale_review_is_rejected_without_optimistic_cancellation(console):
 
 
 def test_transient_read_notice_clears_only_after_fresh_snapshot(console):
-    env, page, _, _ = console
+    env, page, _, origin = console
     connect(env, page)
     inspect(page, "actions", env.pending.action_id)
+    # Isolate the browser protocol from unrelated concurrent disk availability.
+    # Other integration cases exercise actual backend reads and mutations.
+    response = page.request.get(origin + "/api/snapshot")
+    assert response.status == 200
+    snapshot = response.json()
+    recovered = False
     attempts = []
     page.on("request", lambda request: attempts.append(request) if request.method == "POST" else None)
     def unavailable(route):
-        route.fulfill(status=503, content_type="application/json",
-                      body='{"error":{"code":"journal_unavailable","message":"SIMULATED transient journal read failure"}}')
+        if recovered:
+            route.fulfill(status=200, json=snapshot)
+        else:
+            route.fulfill(status=503, content_type="application/json",
+                          body='{"error":{"code":"journal_unavailable","message":"SIMULATED transient journal read failure"}}')
     page.route("**/api/snapshot", unavailable)
     page.get_by_role("button", name="Refresh", exact=True).click()
     expect(page.locator("#notice")).to_contain_text("SIMULATED transient journal read failure")
@@ -293,12 +305,13 @@ def test_transient_read_notice_clears_only_after_fresh_snapshot(console):
     expect(page.get_by_role("button", name="Approve forward operation", exact=True)).to_be_disabled()
     page.get_by_role("button", name="Refresh", exact=True).click()
     expect(page.locator("#notice")).to_be_visible()
-    page.unroute("**/api/snapshot", unavailable)
+    recovered = True
     page.get_by_role("button", name="Refresh", exact=True).click()
     expect(page.locator("#sync-state")).to_have_text("Journal read current")
     expect(page.locator("#notice")).to_be_hidden()
     expect(page.get_by_role("button", name="Approve forward operation", exact=True)).to_be_enabled()
     assert not attempts
+    page.unroute("**/api/snapshot", unavailable)
 
 
 def test_changed_evidence_notice_clears_only_after_successful_detail_read(console):

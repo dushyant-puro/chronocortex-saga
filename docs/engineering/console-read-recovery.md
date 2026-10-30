@@ -53,3 +53,26 @@ acceptance and the [seven readiness workstreams](production-readiness.md) remain
 open. For rollback, retain the current journal and decision history, close
 admission when needed, and revert only the UI code. Never clear approvals,
 operation IDs or uncertain effects to make a view appear healthy.
+
+## Qualification findings
+
+Review date: **2026-10-30**; the cited CI evidence was recorded on 2026-10-28.
+
+At `b3d44f0`, all five PR CI jobs passed, but the push run was not green. Its
+Linux browser run showed two distinct test assumptions: the integration test
+required a valid success acknowledgement to disappear, and the read-recovery
+protocol test depended on a subsequent real disk read succeeding. The first now
+asserts committed evidence with no error notice, allowing a legitimate approval
+acknowledgement. The second explicitly controls failing/successful GET responses
+using an initially authenticated snapshot of an unchanged fixture. That tests
+browser state handling; it does not certify backend availability. Actual HTTP,
+journal, authority and command integration remain covered separately.
+
+The same push run's Windows voice/task test reported `RENEWAL_FAILED` during
+shutdown after its task assertions passed. The preceding archive phase also
+reported a hidden-effect peer exit timeout and an incomplete lost-response drill
+on Windows. Passing other runs does not explain these failures. Their causes
+remain an operations/evaluation qualification finding; no lease deadline,
+database timeout, safety assertion or UNKNOWN classification is relaxed here.
+Before release, reproduce them with bounded safe diagnostics and distinguish
+host/storage delays from a lifecycle defect. Do not automatically retry effects.
