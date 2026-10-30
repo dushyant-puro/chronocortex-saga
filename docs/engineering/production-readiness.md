@@ -8,6 +8,8 @@ The [console qualification follow-up](console-read-recovery.md#qualification-fin
 records unresolved Windows renewal/process-drill failures and distinguishes
 passing runs from reliability acceptance. Those findings remain part of gates
 4, 6 and 7 below.
+The [diagnostic follow-up](failure-diagnostics.md) adds safe failure categories
+and deterministic contention schedules; it does not close those historical findings.
 
 **PUBLIC MAIN VERIFIED:** `4162ec17f4bda15c13de3fa1f0e1e33e3fe35591`, the original
 Phase 0 baseline. The safety stack remains unmerged. **LOCAL BRANCH VERIFIED:**
