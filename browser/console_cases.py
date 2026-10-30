@@ -368,7 +368,8 @@ def test_unavailable_post_response_is_never_automatically_retried(console, failu
     assert env.journal.records()[1][1]["state"] == "IN_FLIGHT_UNKNOWN"
 
 
-def test_old_detail_read_failure_cannot_poison_a_new_operator_session(console):
+@pytest.mark.parametrize("status", [401, 503])
+def test_old_detail_read_failure_cannot_poison_a_new_operator_session(console, status):
     env, page, _, _ = console
     connect(env, page)
     pending = []
@@ -383,13 +384,57 @@ def test_old_detail_read_failure_cannot_poison_a_new_operator_session(console):
     expect(page.locator("#connect")).to_be_visible()
     connect(env, page, env.viewer)
     with page.expect_response("**/api/records/actions/*"):
-        pending[0].fulfill(status=503, content_type="application/json",
+        pending[0].fulfill(status=status, content_type="application/json",
                            body='{"error":{"code":"journal_unavailable","message":"OLD SESSION ERROR"}}')
     page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
     expect(page.locator("#principal")).to_have_text("viewer")
     expect(page.locator("#sync-state")).to_have_text("Journal read current")
     expect(page.locator("#notice")).to_be_hidden()
     page.unroute(pattern)
+
+
+@pytest.mark.parametrize("status", [401, 503])
+def test_old_snapshot_failure_cannot_block_or_disconnect_a_new_session(console, status):
+    env, page, _, _ = console
+    connect(env, page)
+    pending = []
+    pattern = "**/api/snapshot"
+    def hold_first(route):
+        if not pending:
+            pending.append(route)
+        else:
+            route.continue_()
+    page.route(pattern, hold_first)
+    with page.expect_request(pattern):
+        page.get_by_role("button", name="Refresh", exact=True).click()
+    assert len(pending) == 1
+    page.get_by_role("button", name="Disconnect", exact=True).click()
+    expect(page.locator("#connect")).to_be_visible()
+    # The new login's snapshot must finish while the old one is still held.
+    connect(env, page, env.viewer)
+    with page.expect_response(pattern):
+        pending[0].fulfill(status=status, content_type="application/json",
+                           body='{"error":{"code":"session_expired","message":"OLD SNAPSHOT ERROR"}}')
+    page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+    expect(page.locator("#principal")).to_have_text("viewer")
+    expect(page.locator("#sync-state")).to_have_text("Journal read current")
+    expect(page.locator("#notice")).to_be_hidden()
+    expect(page.get_by_role("button", name="Refresh", exact=True)).to_be_enabled()
+    page.unroute(pattern)
+
+
+def test_current_session_unauthorized_read_still_clears_operator_evidence(console):
+    env, page, _, _ = console
+    connect(env, page)
+    inspect(page, "actions", env.pending.action_id)
+    page.route("**/api/snapshot", lambda route: route.fulfill(status=401, content_type="application/json",
+               body='{"error":{"code":"session_expired","message":"SIMULATED current session expired"}}'))
+    page.get_by_role("button", name="Refresh", exact=True).click()
+    expect(page.locator("#connect")).to_be_visible()
+    expect(page.locator("#console")).to_be_hidden()
+    expect(page.locator("#principal")).to_be_empty()
+    expect(page.locator("#detail")).to_be_empty()
+    expect(page.locator("#metrics")).to_be_empty()
 
 
 def test_untrusted_evidence_is_text_and_viewer_is_read_only(console):

@@ -90,6 +90,7 @@ function unavailable(body) {
 }
 
 async function api(path, body) {
+  const identity = state.session;
   let response;
   try {
     response = await fetch(path, {
@@ -122,7 +123,7 @@ async function api(path, body) {
     );
     error.status = response.status;
     error.code = data?.error?.code;
-    if (response.status === 401 && path !== "/api/login") disconnected();
+    if (response.status === 401 && path !== "/api/login" && state.session === identity) disconnected();
     throw error;
   }
   return data;
@@ -149,6 +150,7 @@ function disconnected() {
   state.session = null;
   state.snapshot = null;
   state.fresh = false;
+  state.reading = null;
   state.detail = null;
   state.decision = null;
   state.inspection = (state.inspection || 0) + 1;
@@ -183,7 +185,8 @@ function connected(identity) {
 
 async function refresh() {
   if (!state.session || state.reading) return;
-  state.reading = true;
+  const reading = {};
+  state.reading = reading;
   clearTimeout(state.polling);
   $("#refresh").disabled = true;
   const identity = state.session;
@@ -222,18 +225,21 @@ async function refresh() {
     $("#read-time").textContent =
       `Server read · ${time(state.snapshot.server_time_ms)}`;
   } catch (error) {
+    if (state.session !== identity || state.reading !== reading) return;
     state.failures += 1;
     freshness(false);
     if (state.session)
       readNotice(error.message, error.network || error.status >= 500 ? "read_unavailable" : "read_error");
   } finally {
-    state.reading = false;
-    $("#refresh").disabled = false;
-    if (state.session && !document.hidden)
-      state.polling = setTimeout(
-        refresh,
-        Math.min(30000, 5000 * 2 ** state.failures),
-      );
+    if (state.reading === reading) {
+      state.reading = null;
+      $("#refresh").disabled = false;
+      if (state.session && !document.hidden)
+        state.polling = setTimeout(
+          refresh,
+          Math.min(30000, 5000 * 2 ** state.failures),
+        );
+    }
   }
 }
 

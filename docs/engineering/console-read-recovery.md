@@ -22,8 +22,17 @@ Explicit stale-review rejections remain evidence-change notices rather than
 being mislabeled unknown command outcomes.
 
 A delayed failed detail response is checked against both the inspection number
-and session identity, as successful responses already were. It cannot poison a
-new operator's view after disconnect/reconnect. This does not claim cancellation
+and session identity, as successful responses already were. Snapshot requests own
+their reading/cleanup token, and a disconnected session releases only its local
+read slot. The new session can refresh without awaiting an old HTTP request;
+that old request's error/finalizer cannot disable controls or reset the new read.
+Authentication failures apply only to the identity that issued the request,
+including a delayed 401 received after re-login. Browser schedules hold old
+snapshot/detail responses across re-login and explicitly test both 401 and 503.
+Both held-snapshot cases were demonstrated to fail against `8ebb7fd`: an old 401
+disconnected the new viewer and an old 503 marked the new view stale. The fixed
+suite also checks that a current session's 401 still clears operator evidence.
+This does not claim cancellation
 of the old HTTP request, universal response-schema validation or rollback of any
 recorded command. Database contention/storage diagnosis and measured availability
 remain operations work; the journal's locking and fail-closed behavior are not
