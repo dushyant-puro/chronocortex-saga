@@ -22,6 +22,7 @@ import httpx2 as httpx
 from providers import reconcile_stripe, sandbox_drill
 from providers.stripe_sandbox import API_VERSION, ORIGIN, StripeSandboxCancellation
 from runtime.action_journal import SQLiteActionJournal
+from runtime.failure_diagnostics import classify_failure
 
 
 ACCOUNT = "acct_Simulated12345"
@@ -88,7 +89,7 @@ class Server(ThreadingHTTPServer):
     daemon_threads = True
 
     def handle_error(self, *_):
-        emit("HTTP_HANDLER_FAILED")
+        emit("HTTP_HANDLER_FAILED", failure_category=classify_failure(sys.exc_info()[1]))
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -176,7 +177,7 @@ class Handler(BaseHTTPRequestHandler):
                 emit("RESPONSE_WITHHELD_AFTER_APPLY")
                 if self.server.fault == "hold_after_apply":
                     if not self.server.release.wait(timeout=30):
-                        emit("BARRIER_EXPIRED")
+                        emit("BARRIER_EXPIRED", failure_category="TIMEOUT")
                 self.drop()
                 return
             self.reply(200, data, reference)
@@ -246,8 +247,8 @@ def main():
             code = 0
         else:
             code = asyncio.run(worker(args))
-    except Exception:
-        emit("PEER_FAILED")
+    except Exception as error:
+        emit("PEER_FAILED", failure_category=classify_failure(error))
         code = 1
     raise SystemExit(code)
 

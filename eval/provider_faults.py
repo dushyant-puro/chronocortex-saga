@@ -8,6 +8,7 @@ import argparse
 from contextlib import closing, ExitStack
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import platform
@@ -27,19 +28,44 @@ from providers.stripe_sandbox import API_VERSION, CONTRACT, PERMISSION
 from runtime.action_journal import SQLiteActionJournal
 from runtime.control_store import ControlStore
 from runtime.credential_input import read_credential_file
+from runtime.failure_diagnostics import CATEGORIES, classify_failure
 
 
 CASES = ("lost_response_after_apply", "worker_killed_after_apply", "worker_killed_before_dispatch",
          "request_discarded_before_forward", "effect_hidden_from_status_reads")
 ROOT = Path(__file__).resolve().parent.parent
+logger = logging.getLogger("ccs.eval.provider_faults")
 
 
 class DrillFailure(RuntimeError):
     """Only bounded internal failure codes escape the evaluator."""
+    CODES = frozenset({"PEER_CONTROL_UNAVAILABLE", "PEER_ENDED_BEFORE_BARRIER", "PEER_BARRIER_TIMEOUT",
+                       "PEER_EXIT_TIMEOUT", "PEER_EXIT_OR_PROTOCOL_MISMATCH", "PEER_PIPE_DRAIN_TIMEOUT"})
+    EVENTS = frozenset({"READY", "STRIPE_SANDBOX_APPROVAL_REQUIRED", "REQUEST_DISCARDED_BEFORE_FORWARD",
+                        "RESPONSE_WITHHELD_AFTER_APPLY", "DROP_RELEASED", "VISIBILITY_RELEASED"})
+
+    def __init__(self, code, *, role=None, wait=None, event=None, category=None):
+        self.code = code if type(code) is str and code in self.CODES else "INCOMPLETE_DRILL"
+        self.diagnostic = {"category": category if type(category) is str and category in CATEGORIES else "UNCLASSIFIED",
+                           "peer_role": role if type(role) is str and role in {"service", "proxy", "worker", "recover"} else "UNKNOWN",
+                           "wait": wait if type(wait) is str and wait in {"CONTROL", "BARRIER", "EXIT", "PIPE_DRAIN"} else "UNKNOWN",
+                           "expected_event": event if type(event) is str and event in self.EVENTS else None}
+        super().__init__(self.code)
 
 
 class Peer:
+    def failure(self, code, **details):
+        failure = DrillFailure(code, role=self.role, **details)
+        # Direct pytest callers may fail before score() writes JSON. Preserve
+        # the same bounded context in captured logs, never raw peer stderr.
+        try:
+            logger.error("SIMULATED peer failure; code=%s diagnostic=%s", failure.code, failure.diagnostic)
+        except Exception:
+            pass
+        return failure
+
     def __init__(self, role, *arguments):
+        self.role = role
         env = os.environ.copy()
         env["PYTHONDONTWRITEBYTECODE"] = "1"
         self.process = subprocess.Popen([sys.executable, "-u", "-m", "eval.provider_fault_peer", role, *map(str, arguments)],
@@ -77,8 +103,8 @@ class Peer:
         try:
             self.process.stdin.write(command + "\n")
             self.process.stdin.flush()
-        except (OSError, ValueError):
-            raise DrillFailure("PEER_CONTROL_UNAVAILABLE") from None
+        except (OSError, ValueError) as error:
+            raise self.failure("PEER_CONTROL_UNAVAILABLE", wait="CONTROL", category=classify_failure(error)) from None
 
     def receive(self, event):
         deadline = time.monotonic() + 20
@@ -88,19 +114,21 @@ class Peer:
             except queue.Empty:
                 break
             if record is None or record["event"] in {"PEER_FAILED", "BARRIER_EXPIRED", "HTTP_HANDLER_FAILED"}:
-                raise DrillFailure("PEER_ENDED_BEFORE_BARRIER")
+                raise self.failure("PEER_ENDED_BEFORE_BARRIER", wait="BARRIER", event=event,
+                                   category=None if record is None else record.get("failure_category"))
             if record["event"] == event:
                 return record
-        raise DrillFailure("PEER_BARRIER_TIMEOUT")
+        raise self.failure("PEER_BARRIER_TIMEOUT", wait="BARRIER", event=event, category="TIMEOUT")
 
     def finish(self, expected):
         try:
             code = self.process.wait(timeout=20)
         except subprocess.TimeoutExpired:
-            raise DrillFailure("PEER_EXIT_TIMEOUT") from None
+            raise self.failure("PEER_EXIT_TIMEOUT", wait="EXIT", category="TIMEOUT") from None
         self._join()
         if code != expected or self.invalid_output:
-            raise DrillFailure("PEER_EXIT_OR_PROTOCOL_MISMATCH")
+            failure = next((e for e in reversed(self.events) if e["event"] == "PEER_FAILED"), {})
+            raise self.failure("PEER_EXIT_OR_PROTOCOL_MISMATCH", wait="EXIT", category=failure.get("failure_category"))
 
     def kill(self):
         self.process.kill()  # Fault injection/fixture teardown, never rollback.
@@ -111,7 +139,7 @@ class Peer:
         for thread in self.threads:
             thread.join(timeout=2)
         if any(thread.is_alive() for thread in self.threads):
-            raise DrillFailure("PEER_PIPE_DRAIN_TIMEOUT")
+            raise self.failure("PEER_PIPE_DRAIN_TIMEOUT", wait="PIPE_DRAIN", category="TIMEOUT")
 
     def close(self):
         try:
@@ -303,9 +331,10 @@ def score():
                 cases.append(run_case(Path(directory) / name, name))
             except Exception as exc:
                 cases.append({"id": name, "passed": False, "checks": {"drill_completed": False},
-                              "failure": str(exc) if isinstance(exc, DrillFailure) else "INCOMPLETE_DRILL"})
+                              "failure": exc.code if isinstance(exc, DrillFailure) else "INCOMPLETE_DRILL",
+                              "diagnostic": exc.diagnostic if isinstance(exc, DrillFailure) else {"category": classify_failure(exc)}})
     digest = hashlib.sha256()
-    for path in (Path(__file__), Path(__file__).with_name("provider_fault_peer.py")):
+    for path in (Path(__file__), Path(__file__).with_name("provider_fault_peer.py"), ROOT / "runtime/failure_diagnostics.py"):
         digest.update(path.name.encode() + b"\0" + path.read_bytes().replace(b"\r\n", b"\n"))
     return {"schema": 1, "label": "SIMULATED", "harness_sha256": digest.hexdigest(), "provenance": provenance(),
             "case_count": len(cases),

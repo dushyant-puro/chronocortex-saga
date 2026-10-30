@@ -17,6 +17,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from runtime.action_journal import JournalError
 from runtime.control_store import ControlStore, ControlError
 from runtime.policy_engine import PolicyError
+from runtime.failure_diagnostics import classify_failure
 
 
 logger = logging.getLogger("ccs.control")
@@ -153,11 +154,11 @@ def create_app(journal, config=None):
             response = JSONResponse({"error": {"code": exc.code, "message": exc.message, "request_id": request_id}}, status_code=exc.status)
         except PolicyError:
             response = JSONResponse({"error": {"code": "authority_denied", "message": "Current authority does not permit this operation.", "request_id": request_id}}, status_code=403)
-        except JournalError:
-            logger.error("Console journal unavailable; request=%s", request_id)
+        except JournalError as exc:
+            logger.error("Console journal unavailable; request=%s category=%s", request_id, classify_failure(exc))
             response = JSONResponse({"error": {"code": "journal_unavailable", "message": "Journal unavailable. Controls are disabled until a fresh read succeeds.", "request_id": request_id}}, status_code=503)
         except Exception as exc:
-            logger.error("Console request failed; request=%s type=%s", request_id, type(exc).__name__)
+            logger.error("Console request failed; request=%s category=%s", request_id, classify_failure(exc))
             response = JSONResponse({"error": {"code": "server_error", "message": "The request could not be completed. Refresh journal evidence before another control request.", "request_id": request_id}}, status_code=500)
         response.headers.update({"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
                                  "Referrer-Policy": "no-referrer", "X-Frame-Options": "DENY",

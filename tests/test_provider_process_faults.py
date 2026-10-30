@@ -127,6 +127,94 @@ def test_incomplete_drills_are_failures_with_no_exception_payload(monkeypatch):
     assert report["real_provider"] == "NOT_RUN" and report["label"] == "SIMULATED"
 
 
+def test_incomplete_drill_retains_native_category_without_private_payload(monkeypatch):
+    import sqlite3
+    from runtime.action_journal import JournalError
+    def fail(*_):
+        cause = sqlite3.OperationalError("PRIVATE SQLITE QUERY AND PATH")
+        cause.sqlite_errorcode = sqlite3.SQLITE_BUSY
+        raise JournalError("PRIVATE CREDENTIAL") from cause
+    monkeypatch.setattr(evaluation, "run_case", fail)
+    report = evaluation.score()
+    assert report["cases_failed"] == 5 and report["checks_failed"] == 5
+    assert all(c["diagnostic"] == {"category": "SQLITE_BUSY"} and c["failure"] == "INCOMPLETE_DRILL" for c in report["cases"])
+    assert "PRIVATE" not in json.dumps(report)
+
+
+@pytest.mark.parametrize("code", ["PRIVATE SECRET CODE", True, ["PRIVATE"]])
+def test_drill_failure_constructor_never_accepts_arbitrary_diagnostic_text(code):
+    failure = evaluation.DrillFailure(code, role="PRIVATE ROLE", wait="PRIVATE WAIT", event="PRIVATE EVENT", category="PRIVATE CAUSE")
+    assert str(failure) == "INCOMPLETE_DRILL"
+    assert failure.diagnostic == {"category": "UNCLASSIFIED", "peer_role": "UNKNOWN", "wait": "UNKNOWN", "expected_event": None}
+    assert "PRIVATE" not in json.dumps(failure.diagnostic)
+
+
+@pytest.mark.parametrize("category,expected", [("SQLITE_BUSY", "SQLITE_BUSY"), ("PRIVATE PEER TEXT", "UNCLASSIFIED"), (True, "UNCLASSIFIED")])
+def test_peer_failure_transmits_only_allowlisted_category(category, expected, caplog):
+    import queue
+    peer = object.__new__(evaluation.Peer)
+    peer.role = "worker"
+    peer.messages = queue.Queue()
+    peer.messages.put({"event": "PEER_FAILED", "failure_category": category, "raw_exception": "PRIVATE EXCEPTION"})
+    with pytest.raises(evaluation.DrillFailure) as failure:
+        peer.receive("READY")
+    assert failure.value.code == "PEER_ENDED_BEFORE_BARRIER"
+    assert failure.value.diagnostic == {"category": expected, "peer_role": "worker", "wait": "BARRIER", "expected_event": "READY"}
+    assert "PRIVATE" not in json.dumps(failure.value.diagnostic)
+    assert "PRIVATE" not in caplog.text
+    assert "SIMULATED peer failure" in caplog.text
+
+
+def test_peer_exit_timeout_reports_role_and_wait_without_process_arguments(caplog):
+    from types import SimpleNamespace
+    def expired(**kwargs):
+        assert kwargs == {"timeout": 20}  # Existing acceptance budget is unchanged.
+        raise subprocess.TimeoutExpired("PRIVATE PROCESS ARGUMENTS", 20)
+    peer = object.__new__(evaluation.Peer)
+    peer.role = "recover"
+    peer.process = SimpleNamespace(wait=expired)
+    with pytest.raises(evaluation.DrillFailure) as failure:
+        peer.finish(0)
+    assert failure.value.code == "PEER_EXIT_TIMEOUT"
+    assert failure.value.diagnostic == {"category": "TIMEOUT", "peer_role": "recover", "wait": "EXIT", "expected_event": None}
+    assert "PRIVATE" not in str(failure.value)
+    assert "'peer_role': 'recover'" in caplog.text and "'wait': 'EXIT'" in caplog.text
+    assert "PRIVATE" not in caplog.text
+
+
+def test_peer_diagnostic_sink_failure_preserves_timeout(monkeypatch):
+    def broken(*_, **__): raise RuntimeError("PRIVATE LOGGER PAYLOAD")
+    monkeypatch.setattr(evaluation.logger, "error", broken)
+    peer = object.__new__(evaluation.Peer); peer.role = "recover"
+    failure = peer.failure("PEER_EXIT_TIMEOUT", wait="EXIT", category="TIMEOUT")
+    assert failure.code == "PEER_EXIT_TIMEOUT" and failure.diagnostic["category"] == "TIMEOUT"
+
+
+def test_real_peer_exception_returns_only_a_safe_category(tmp_path):
+    private_path = tmp_path / "PRIVATE_LEDGER_PATH"
+    private_path.mkdir()  # SQLite cannot open an existing directory as a database.
+    result = subprocess.run([sys.executable, "-m", "eval.provider_fault_peer", "service", "--ledger", str(private_path)],
+                            capture_output=True, text=True, timeout=20)
+    assert result.returncode == 1
+    assert json.loads(result.stdout) == {"event": "PEER_FAILED", "source": "SIMULATED", "failure_category": "SQLITE_OTHER"}
+    assert "PRIVATE" not in result.stdout + result.stderr
+
+
+def test_http_handler_failure_reports_current_cause_without_request_details(monkeypatch):
+    import sqlite3
+    from eval import provider_fault_peer as peer
+    events = []
+    monkeypatch.setattr(peer, "emit", lambda event, **fields: events.append({"event": event, **fields}))
+    error = sqlite3.OperationalError("PRIVATE SQL AND REQUEST")
+    error.sqlite_errorcode = sqlite3.SQLITE_BUSY
+    try:
+        raise error
+    except sqlite3.Error:
+        peer.Server.handle_error(None, "PRIVATE REQUEST HEADERS")
+    assert events == [{"event": "HTTP_HANDLER_FAILED", "failure_category": "SQLITE_BUSY"}]
+    assert "PRIVATE" not in json.dumps(events)
+
+
 def test_scorecard_cli_has_no_live_or_transport_override():
     result = subprocess.run([sys.executable, "-m", "eval.provider_faults", "--endpoint", "https://example.invalid"],
                             capture_output=True, text=True, timeout=15)

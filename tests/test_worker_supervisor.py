@@ -15,6 +15,7 @@ from runtime.policy_engine import PermissionDeniedError
 from runtime.speculative_saga import SpeculativeSagaManager, TurnEpochClock, ActionState
 from runtime.tool_contract import ToolManifest, ToolRegistry
 from runtime.worker_supervisor import WorkerSettings, WorkerSupervisor, WorkerUnavailable
+from runtime import worker_supervisor as supervision
 
 
 class Clocks:
@@ -24,6 +25,53 @@ class Clocks:
     def advance(self, milliseconds):
         self.wall += milliseconds
         self.mono += milliseconds / 1000
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["AUTHORIZE", "RENEW_LEASE", "PERSIST_HEARTBEAT"])
+async def test_native_contention_diagnostics_do_not_reopen_admission_or_retry(env, monkeypatch, caplog, phase):
+    await env.host.start(factory)
+    env.journal.timeout = .01  # Test-only bound; production timeout is unchanged.
+    target = {"AUTHORIZE": (env.host, "_authorize_host"),
+              "RENEW_LEASE": (env.journal, "renew_lease"),
+              "PERSIST_HEARTBEAT": (env.journal, "observe_worker")}[phase]
+    original = getattr(*target)
+    attempts = []
+    def contended(*args, **kwargs):
+        if phase == "PERSIST_HEARTBEAT" and args[0] != "HOST_HEARTBEAT":
+            return original(*args, **kwargs)
+        attempts.append(phase)
+        with closing(sqlite3.connect(env.path, isolation_level=None)) as holder:
+            holder.execute("BEGIN EXCLUSIVE")
+            try:
+                return original(*args, **kwargs)
+            finally:
+                holder.rollback()
+    monkeypatch.setattr(*target, contended)
+    with pytest.raises(JournalError):
+        await env.host.pulse()
+    with pytest.raises(WorkerUnavailable):
+        env.host.submit(lambda _: pytest.fail("Failed renewal admitted work"))
+    report = await env.host.stop()
+    assert report.failure_code == "RENEWAL_FAILED" and attempts == [phase]
+    assert f"phase={phase} category=SQLITE_BUSY" in caplog.text
+    assert env.journal.records() == []
+
+
+@pytest.mark.asyncio
+async def test_failed_diagnostic_sink_preserves_original_renewal_error_and_fence(env, monkeypatch):
+    await env.host.start(factory)
+    failure = JournalError("PRIVATE CREDENTIAL PAYLOAD")
+    def fail(**_): raise failure
+    def broken_log(*_, **__): raise RuntimeError("PRIVATE LOGGER PAYLOAD")
+    monkeypatch.setattr(env.journal, "renew_lease", fail)
+    monkeypatch.setattr(supervision.logger, "error", broken_log)
+    with pytest.raises(JournalError) as observed:
+        await env.host.pulse()
+    assert observed.value is failure
+    with pytest.raises(WorkerUnavailable):
+        env.host.submit(lambda _: pytest.fail("Logging failure reopened admission"))
+    assert (await env.host.stop()).failure_code == "RENEWAL_FAILED"
 
 
 def factory(journal, auth):

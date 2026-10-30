@@ -61,6 +61,8 @@ tests, architecture, limitations, migration and rollback, read the
 [operator console runbook](docs/engineering/operator-control-console.md).
 The [read-recovery contract](docs/engineering/console-read-recovery.md) separates
 transient read errors from command uncertainty and preserves unresolved operation IDs.
+The [failure-diagnostics runbook](docs/engineering/failure-diagnostics.md) covers
+bounded failure categories, deterministic SQLite contention and retained uncertainty.
 Production startup generates no demo data, credentials, provider adapter or
 background worker.
 
