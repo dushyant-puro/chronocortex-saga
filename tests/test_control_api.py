@@ -496,3 +496,36 @@ def test_schema5_migration_is_offline_explicit_and_preserves_security(console):
     with closing(sqlite3.connect(env.journal.path)) as db:
         assert db.execute("PRAGMA user_version").fetchone()[0] == 6
         assert db.execute("SELECT * FROM credentials").fetchall() == credentials
+
+
+def test_contended_console_read_logs_safe_sqlite_category_and_recovers(console, caplog):
+    env, client = console
+    login(env, client)
+    before = env.journal.records()
+    env.journal.timeout = .01  # Fixture only; real journal policy is unchanged.
+    with closing(sqlite3.connect(env.journal.path, isolation_level=None)) as holder:
+        holder.execute("BEGIN EXCLUSIVE")
+        try:
+            response = client.get("/api/snapshot")
+        finally:
+            holder.rollback()
+    assert response.status_code == 503 and response.json()["error"]["code"] == "journal_unavailable"
+    logs = "\n".join(r.getMessage() for r in caplog.records if r.name == "ccs.control")
+    assert "category=SQLITE_BUSY" in logs
+    assert env.operator.token not in logs and str(env.journal.path) not in logs
+    assert "SQLITE_BUSY" not in response.text  # Internal diagnostics do not expand the API contract.
+    assert client.get("/api/snapshot").status_code == 200
+    assert env.journal.records() == before
+
+
+def test_console_unknown_exception_name_and_payload_are_not_logged(console, monkeypatch, caplog):
+    env, client = console
+    login(env, client)
+    private_error = type("PRIVATE_EXCEPTION_NAME", (RuntimeError,), {})("PRIVATE CREDENTIAL AND TRANSCRIPT")
+    def fail(*_): raise private_error
+    monkeypatch.setattr(client.app.state.store, "snapshot", fail)
+    response = client.get("/api/snapshot")
+    assert response.status_code == 500 and response.json()["error"]["code"] == "server_error"
+    logs = "\n".join(r.getMessage() for r in caplog.records if r.name == "ccs.control")
+    assert "category=UNCLASSIFIED" in logs
+    assert "PRIVATE" not in logs + response.text

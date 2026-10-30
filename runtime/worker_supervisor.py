@@ -7,6 +7,7 @@ import asyncio
 from contextlib import contextmanager
 from dataclasses import dataclass
 import inspect
+import logging
 import math
 import threading
 import time
@@ -14,6 +15,19 @@ import uuid
 
 from runtime.action_journal import JournalError, JournalLeaseError
 from runtime.policy_engine import AuthorizationContext, PermissionDeniedError
+from runtime.failure_diagnostics import classify_failure
+
+
+logger = logging.getLogger("ccs.worker")
+
+
+def _diagnose(operation, phase, error):
+    # Fencing happens first. A failed logging sink must not replace the error.
+    try:
+        logger.error("Worker failure; operation=%s phase=%s category=%s",
+                     operation, phase, classify_failure(error))
+    except Exception:
+        pass
 
 
 class WorkerUnavailable(JournalLeaseError):
@@ -219,16 +233,21 @@ class WorkerSupervisor:
             raise
 
     async def _start(self, factory):
+        phase = "AUTHORIZE"
         try:
             await asyncio.to_thread(self._authorize_host)
             if self.state != "STARTING":
                 raise WorkerUnavailable("Startup was stopped")
             began = self._gate.now()
+            phase = "ACQUIRE_LEASE"
             self._lease = await asyncio.to_thread(self.journal.acquire_lease, self.owner, ttl_ms=self.settings.lease_ttl_ms)
+            phase = "VALIDATE_DEADLINE"
             self._gate.renewed(began)
             if self.state != "STARTING":
                 raise WorkerUnavailable("Startup was stopped before hydration")
+            phase = "PERSIST_STARTING"
             await self._observe("HOST_STARTING")
+            phase = "HYDRATE"
             self._runtime = factory(self.journal, AuthorizationContext(credential=self._credential))
             if inspect.isawaitable(self._runtime):
                 if inspect.iscoroutine(self._runtime):
@@ -238,13 +257,15 @@ class WorkerSupervisor:
                 if self.state != "STARTING" or self._gate.now() >= self._gate.deadline:
                     raise WorkerUnavailable("Startup did not retain worker authority")
                 self._gate.state = "READY"
+            phase = "PERSIST_READY"
             await self._observe("HOST_READY")
             if self.state != "READY":
                 raise WorkerUnavailable("Startup was stopped")
             self._heartbeat_task = asyncio.create_task(self._heartbeat(), name="ccs-worker-heartbeat")
             return self._runtime
-        except BaseException:
+        except BaseException as error:
             self._gate.fault("STARTUP_FAILED")
+            _diagnose("STARTUP", phase, error)
             raise
 
     def submit(self, operation):
@@ -281,16 +302,22 @@ class WorkerSupervisor:
         async with self._pulse_lock:
             if self.state not in {"READY", "DRAINING"}:
                 raise WorkerUnavailable("Worker cannot renew")
+            phase = "DEADLINE"
             try:
                 began = self._gate.now()
                 if began >= self._gate.deadline:
                     raise WorkerUnavailable("Worker renewal deadline elapsed")
+                phase = "AUTHORIZE"
                 await asyncio.to_thread(self._authorize_host)
+                phase = "RENEW_LEASE"
                 await asyncio.to_thread(self.journal.renew_lease, ttl_ms=self.settings.lease_ttl_ms)
+                phase = "VALIDATE_DEADLINE"
                 self._gate.renewed(began)
+                phase = "PERSIST_HEARTBEAT"
                 await self._observe("HOST_HEARTBEAT")
-            except BaseException:
+            except BaseException as error:
                 self._gate.fault("RENEWAL_FAILED")
+                _diagnose("RENEWAL", phase, error)
                 raise
 
     async def _heartbeat(self):
