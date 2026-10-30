@@ -4,6 +4,11 @@ Evidence review date: **2026-10-28**. This ledger separates implemented offline
 foundations from outstanding acceptance. It is not a production-readiness
 certificate or a completion percentage.
 
+The [console qualification follow-up](console-read-recovery.md#qualification-findings)
+records unresolved Windows renewal/process-drill failures and distinguishes
+passing runs from reliability acceptance. Those findings remain part of gates
+4, 6 and 7 below.
+
 **PUBLIC MAIN VERIFIED:** `4162ec17f4bda15c13de3fa1f0e1e33e3fe35591`, the original
 Phase 0 baseline. The safety stack remains unmerged. **LOCAL BRANCH VERIFIED:**
 the durable-task phase at `79b91a2` has 1,201 Windows runtime tests passing with
