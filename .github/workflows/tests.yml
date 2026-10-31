@@ -98,6 +98,7 @@ jobs:
             results/environment-runtime.json
             results/offline-wheels/wheelhouse.json
             results/runtime-tests.xml
+            results/provider-failure-evidence/*.json
           if-no-files-found: ignore
           retention-days: 7
       - uses: actions/upload-artifact@v4

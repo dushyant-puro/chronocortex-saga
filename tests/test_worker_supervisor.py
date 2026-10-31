@@ -364,6 +364,42 @@ async def test_cancelled_shutdown_waiter_cannot_cancel_drain(env):
 
 
 @pytest.mark.asyncio
+async def test_effect_return_with_contended_finalization_retains_intent_and_fences_replay(env):
+    """Controlled contention schedule, not a claimed reproduction of CI's lock holder."""
+    saga = await env.host.start(factory)
+    env.journal.timeout = .01  # Fixture only; no production policy relaxation.
+    action = saga.stage_write("change", {})
+    effects = []
+    with closing(sqlite3.connect(env.path, isolation_level=None)) as holder:
+        async def execute(_):
+            effects.append("SIMULATED remote effect")
+            holder.execute("BEGIN EXCLUSIVE")
+            return {"receipt": "SIMULATED applied"}
+        handle = env.host.submit(lambda runtime: runtime.commit_write(action.action_id, execute))
+        try:
+            with pytest.raises(JournalError):
+                await handle.wait()
+        finally:
+            holder.rollback()
+    record = env.journal.records()[0][1]
+    assert record["state"] == "IN_FLIGHT" and record["result"] is None
+    assert effects == ["SIMULATED remote effect"] and saga._durability_fault is not None
+    with pytest.raises(JournalError):
+        saga.stage_write("change", {"retry": True})
+    assert (await env.host.stop()).lease_released
+    replacement = WorkerSupervisor(SQLiteActionJournal(env.path, clock_ms=lambda: env.clock.wall),
+                                   env.credential.token, monotonic=lambda: env.clock.mono)
+    recovered = await replacement.start(factory)
+    try:
+        assert recovered._actions[action.action_id].state == ActionState.IN_FLIGHT_UNKNOWN
+        with pytest.raises(JournalError, match="Recovered"):
+            await recovered.commit_write(action.action_id, execute)
+        assert effects == ["SIMULATED remote effect"]
+    finally:
+        await replacement.stop()
+
+
+@pytest.mark.asyncio
 async def test_capacity_rejects_extra_admission_before_creating_a_coroutine(env):
     env.host.settings = replace(env.host.settings, max_operations=1)
     saga = await env.host.start(factory)
