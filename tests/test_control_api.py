@@ -494,7 +494,7 @@ def test_schema5_migration_is_offline_explicit_and_preserves_security(console):
     assert migrated.records() == records
     assert migrated.security.authenticate(env.operator.token).principal_id == "operator"
     with closing(sqlite3.connect(env.journal.path)) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 6
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 7
         assert db.execute("SELECT * FROM credentials").fetchall() == credentials
 
 

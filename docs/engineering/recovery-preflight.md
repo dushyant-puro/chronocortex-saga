@@ -33,7 +33,7 @@ database. The tool cannot enforce shell redirection safety.
 
 ## Checks and bounds
 
-- Existing file, SQLite header, rollback format, CCS application ID, schema 6,
+- Existing file, SQLite header, rollback format, CCS application ID, schema 6 or 7,
   DELETE journal mode and required tables. WAL headers are rejected before SQLite
   opens the file, avoiding creation of WAL shared-memory sidecars.
 - SQLite integrity check and a separate foreign-key check; integrity checking

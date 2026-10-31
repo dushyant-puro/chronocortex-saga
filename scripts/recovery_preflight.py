@@ -58,7 +58,8 @@ def inspect(path):
             db.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
             db.execute('BEGIN')
             require(db.execute('PRAGMA application_id').fetchone()[0] == 0x43435341)
-            require(db.execute('PRAGMA user_version').fetchone()[0] == 6)
+            journal_schema = db.execute('PRAGMA user_version').fetchone()[0]
+            require(journal_schema in {6, 7})  # Read-only legacy evidence, never runtime adoption.
             require(db.execute('PRAGMA journal_mode').fetchone()[0] == 'delete')
             present = {r[0] for r in db.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
             require(TABLES <= present)
@@ -111,7 +112,7 @@ def inspect(path):
                 uncertain += int(record['state'] in {'IN_FLIGHT', 'IN_FLIGHT_UNKNOWN'} or
                                  record['compensation_state'] in {'IN_FLIGHT', 'UNKNOWN'})
             db.rollback()
-        report.update(passed=True, counts=counts, uncertain_actions=uncertain)
+        report.update(passed=True, counts=counts, uncertain_actions=uncertain, journal_schema=journal_schema)
     except (OSError, sqlite3.Error, ValueError, TypeError, KeyError, RecursionError):
         report['failure'] = 'JOURNAL_EVIDENCE_UNVERIFIED'
     return report

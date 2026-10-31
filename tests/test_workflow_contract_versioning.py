@@ -306,7 +306,7 @@ def test_schema3_upgrade_preserves_evidence_and_fences_old_binary_format(tmp_pat
     migrated = SQLiteActionJournal(manager.journal.path, migrate=True)
     assert migrated.load_task(task.task_id) == before
     with closing(sqlite3.connect(manager.journal.path)) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 6
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 7
     with pytest.raises(JournalError, match="schema changed"):
         # A running schema-4 client also fails closed if its header changes.
         with closing(sqlite3.connect(manager.journal.path)) as db:

@@ -37,6 +37,7 @@ from typing import Any, Awaitable, Callable, Optional
 
 from runtime.persistence import CheckpointStore, SQLiteCheckpointStore
 from runtime.action_journal import JournalError
+from runtime.proposal_contract import validate_binding, ProposalAdmissionError
 from runtime.policy_engine import ConfirmationRequiredError, PermissionDeniedError, PolicyError
 from runtime.workflow_contract import (
     WorkflowVersion, StepVersions, WorkflowContractError, capture, binding_refs, validate_record, canonical,
@@ -207,6 +208,7 @@ class TaskManager:
         self._run_locks: dict[str, asyncio.Lock] = {}
         self._workflow_seals: dict[str, str] = {}
         self._workflow_bindings: dict[str, tuple] = {}
+        self._admission_seals: dict[str, str] = {}
 
     # ---- task creation --------------------------------------------------
 
@@ -229,6 +231,13 @@ class TaskManager:
             return capture(workflow, steps, self._saga.registry)
         except (WorkflowContractError, AttributeError, TypeError) as exc:
             raise WorkflowMismatchError(f"Incompatible workflow definitions: {exc}") from exc
+
+    def prepare_checkpoint(self, task_id, name, steps, *, workflow):
+        """Prepare only: no insertion, task registration, callback or dispatch."""
+        if self._saga.journal is None:
+            raise JournalError("Reviewed admission requires the durable journal")
+        contract = json.loads(self._capture_workflow(workflow, steps))
+        return self._checkpoint_task(Task(task_id=task_id, name=name, steps=steps, workflow=workflow), contract)
 
     def _assert_workflow(self, task):
         if self._saga.journal is None:
@@ -295,6 +304,10 @@ class TaskManager:
         logger.info("field evicted: %s (value was %r)", field_name, evicted_value)
 
         for task in self._tasks.values():
+            if task.task_id in self._admission_seals:
+                # A new voice correction cannot revise or compensate an
+                # explicitly admitted immutable plan. Use task controls.
+                continue
             if task.state in (TaskState.FAILED, TaskState.CANCELLED):
                 continue
 
@@ -658,7 +671,9 @@ class TaskManager:
                 return task
 
             # Build args using the lazy builder
-            if step.build_args is not None:
+            if task.task_id in self._admission_seals:
+                args = json.loads(self._admission_seals[task.task_id])["arguments"][idx]
+            elif step.build_args is not None:
                 args = step.build_args(task, idx)
             else:
                 args = {}
@@ -888,6 +903,15 @@ class TaskManager:
             logger.warning("No checkpoint found for task %s", task_id)
             return None
 
+        admission = cp.get("proposal_binding")
+        if admission is not None:
+            if self._saga.journal is None:
+                raise JournalError("Reviewed tasks require the authenticated durable journal")
+            try:
+                validate_binding(admission, cp)
+            except (ProposalAdmissionError, WorkflowContractError, TypeError, KeyError) as exc:
+                raise JournalError("Invalid durable proposal binding") from exc
+
         if self._saga.journal is not None:
             try:
                 validate_record(cp.get("workflow_contract"))
@@ -942,6 +966,8 @@ class TaskManager:
                     task.state = TaskState.RUNNING
 
         self._tasks[task_id] = task
+        if admission is not None:
+            self._admission_seals[task_id] = canonical(admission)
         if self._saga.journal is not None:
             self._workflow_seals[task_id] = seal
             self._workflow_bindings[task_id] = binding_refs(steps, self._saga.registry)
@@ -1101,6 +1127,13 @@ class TaskManager:
         """
         task = self._tasks[task_id]
         contract = json.loads(self._workflow_seals[task_id]) if task_id in self._workflow_seals else None
+        checkpoint = self._checkpoint_task(task, contract)
+        if task_id in self._admission_seals:
+            checkpoint["proposal_binding"] = json.loads(self._admission_seals[task_id])
+        return checkpoint
+
+    @staticmethod
+    def _checkpoint_task(task, contract):
         return {
             "task_id": task.task_id,
             "name": task.name,

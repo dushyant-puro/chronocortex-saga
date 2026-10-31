@@ -13,6 +13,7 @@ from typing import Any
 from runtime.workflow_contract import WorkflowContractError, canonical, validate_record
 from runtime.policy_engine import PolicyError, PermissionDeniedError
 from runtime.security_authority import SecurityAuthority, AuthRequest, create_schema as create_security_schema
+from runtime.proposal_contract import validate_binding, ProposalAdmissionError
 
 
 class JournalError(RuntimeError):
@@ -40,7 +41,7 @@ class WorkerLease:
 
 
 _APP_ID = 0x43435341
-_VERSION = 6
+_VERSION = 7
 _IDENTITY = ("action_id", "tool_name", "args", "digest", "idempotency_key",
              "capture_epoch", "session_id", "task_id", "step_index", "generation", "chain_id", "authorization_policy")
 _TRANSITIONS = {
@@ -69,7 +70,7 @@ def _json(value: Any) -> str:
 
 
 class SQLiteActionJournal:
-    """Schema v6; rollback journal + synchronous EXTRA on every connection.
+    """Schema v7; rollback journal + synchronous EXTRA on every connection.
 
     Use a local disk with reliable locking/flush semantics and protect its ACLs.
     The database contains request/result data. Do not place it on a share or
@@ -102,7 +103,7 @@ class SQLiteActionJournal:
                     self._create_control_tables(db)
                     db.execute(f"PRAGMA application_id={_APP_ID}")
                     db.execute(f"PRAGMA user_version={_VERSION}")
-                elif version in {1, 2, 3, 4, 5} and app_id == _APP_ID and migrate is True:
+                elif version in {1, 2, 3, 4, 5, 6} and app_id == _APP_ID and migrate is True:
                     if version >= 3:
                         lease_row = db.execute("SELECT owner,generation,expires_ms,last_seen_ms FROM worker_lease WHERE singleton=1").fetchone()
                         now = self._now()
@@ -115,7 +116,8 @@ class SQLiteActionJournal:
                         self._create_lease_tables(db)
                     if version < 5:
                         create_security_schema(db)
-                    self._create_control_tables(db)
+                    if version < 6:
+                        self._create_control_tables(db)
                     db.execute(f"PRAGMA user_version={_VERSION}")
                 elif version != _VERSION or app_id != _APP_ID:
                     raise JournalError("Unsupported or foreign journal schema; explicit migration required")
@@ -536,34 +538,86 @@ class SQLiteActionJournal:
                 for seq, version, kind, record in rows]
 
     def save_task(self, task_id: str, checkpoint: dict, expected_version: int | None) -> int:
+        with self._transaction(writer_kind="TASK_CHECKPOINT", subject=task_id) as db:
+            return self._save_task(db, task_id, checkpoint, expected_version)
+
+    def _save_task(self, db, task_id, checkpoint, expected_version, *, authenticated_admission=False):
         if checkpoint.get("task_id") != task_id:
             raise JournalError("Task checkpoint identity mismatch")
         payload = _json(checkpoint)
-        with self._transaction(writer_kind="TASK_CHECKPOINT", subject=task_id) as db:
-            if expected_version is None:
-                self._guard_new_work(db)
-            contract = checkpoint.get("workflow_contract")
-            if contract is not None:
-                try:
-                    validate_record(contract)
-                except WorkflowContractError as exc:
-                    raise JournalError("Invalid workflow contract") from exc
-                definitions = [{"tool_name": s["tool_name"], "kind": s["kind"]} for s in contract["steps"]]
-                if checkpoint.get("step_definitions") != definitions:
-                    raise JournalError("Task definitions disagree with workflow contract")
-            row = db.execute("SELECT version,checkpoint FROM task_checkpoints WHERE task_id=?", (task_id,)).fetchone()
-            if (row[0] if row else None) != expected_version:
-                raise JournalConflict("Task checkpoint version changed")
-            if row is not None and canonical(json.loads(row[1]).get("workflow_contract")) != canonical(contract):
+        if expected_version is None:
+            self._guard_new_work(db)
+        contract = checkpoint.get("workflow_contract")
+        if contract is not None:
+            try:
+                validate_record(contract)
+            except WorkflowContractError as exc:
+                raise JournalError("Invalid workflow contract") from exc
+            definitions = [{"tool_name": s["tool_name"], "kind": s["kind"]} for s in contract["steps"]]
+            if checkpoint.get("step_definitions") != definitions:
+                raise JournalError("Task definitions disagree with workflow contract")
+        binding = checkpoint.get("proposal_binding")
+        if binding is not None:
+            if expected_version is None and not authenticated_admission:
+                raise PermissionDeniedError("Reviewed tasks require authenticated admission")
+            try:
+                validate_binding(binding, checkpoint)
+            except (ProposalAdmissionError, WorkflowContractError) as exc:
+                raise JournalError("Invalid proposal binding") from exc
+        row = db.execute("SELECT version,checkpoint FROM task_checkpoints WHERE task_id=?", (task_id,)).fetchone()
+        if (row[0] if row else None) != expected_version:
+            raise JournalConflict("Task checkpoint version changed")
+        if row is not None:
+            previous = json.loads(row[1])
+            if canonical(previous.get("workflow_contract")) != canonical(contract):
                 raise JournalError("Task workflow contract is immutable; legacy records cannot be adopted implicitly")
-            version = 0 if expected_version is None else expected_version + 1
-            if row is None:
-                db.execute("INSERT INTO task_checkpoints VALUES (?,?,?)", (task_id, version, payload))
-            else:
-                db.execute("UPDATE task_checkpoints SET version=?,checkpoint=? WHERE task_id=? AND version=?",
-                           (version, payload, task_id, expected_version))
-            db.execute("INSERT INTO task_events(task_id,version,checkpoint) VALUES (?,?,?)", (task_id, version, payload))
+            if canonical(previous.get("proposal_binding")) != canonical(binding):
+                raise JournalError("Task proposal binding is immutable")
+        version = 0 if expected_version is None else expected_version + 1
+        if row is None:
+            db.execute("INSERT INTO task_checkpoints VALUES (?,?,?)", (task_id, version, payload))
+        else:
+            db.execute("UPDATE task_checkpoints SET version=?,checkpoint=? WHERE task_id=? AND version=?",
+                       (version, payload, task_id, expected_version))
+        db.execute("INSERT INTO task_events(task_id,version,checkpoint) VALUES (?,?,?)", (task_id, version, payload))
         return version
+
+    def admit_task(self, checkpoint, token):
+        """Trusted host API: authenticate and insert the reviewed task in ONE transaction.
+
+        No tool calls or approval creation. Same task/binding is idempotent even
+        after task progress; never overwrite its current checkpoint on replay.
+        """
+        binding = checkpoint.get("proposal_binding")
+        validate_binding(binding, checkpoint)
+        task_id = checkpoint["task_id"]
+        with self._transaction(writer_kind="TASK_CHECKPOINT", subject=task_id) as db:
+            authority = SecurityAuthority(self)
+            now = authority._now(db)
+            actor = authority._authenticate(db, token, now)
+            expected = binding["reviewer"]
+            if (expected != {"principal_id": actor.principal_id, "version": actor.version,
+                             "credential_id": actor.credential_id} or
+                    not set(binding["required_permissions"]) <= actor.permissions or
+                    not binding["reviewed_ms"] <= now < binding["expires_ms"]):
+                raise PermissionDeniedError("Proposal review authority expired or changed")
+            self._guard_new_work(db)
+            row = db.execute("SELECT checkpoint FROM task_checkpoints WHERE task_id=?", (task_id,)).fetchone()
+            if row is not None:
+                if canonical(json.loads(row[0]).get("proposal_binding")) != canonical(binding):
+                    raise JournalConflict("Task identity already has another proposal binding")
+                return
+            count = len(binding["arguments"])
+            if (checkpoint.get("state") != "PENDING" or checkpoint.get("current_step_index") != 0 or
+                    checkpoint.get("step_states") != ["PENDING"] * count or
+                    any(checkpoint.get(k) != [None] * count for k in
+                        ("step_results", "step_action_ids", "step_dispatched_args")) or
+                    checkpoint.get("step_generations") != [0] * count or checkpoint.get("replan_from") is not None):
+                raise JournalError("Admission requires an unexecuted initial checkpoint")
+            self._save_task(db, task_id, checkpoint, None, authenticated_admission=True)
+            authority._event(db, "TASK_ADMITTED", now, task_id=task_id, review_id=binding["review_id"],
+                             principal_id=actor.principal_id, principal_version=actor.version,
+                             credential_id=actor.credential_id, binding_digest=binding["digest"])
 
     def load_task(self, task_id: str) -> tuple[int, dict] | None:
         with self._transaction() as db:

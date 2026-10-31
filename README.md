@@ -115,6 +115,11 @@ The [voice evidence boundary](docs/engineering/voice-evidence.md) replaces the
 unsafe live demo path with a proposal-only LiveKit word-evidence hook. Missing
 confidence/timing stays unavailable, revisions replace previous hypotheses,
 and speech endpoints never authorize mutations or complete durable tasks.
+The [reviewed task admission API](docs/engineering/reviewed-task-admission.md)
+adds explicit local-credential acceptance of a current proposal and exact
+versioned arguments into a durable PENDING task. Admission does not execute or
+approve a tool. Its schema-7 fence requires offline migration; the protected
+browser review flow and live participant identity remain open.
 The old `python -m agent` entrypoint is disabled; its fleet harness remains
 explicitly SIMULATED. No new voice provider or microphone is enabled.
 Run `python -m eval.voice_replay` for the credential-free, deterministic voice
