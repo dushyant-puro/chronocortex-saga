@@ -84,7 +84,7 @@ jobs:
           --dest results/wheel-source -r requirements.txt
       - run: ${{ matrix.python }} -m scripts.wheelhouse capture --profile runtime --source results/wheel-source --output results/offline-wheels
       - run: ${{ matrix.python }} -m scripts.wheelhouse verify --profile runtime --directory results/offline-wheels
-      - run: ${{ matrix.python }} -m pytest -q -p no:cacheprovider
+      - run: ${{ matrix.python }} -m pytest -q -p no:cacheprovider --junitxml=results/runtime-tests.xml
       - run: ${{ matrix.python }} -m eval.voice_replay --output results/voice-evidence-scorecard.json
       - run: ${{ matrix.python }} -m eval.provider_faults --output results/provider-process-scorecard.json
       - run: ${{ matrix.python }} -m eval.mutation_comparison --output results/mutation-comparison.json
@@ -97,6 +97,7 @@ jobs:
             results/install-runtime.json
             results/environment-runtime.json
             results/offline-wheels/wheelhouse.json
+            results/runtime-tests.xml
           if-no-files-found: ignore
           retention-days: 7
       - uses: actions/upload-artifact@v4
