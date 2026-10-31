@@ -3,6 +3,11 @@
 See [implementation.md](implementation.md) for the consolidated implementation
 history, exact-source test evidence, unresolved findings and remaining acceptance gates.
 
+To try the console and a real two-approval task path with **SIMULATED local
+effects**, use the [local acceptance walkthrough](docs/engineering/local-acceptance.md).
+No sandbox key or microphone is needed; this is separate from live-provider,
+live-voice and production-release acceptance.
+
 **Voice turn ≠ task.** Conversational interruption and correction must not erase
 durable work or make uncertain remote effects safe to retry.
 
