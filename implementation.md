@@ -22,10 +22,13 @@ transition cannot establish that a remote effect was undone.
 The preceding feature is [draft PR #29](https://github.com/dushyant-puro/chronocortex-saga/pull/29),
 branch `codex/reviewed-task-admission`, head
 `0b29abf8ae39cda0df8e9ce6ff9289c59d3a59bb`. Its base is the Windows setup
-diagnostics branch at `37e1d86`. The current bounded qualification phase starts
+diagnostics branch at `37e1d86`. The subsequent bounded qualification phase starts
 from this head on `codex/qualification-failure-evidence`, [draft PR #30](https://github.com/dushyant-puro/chronocortex-saga/pull/30).
 Its observer/regression implementation is `452b8b9f556cc5eee2d93a93214d493ff9ee7367`;
-this consolidated report is a separate follow-up commit. No merge, tag, release
+the report follow-up `973f532` passed all ten push/PR CI jobs. The current
+hands-on feature is [draft PR #31](https://github.com/dushyant-puro/chronocortex-saga/pull/31),
+branch `codex/local-acceptance-walkthrough`, implementation `93813f9`.
+No merge, tag, release
 or deployment has been performed as part of these phases.
 
 Historical prototype phase numbers extend beyond the original roadmap and
@@ -33,6 +36,29 @@ include gaps/revisions. They are not counts of production-complete phases.
 In particular, a previous local implementation report was not evidence that
 public `main` contained it. Current branch ancestry and remote refs are the
 source of truth; do not replace this stack with the Phase 0 checkout.
+
+## What you can test now
+
+The [local acceptance walkthrough](docs/engineering/local-acceptance.md) runs a
+real authenticated console, supervised two-step task and separate approvals
+against a **SIMULATED** SQLite effect ledger. On Windows, from a qualified
+checkout/environment:
+
+```powershell
+.\scripts\start_local_acceptance.ps1
+```
+
+It creates a unique protected directory outside Git, prints the loopback URL,
+and retains evidence on stop. Use its `operator.secret` only in the local login
+form and `SIMULATED-local-worker` as the execution principal. Never paste the
+credential into chat. Approve each step separately, disconnect/reconnect, or
+cancel before/after the first fake effect. Existing runs cannot be resumed or
+overwritten. Follow the runbook for clipboard handling and exact expectations.
+
+This is a canned pre-admitted fixture, not the missing interactive
+transcript-to-task review flow. No actual payment or microphone is involved.
+The workspace `.venv` was prepared offline and passed the runtime audit during
+this phase; other checkouts still need the locked environment setup.
 
 ## Architecture and authority flow
 
@@ -94,6 +120,7 @@ hardening supersedes assumptions in earlier prototypes.
 | Windows setup qualification | `6b60f99`, `37e1d86`; [setup diagnostics](docs/engineering/windows-setup-qualification.md), PR #28. Opt-in secret-free stages, unchanged 20-second test budget, retained JUnit on CI failure. | Historical timeout cause is unconfirmed; no security assertion/timeout was weakened. |
 | Authenticated task admission | `587342a`, `0b29abf`; [admission contract](docs/engineering/reviewed-task-admission.md), PR #29. Current evidence + reviewer/version/credential + exact static arguments + pinned workflow -> atomic PENDING task/audit. Duplicate acceptance preserves progress. Separate operation approvals remain required. Schema 7 fences old workers. | Local host API only. Protected browser review, durable proposal inbox, dependent plans and participant identity remain open. |
 | Pre-cleanup qualification evidence | `452b8b9`; [failure evidence](docs/engineering/qualification-failure-evidence.md), PR #30. Bounded all-peer observations, read-only ledger counters, no-clobber redacted CI artifacts, typed failed-scorecard evidence and deterministic post-effect contention recovery regression. | Historical root causes remain unconfirmed; observations are non-atomic and grant no retry/dispatch authority. |
+| Hands-on local acceptance | `93813f9`; [walkthrough](docs/engineering/local-acceptance.md), PR #31. Unique protected Windows run, loopback-only UI, canned immutable task, real local approvals/supervisor, separate fake effect ledger, disconnect/cancel/UNKNOWN and verified shutdown behavior. | SIMULATED effects only; no human voice-proposal review UI, live provider, resume of existing runs or production hosting. |
 
 Early prototype TaskGraph, memory/grounding and autonomy code is present in
 history. Its presence does not qualify unattended production autonomy. The
@@ -123,7 +150,7 @@ it does not silently adopt a prototype's dynamic argument builder.
 10. Backups, read-only inspection and passing fake-provider drills do not confer
     restore/dispatch authority or prove freshness/provider reconciliation.
 
-## Verified test evidence before this next phase
+## Verified test evidence by source
 
 | Exact source | Evidence | Meaning / limits |
 | --- | --- | --- |
@@ -132,6 +159,8 @@ it does not silently adopt a prototype's dynamic argument builder.
 | `587342a` | Fresh GitHub clone, 80 hash-locked binary packages installed offline; Windows 1,376 passed/two skipped; process drill 5/5 and 122 checks. | Initial PR #29 implementation. CI 9/10; Windows shutdown/finalization contention failed. |
 | `0b29abf` | Clean GitHub source, exact offline environment; Windows 1,377 passed/two skipped, including 62 admission cases; independent process drill 5/5 and 122 checks. | Final PR #29 source. Push CI 5/5, PR CI 4/5; Linux proxy-barrier timeout remained. |
 | `452b8b9` implementation | Fresh GitHub clone/new 80-package offline environment: exact audit passed; full Windows suite 1,387 passed/two skipped. Focused suite: 91 passed, including ten added capture/contention cases. Linux CI: 1,363 passed/26 skipped. | PR #30. Qualified counts reflect the run started after installation completed and its environment audit passed. Exact final CI conclusions are recorded in the PR. |
+| `973f532` report follow-up | All ten push/PR CI jobs passed; 30 artifact metadata records matched this exact head. | Documentation-only follow-up to `452b8b9`. Historical contention/barrier causes remain open. |
+| `93813f9` local walkthrough | Independent fresh GitHub clone/new 80-package offline environment: Windows 1,401 passed/two skipped. Fourteen focused runtime/native cases passed. Clean-source Chromium suite: 21 passed in a separately audited browser environment, including two new desktop/mobile journeys. | PR #31 records exact-head CI. One implementation-source Windows push job failed before checkout while downloading actions; no repository tests ran in that job. This is not evidence of a code-test failure or a fully green CI result. |
 
 Windows skips in the latest full run were the POSIX directory-mode case and
 live SDK session initialization without an OpenAI API key. Neither is live
@@ -145,7 +174,7 @@ checks**. Its updated harness SHA-256 is
 it includes the new observer module. Earlier harness hashes remain evidence
 only for their earlier source. No actual provider or live audio was used.
 
-## Unresolved findings and this next bounded phase
+## Unresolved reliability findings and diagnostic boundary
 
 - [Initial Windows PR job](https://github.com/dushyant-puro/chronocortex-saga/actions/runs/41182510247/job/124482628422):
   `test_cancelled_shutdown_waiter_cannot_cancel_drain` failed with SQLite busy
@@ -158,13 +187,14 @@ only for their earlier source. No actual provider or live audio was used.
   This does not establish whether the worker sent a request or why the barrier
   was absent. Later evaluation steps in the failed job did not run.
 
-The current phase adds bounded observations of all peers and fixed ledger counters
+The reliability follow-up adds bounded observations of all peers and fixed ledger counters
 **before cleanup** and retains only redacted JSON failure artifacts in CI. It
 also adds a deterministic post-effect/local-finalization-contention regression:
 dispatch intent survives, restart projects UNKNOWN, and the original operation
 cannot be replayed. These are controlled safety schedules, not a claimed
-reproduction or fix of either historical CI cause. Qualification results for
-this new branch must be recorded separately from the table above.
+reproduction or fix of either historical CI cause. Qualification remains
+attributed to each exact source in the table and its PR; a later passing run
+does not establish the earlier causal schedule.
 
 The snapshots are separate, non-atomic observations. Missing/locked evidence is
 UNAVAILABLE, not zero effects. Raw journals, credentials, provider payloads,

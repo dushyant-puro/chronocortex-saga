@@ -31,7 +31,8 @@ An optional `-Python` selects a different qualified interpreter; `-Port 8878`
 selects another loopback port if 8877 is occupied. No host/provider/key override
 exists. Do not choose shared/synced storage or a Git worktree.
 
-Open **http://127.0.0.1:8877** after `LOCAL_ACCEPTANCE_READY` appears. In a second
+Open **http://127.0.0.1:8877** after `LOCAL_ACCEPTANCE_READY` appears (use the
+printed URL if you selected another port). In a second
 PowerShell window, use the **exact new directory printed by the launcher**:
 
 ```powershell
@@ -90,6 +91,27 @@ requests supervised shutdown; it does not delete evidence or establish rollback.
 An OS/storage hang or forced process kill is not a guaranteed graceful drain.
 The command reports a clean interruption only after owned drain and lease
 release are verified; parked uncertainty or an incomplete stop returns failure.
+
+## Optional independent check of the fake effects
+
+With `$acceptanceRun` still set to the exact run directory, this reads the
+separate ledger without creating a missing database or changing task state:
+
+```powershell
+$env:CCS_ACCEPTANCE_LEDGER = Join-Path $acceptanceRun 'simulated-effects.db'
+@'
+import os, sqlite3
+from contextlib import closing
+from pathlib import Path
+path = Path(os.environ['CCS_ACCEPTANCE_LEDGER']).resolve(strict=True)
+with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as db:
+    print('SIMULATED committed steps:', db.execute('SELECT step FROM effects ORDER BY step').fetchall())
+'@ | .\.venv\Scripts\python.exe -
+```
+
+Expect no rows before approval, step 1 after the first effect and steps 1/2
+after completion. A temporary read failure is unavailable evidence, not zero
+effects. This ledger models only this fake executor, not Stripe idempotency.
 
 ## Data, scope and failure handling
 

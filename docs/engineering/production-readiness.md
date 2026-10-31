@@ -21,6 +21,10 @@ remain open; schema 7 requires an explicit offline migration.
 That phase's initial Windows PR run also exposed a shutdown/drain lock-contention
 failure (`FORWARD_COMMITTED`, renewal `AUTHORIZE`/`SQLITE_BUSY`). Passing local and
 push runs do not close its unconfirmed cause; see the qualification record above.
+The [local acceptance walkthrough](local-acceptance.md) now lets an operator
+test the real console/task/auth/supervisor path with two separately approved
+SIMULATED effects, including disconnect and cancellation. It pre-admits a
+canned task; protected voice-proposal review and real assets remain open.
 
 **PUBLIC MAIN VERIFIED:** `4162ec17f4bda15c13de3fa1f0e1e33e3fe35591`, the original
 Phase 0 baseline. The safety stack remains unmerged. **LOCAL BRANCH VERIFIED:**
@@ -50,6 +54,12 @@ from one commit to another.
 These are substantial foundations. Passing offline tests does not close the
 seven release-acceptance areas below. **SIMULATED** effects cannot be relabeled
 **REAL PROVIDER**, and a skipped live-voice placeholder is not audio acceptance.
+
+For practical testing, three areas gate a connected research alpha (review
+product flow, real voice and real provider acceptance); the other four concern
+operations, recovery, independent research and release qualification. You can
+test the isolated local walkthrough before those larger gates close. This is
+a dependency grouping, not a promise of seven small PRs or a release date.
 
 ## Seven remaining acceptance areas
 
