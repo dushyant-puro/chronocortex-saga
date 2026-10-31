@@ -1,32 +1,23 @@
 """Exercise real Windows ACLs with SIMULATED keys; never contact Stripe."""
 import os
 from pathlib import Path
-import shutil
-import subprocess
 
 import pytest
 
 from runtime.credential_input import read_stripe_key_file
 from test_stripe_sandbox import KEY
+from tests.windows_shell_support import run_shell as shell, setup_stages, WindowsShellFailure
 
 
 pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows ACL and masked PowerShell key setup")
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "save_stripe_sandbox_key.ps1"
 
 
-def shell(source):
-    # A PowerShell 7 parent can export its incompatible modules into Windows
-    # PowerShell 5.1. Let this subprocess discover its own standard modules.
-    environment = {name: value for name, value in os.environ.items() if name.upper() != "PSMODULEPATH"}
-    return subprocess.run([shutil.which("powershell.exe"), "-NoProfile", "-NonInteractive", "-Command", source],
-                          capture_output=True, text=True, timeout=20, env=environment)
-
-
 def quoted(value):
     return "'" + str(value).replace("'", "''") + "'"
 
 
-def invoke(directory, key=KEY, *, input_body=None, prefix=""):
+def invoke(directory, key=KEY, *, input_body=None, prefix="", diagnostics=True):
     # Only SIMULATED data is in this test command. Real users enter a key at the
     # masked prompt; the script exposes no parameter or environment-key fallback.
     body = input_body or (
@@ -36,7 +27,7 @@ def invoke(directory, key=KEY, *, input_body=None, prefix=""):
         f"ConvertTo-SecureString -String {quoted(key)} -AsPlainText -Force"
     )
     source = (prefix + "function Read-Host { param([string]$Prompt, [switch]$AsSecureString); " + body + " }; "
-              f"& {quoted(SCRIPT)} -Directory {quoted(directory)}; exit $LASTEXITCODE")
+              f"& {quoted(SCRIPT)} -Directory {quoted(directory)} {'-Diagnostics' if diagnostics else ''}; exit $LASTEXITCODE")
     return shell(source)
 
 
@@ -97,6 +88,7 @@ def test_failed_acl_verification_stops_before_secret_prompt(tmp_path):
     result = invoke(directory, input_body="throw 'must not prompt'",
                     prefix="function Set-Acl { param($LiteralPath, $AclObject) }; ")
     assert result.returncode == 1 and "ACL_NOT_VERIFIED" in result.stderr
+    assert "VERIFY_ACL" in setup_stages(result.stderr) and "READ_SECRET" not in setup_stages(result.stderr)
     assert not (directory / "stripe-test.key").exists()
 
 
@@ -107,6 +99,7 @@ def test_file_created_during_input_is_not_overwritten(tmp_path):
             f"ConvertTo-SecureString -String {quoted(KEY)} -AsPlainText -Force")
     result = invoke(directory, input_body=body)
     assert result.returncode == 1 and "KEY_SAVE_FAILED" in result.stderr
+    assert "CREATE_FILE" in setup_stages(result.stderr) and "WRITE_FILE" not in setup_stages(result.stderr)
     assert path.read_text(encoding="ascii") == "SIMULATED-original"
     assert KEY not in result.stdout + result.stderr
 
@@ -154,3 +147,41 @@ def test_prompt_exception_is_sanitized_and_leaves_no_key(tmp_path):
     assert result.returncode == 1 and "KEY_INPUT_INVALID" in result.stderr
     assert KEY not in result.stdout + result.stderr
     assert not (directory / "stripe-test.key").exists()
+
+
+def test_opt_in_trace_orders_security_and_write_boundaries_without_key_values(tmp_path):
+    result = invoke(tmp_path / "traced")
+    assert result.returncode == 0
+    assert setup_stages(result.stderr) == ["PROCESS_STARTED", "VALIDATE_PATH", "CREATE_DIRECTORY", "APPLY_ACL",
+        "VERIFY_ACL", "READ_SECRET", "VALIDATE_SECRET", "CREATE_FILE", "WRITE_FILE", "FLUSH_FILE", "CLEANUP", "COMPLETE"]
+    assert KEY not in result.stdout + result.stderr
+
+
+def test_default_production_trace_is_off(tmp_path):
+    result = invoke(tmp_path / "not-traced", diagnostics=False)
+    assert result.returncode == 0
+    assert setup_stages(result.stderr) == ["PROCESS_STARTED"]  # Test-runner marker only.
+    assert KEY not in result.stdout + result.stderr
+
+
+def test_failed_diagnostic_writer_does_not_break_key_save(tmp_path):
+    directory = tmp_path / "failed-diagnostic-writer"
+    prefix = ("$closed = [System.IO.StreamWriter]::new([System.IO.MemoryStream]::new()); "
+              "$closed.Dispose(); [Console]::SetError($closed); ")
+    result = invoke(directory, prefix=prefix)
+    assert result.returncode == 0
+    assert read_stripe_key_file(directory / "stripe-test.key") == KEY
+    assert KEY not in result.stdout + result.stderr
+
+
+def test_blocked_native_process_times_out_without_creating_or_retrying_setup(tmp_path):
+    directory = tmp_path / "blocked-before-setup"
+    # An unreleased event, rather than a timing sleep, blocks before invocation.
+    prefix = "$barrier = [System.Threading.ManualResetEvent]::new($false); $null = $barrier.WaitOne(); "
+    with pytest.raises(WindowsShellFailure) as failure:
+        invoke(directory, prefix=prefix)
+    assert failure.value.reason == "TIMEOUT"
+    assert failure.value.stage in {"PROCESS_STARTED", "UNOBSERVED"}
+    assert "budget_seconds=20" in str(failure.value)
+    assert KEY not in str(failure.value) + repr(failure.value)
+    assert not directory.exists()

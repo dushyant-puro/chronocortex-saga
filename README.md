@@ -63,6 +63,8 @@ The [read-recovery contract](docs/engineering/console-read-recovery.md) separate
 transient read errors from command uncertainty and preserves unresolved operation IDs.
 The [failure-diagnostics runbook](docs/engineering/failure-diagnostics.md) covers
 bounded failure categories, deterministic SQLite contention and retained uncertainty.
+The [Windows setup qualification](docs/engineering/windows-setup-qualification.md)
+adds opt-in secret-free checkpoints and retains timeout evidence without relaxing security checks.
 Production startup generates no demo data, credentials, provider adapter or
 background worker.
 
