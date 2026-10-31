@@ -20,6 +20,9 @@ import uvicorn
 import httpx2 as httpx
 
 from control.app import ControlConfig, create_app
+from acceptance.local import create_app as create_acceptance_app, WORKER as ACCEPTANCE_WORKER
+from runtime.credential_input import read_credential_file
+from runtime.security_authority import LocalCredential
 from tests.control_test_support import seed_control
 from runtime.action_journal import SQLiteActionJournal
 from runtime.worker_supervisor import WorkerSupervisor
@@ -516,3 +519,88 @@ def test_supervision_view_distinguishes_manual_lease_live_reports_and_stopped_ho
     expect(page.locator("#worker-state")).to_have_text("LEASE EXPIRED")
     expect(page.locator("#worker-health")).to_contain_text("NOT READY")
     expect(page.locator("#worker-details")).to_contain_text("STOPPED")
+
+
+@pytest.fixture
+def local_acceptance(tmp_path, chromium):
+    directory = tmp_path / "local-acceptance"
+    directory.mkdir(mode=0o700)
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    origin = f"http://127.0.0.1:{sock.getsockname()[1]}"
+    app = create_acceptance_app(directory, origin)
+    server = uvicorn.Server(uvicorn.Config(app, log_level="critical", access_log=False, proxy_headers=False))
+    thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 10
+    try:
+        while not server.started:
+            assert thread.is_alive() and time.monotonic() < deadline
+            time.sleep(.01)
+        context = chromium.new_context(viewport={"width": 1440, "height": 1000}, reduced_motion="reduce")
+        page = context.new_page()
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        page.goto(origin)
+        secret = read_credential_file(directory / "operator.secret")
+        env = SimpleNamespace(operator=LocalCredential(secret.split(".", 1)[0], secret))
+        yield app, env, page
+        context.close()
+        assert not errors
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)
+        sock.close()
+        credential_id = read_credential_file(directory / "operator.secret").split(".", 1)[0]
+        SQLiteActionJournal(app.state.acceptance_files.journal).security.revoke_credential(credential_id)
+    assert not thread.is_alive()
+
+
+def acceptance_pending(app, previous=None):
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline:
+        records = SQLiteActionJournal(app.state.acceptance_files.journal).records()
+        pending = [r["action_id"] for _, r in records if r["state"] == "PENDING" and r["action_id"] != previous]
+        if pending:
+            return pending[-1]
+        time.sleep(.01)
+    raise AssertionError("Expected a fresh approval boundary")
+
+
+def test_local_walkthrough_requires_two_separate_browser_approvals(local_acceptance):
+    app, env, page = local_acceptance
+    expect(page.get_by_role("note", name="Simulation mode")).to_be_visible()
+    connect(env, page)
+    first = acceptance_pending(app)
+    for index in range(2):
+        action = first if index == 0 else acceptance_pending(app, first)
+        inspect(page, "actions", action)
+        expect(page.locator("#detail")).to_contain_text("SIMULATED")
+        page.get_by_role("button", name="Approve forward operation", exact=True).click()
+        page.get_by_label("Execution principal").fill(ACCEPTANCE_WORKER)
+        confirm(page)
+    page.get_by_role("button", name="Refresh", exact=True).click()
+    inspect(page, "tasks", app.state.acceptance_task_id)
+    expect(page.locator("#detail")).to_contain_text("COMPLETED", timeout=8000)
+    page.get_by_role("button", name="Refresh", exact=True).click()
+    expect(page.locator("#record-content table").first).to_contain_text("COMPLETED")
+    with closing(sqlite3.connect(app.state.acceptance_files.ledger)) as db:
+        assert db.execute("SELECT step FROM effects ORDER BY step").fetchall() == [(1,), (2,)]
+    artifacts = Path("results/console-browser")
+    artifacts.mkdir(parents=True, exist_ok=True)
+    page.screenshot(path=str(artifacts / "local-acceptance.png"), full_page=True)
+
+
+def test_local_walkthrough_cancellation_is_explicit_and_mobile_label_stays_visible(local_acceptance):
+    app, env, page = local_acceptance
+    page.set_viewport_size({"width": 390, "height": 844})
+    expect(page.get_by_role("note", name="Simulation mode")).to_be_visible()
+    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+    connect(env, page)
+    acceptance_pending(app)
+    inspect(page, "tasks", app.state.acceptance_task_id)
+    page.get_by_role("button", name="Record cancellation intent", exact=True).click()
+    confirm(page)
+    expect(page.locator("#detail")).to_contain_text("CANCELLED")
+    with closing(sqlite3.connect(app.state.acceptance_files.ledger)) as db:
+        assert db.execute("SELECT count(*) FROM effects").fetchone()[0] == 0
