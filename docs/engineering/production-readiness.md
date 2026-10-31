@@ -39,7 +39,7 @@ from one commit to another.
 - A restricted sandbox-provider adapter, supervised drill and GET-only preflight/
   reconciliation commands; real-provider acceptance is still outstanding.
 - Revision-aware voice evidence, proposal-only SDK hooks and voice/task isolation;
-  live audio and authenticated proposal-to-task binding remain outstanding.
+  live audio and the protected proposal-review product integration remain outstanding.
 - Locked Python graphs, metadata/advisory gates, read-only recovery preflight,
   encrypted backup/drill tooling and offline key rotation.
 - Reproducible simulated voice, process-fault, mutation-comparison and whole-task
