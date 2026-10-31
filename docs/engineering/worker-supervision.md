@@ -136,7 +136,7 @@ not certify Windows ACLs or a hostile filesystem. Credential bytes are not CLI
 arguments, output, logs or environment variables. Missing/expired/revoked authority
 fails closed. Rotation requires a controlled restart with a newly supplied
 credential and fresh runtime; there is no automatic token replacement or fallback.
-The journal must already exist at schema 6; this command never initializes or
+The journal must already exist at the current runtime schema (now 7); this command never initializes or
 migrates a deployment implicitly.
 
 Ctrl+C schedules a graceful stop. Windows SIGBREAK and POSIX SIGTERM are mapped

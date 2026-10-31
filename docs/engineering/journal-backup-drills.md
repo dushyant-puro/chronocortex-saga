@@ -11,7 +11,7 @@ acceptance is performed by these commands.
 
 ## Safety contract
 
-`scripts.journal_backup` captures one schema-6 journal snapshot through SQLite's
+`scripts.journal_backup` captures one schema-6 or schema-7 journal snapshot through SQLite's
 backup API, checks it with [recovery preflight](recovery-preflight.md), and publishes
 a single new bundle. It never replaces an existing destination or the source's
 database/sidecar paths. The drill verifies the bundle and restores its snapshot
@@ -82,7 +82,11 @@ backup cannot fence a remote request already in flight. The concurrency test
 uses two real SQLite connections to verify that a writer's later commit cannot
 mix with the captured generation.
 
-Only rollback-format, schema-6 CCS journals are accepted. WAL is rejected before
+Only rollback-format, schema-6 or schema-7 CCS journals are accepted. Bundles
+record the actual schema and drills reject manifest/snapshot disagreement.
+Neither schema's evidence pass authorizes runtime adoption or activation.
+See [schema-7 migration and rollback](reviewed-task-admission.md#schema-7-migration-and-rollback).
+WAL is rejected before
 opening SQLite. The snapshot is limited to 64 MiB and preflight's existing row
 and projection bounds. Backup progress has a ten-second cooperative budget and
 250 ms lock timeout. Logical-dump verification is separately bounded to ten

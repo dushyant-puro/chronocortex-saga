@@ -53,7 +53,7 @@ def copy_database(source, target):
         reader.execute('PRAGMA trusted_schema=OFF')
         reader.execute('BEGIN')
         require(reader.execute('PRAGMA application_id').fetchone()[0] == 0x43435341)
-        require(reader.execute('PRAGMA user_version').fetchone()[0] == 6)
+        require(reader.execute('PRAGMA user_version').fetchone()[0] in {6, 7})
         require(reader.execute('PRAGMA journal_mode').fetchone()[0] == 'delete')
         require(reader.execute('PRAGMA page_count').fetchone()[0] *
                 reader.execute('PRAGMA page_size').fetchone()[0] <= MAX_BYTES)
@@ -105,7 +105,7 @@ def capture(journal, bundle):
             require(snapshot.stat().st_size <= MAX_BYTES)
             raw = snapshot.read_bytes()
             digest = hashlib.sha256(raw).hexdigest()
-            manifest = {'schema': 1, 'journal_schema': 6, 'sha256': digest, 'bytes': len(raw),
+            manifest = {'schema': 1, 'journal_schema': evidence['journal_schema'], 'sha256': digest, 'bytes': len(raw),
                         'captured_at': datetime.now(timezone.utc).isoformat()}
             metadata = json.dumps(manifest, sort_keys=True, separators=(',', ':')).encode('ascii')
             pending = Path(directory) / 'bundle.partial'
@@ -140,7 +140,7 @@ def read_bundle(path):
                               parse_constant=reject_constant)
         require(type(manifest) is dict and set(manifest) == {'schema', 'journal_schema', 'sha256', 'bytes', 'captured_at'})
         require(type(manifest['schema']) is int and manifest['schema'] == 1)
-        require(type(manifest['journal_schema']) is int and manifest['journal_schema'] == 6)
+        require(type(manifest['journal_schema']) is int and manifest['journal_schema'] in {6, 7})
         require(type(manifest['bytes']) is int and 0 < manifest['bytes'] <= MAX_BYTES)
         require(type(manifest['sha256']) is str and len(manifest['sha256']) == 64)
         require(type(manifest['captured_at']) is str and len(manifest['captured_at']) <= 64)
@@ -175,6 +175,7 @@ def drill(bundle, workspace):
                 stream.write(raw)
             evidence = inspect(snapshot)
             require(evidence['passed'])
+            require(evidence['journal_schema'] == manifest['journal_schema'])
             with closing(sqlite3.connect(':memory:')) as restored:
                 copy_database(snapshot, restored)
                 restored.execute('PRAGMA query_only=ON')
