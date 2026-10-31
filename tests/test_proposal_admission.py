@@ -400,6 +400,40 @@ async def test_admitted_task_preserves_unknown_effect_identity_without_retry(env
     assert task.step_action_ids[0] == action_id and env.effects == env.args
 
 
+@pytest.mark.asyncio
+async def test_multistep_admission_keeps_each_argument_and_operation_approval_separate(env):
+    second = replace(env.step, versions=replace(env.step.versions, step_id="second-move"))
+    template = replace(env.template, steps=(env.step, second))
+    service = ProposalAdmissionService(env.manager, env.voice, [template], source_id="SIMULATED:adapter")
+    arguments = [env.args[0], {"destination": "zone-c", "nested": {"items": [2]}}]
+    prepared = service.review(env.proposal, "reviewed-move", arguments,
+                              token=env.credentials["reviewer"].token)
+    service.admit(prepared.review_id, token=env.credentials["reviewer"].token)
+    task = env.manager.restore_task(prepared.task_id, steps=list(template.steps), workflow=template.workflow)
+    env.authority.provision_principal("approver", {"ccs:approve", "test:write"})
+    approver = env.authority.issue_credential("approver")
+    with pytest.raises(ConfirmationRequiredError):
+        await env.manager.run_task(task.task_id)
+    first_id = task.step_action_ids[0]
+    first_approval = env.authority.issue_approval(approver.token, "worker", first_id)
+    env.saga.auth_context = AuthorizationContext(credential=env.credentials["worker"].token,
+                                               approval_id=first_approval)
+    with pytest.raises(ConfirmationRequiredError):
+        await env.manager.run_task(task.task_id)
+    assert env.effects == arguments[:1] and task.current_step_index == 1
+    second_id = task.step_action_ids[1]
+    assert second_id != first_id
+    complete(env.voice, "a new unrelated conversation")
+    env.manager.on_field_evicted("destination", "zone-b")
+    second_approval = env.authority.issue_approval(approver.token, "worker", second_id)
+    env.saga.auth_context = AuthorizationContext(credential=env.credentials["worker"].token,
+                                               approval_id=second_approval)
+    await env.manager.run_task(task.task_id)
+    assert task.state == TaskState.COMPLETED and env.effects == arguments
+    assert task.step_action_ids == [first_id, second_id]
+    assert env.manager.checkpoint(task.task_id)["proposal_binding"]["arguments"] == arguments
+
+
 def test_allowlist_rejects_lazy_or_voice_dependent_workflows(env):
     for step in (replace(env.step, build_args=lambda t, i: {}), replace(env.step, required_fields=["voice"])):
         with pytest.raises(ProposalAdmissionError, match="STATIC_ARGUMENTS"):

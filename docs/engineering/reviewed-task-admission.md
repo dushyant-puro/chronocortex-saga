@@ -169,7 +169,39 @@ Run in PowerShell from the checkout with its locked environment:
 ```
 
 Exact commit/environment/clean-checkout and CI evidence belongs in this phase's
-PR. Still open: protected transcript-to-arguments review UI/API, durable proposal
+PR. The initial implementation at `587342a6a3d2518e7780507a207ba8d0b72df8b0`
+was independently cloned from GitHub on Windows and installed into a new
+environment from 80 hash-locked binary wheels without network installation.
+Dependency audit and `pip check` passed; the full suite passed **1,376 tests,
+two skipped**. Skips were the POSIX-only directory-mode check and live OpenAI
+session initialization without an API key. The separate **SIMULATED** TCP/process
+drill passed **5/5 cases and 122 checks**. No performance result is inferred.
+
+The actual preceding schema-6 journal implementation from `37e1d86` was loaded
+for a separate migration drill. The legacy checkpoint survived migration; its
+existing reader/writer and new openers (including opt-in migration) all refused
+schema 7, without changing the database afterward. These were synthetic fixture
+databases; no existing user journal was migrated.
+
+The initial implementation's push CI passed all five jobs. Its PR CI passed
+four of five: Linux runtime **1,352 passed/26 skipped**, and Chromium **19 passed**
+on each OS. The Windows PR runtime failed
+[`test_cancelled_shutdown_waiter_cannot_cancel_drain`](https://github.com/dushyant-puro/chronocortex-saga/actions/runs/41182510247/job/124482628422)
+with SQLite lock contention while recording `FORWARD_COMMITTED`; the retained
+diagnostic also classified renewal `AUTHORIZE` as `SQLITE_BUSY`. That run had
+**1 failed, 1,375 passed, two skipped**, and its later evaluation steps did not
+run. A focused clean-checkout local follow-up passed once. The lock holder and
+causal schedule remain unconfirmed; this is an open reliability finding, not
+proof that Windows or shutdown is qualified. No retry, timeout relaxation,
+worker-policy change or weakened assertion was introduced to hide it.
+
+The qualification follow-up adds a two-step acceptance test: distinct reviewed
+arguments require separate operation approvals and survive an unrelated voice
+turn without revising the first effect. There are now **62 admission cases**.
+The final commit's fresh-checkout/CI outcome is recorded separately in the PR;
+passing one commit does not transfer qualification to another.
+
+Still open: protected transcript-to-arguments review UI/API, durable proposal
 inbox and cross-process delivery, identity/session association, consent/retention,
 dependent/result-derived plans, explicit correction/replacement UX, live voice,
 real provider acceptance, deployment and release qualification. No universal

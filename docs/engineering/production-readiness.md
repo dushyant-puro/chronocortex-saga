@@ -18,6 +18,9 @@ local-credential acceptance to current evidence, a versioned workflow and exact
 immutable arguments. It creates PENDING work atomically without dispatch or
 operation approval. Its protected UI, participant identity and live acceptance
 remain open; schema 7 requires an explicit offline migration.
+That phase's initial Windows PR run also exposed a shutdown/drain lock-contention
+failure (`FORWARD_COMMITTED`, renewal `AUTHORIZE`/`SQLITE_BUSY`). Passing local and
+push runs do not close its unconfirmed cause; see the qualification record above.
 
 **PUBLIC MAIN VERIFIED:** `4162ec17f4bda15c13de3fa1f0e1e33e3fe35591`, the original
 Phase 0 baseline. The safety stack remains unmerged. **LOCAL BRANCH VERIFIED:**
