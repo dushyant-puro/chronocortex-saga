@@ -4,6 +4,7 @@ Every remote effect is SIMULATED. No network service or real key is required.
 """
 import copy
 import json
+from pathlib import Path
 import subprocess
 import sys
 
@@ -17,7 +18,8 @@ from providers.stripe_sandbox import API_VERSION, CONTRACT, StripeSandboxConfig
 
 @pytest.mark.parametrize("name", evaluation.CASES)
 def test_independent_process_and_tcp_fault_acceptance(tmp_path, name):
-    result = evaluation.run_case(tmp_path / name, name)
+    result = evaluation.run_case(tmp_path / name, name,
+                                 failure_output=Path("results/provider-failure-evidence"))
     assert result["passed"], {k: v for k, v in result["checks"].items() if not v}
     evidence = result["evidence"]
     assert set(evidence["recovery_http_methods"]) == {"GET"}

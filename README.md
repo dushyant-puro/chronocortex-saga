@@ -1,5 +1,8 @@
 # ChronoCortex-Saga
 
+See [implementation.md](implementation.md) for the consolidated implementation
+history, exact-source test evidence, unresolved findings and remaining acceptance gates.
+
 **Voice turn ≠ task.** Conversational interruption and correction must not erase
 durable work or make uncertain remote effects safe to retry.
 

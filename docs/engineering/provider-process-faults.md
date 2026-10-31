@@ -114,6 +114,11 @@ real key file or existing production journal is a supported evaluator input.
 
 ## Remaining gates and rollback
 
+The [pre-cleanup failure evidence](qualification-failure-evidence.md) follow-up
+retains bounded peer/ledger observations and redacted CI artifacts when a drill
+fails before its normal scorecard. It does not close the unconfirmed historical
+barrier/renewal findings or change remote uncertainty semantics.
+
 This fake service has no Stripe idempotency fidelity, TLS, request-log retention
 contract, rate limits, settlement behavior or independently administered remote
 infrastructure. Its ledger proves only what this SIMULATED service did. There

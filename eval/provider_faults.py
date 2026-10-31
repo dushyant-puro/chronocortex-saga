@@ -5,7 +5,7 @@ Worker, fault proxy and provider service run in separate OS processes. The
 service's ledger is an independent effect oracle, never a CCS state projection.
 """
 import argparse
-from contextlib import closing, ExitStack
+from contextlib import closing, ExitStack, contextmanager
 import hashlib
 import json
 import logging
@@ -29,10 +29,10 @@ from runtime.action_journal import SQLiteActionJournal
 from runtime.control_store import ControlStore
 from runtime.credential_input import read_credential_file
 from runtime.failure_diagnostics import CATEGORIES, classify_failure
+from eval import failure_evidence
+from eval.failure_evidence import CASES
 
 
-CASES = ("lost_response_after_apply", "worker_killed_after_apply", "worker_killed_before_dispatch",
-         "request_discarded_before_forward", "effect_hidden_from_status_reads")
 ROOT = Path(__file__).resolve().parent.parent
 logger = logging.getLogger("ccs.eval.provider_faults")
 
@@ -217,13 +217,38 @@ def validate_evidence(record, provider_requests, proxy_requests, effects, *, exp
     }
 
 
-def run_case(root, name):
+@contextmanager
+def failure_boundary(root, name, peers, output):
+    """Observe before ExitStack tears down peers; diagnostics never replace failure."""
+    try:
+        yield
+    except Exception as error:
+        try:
+            evidence = failure_evidence.snapshot(root, peers)
+            error.failure_evidence = evidence
+        except Exception:
+            evidence = None
+        if evidence is not None:
+            try:
+                logger.error("SIMULATED pre-cleanup failure observations: %s",
+                             json.dumps(evidence.data(), sort_keys=True, allow_nan=False))
+            except Exception:
+                pass
+        if evidence is not None and output is not None:
+            try:
+                failure_evidence.publish(output, name, evidence)
+            except Exception:
+                pass  # Preserve original error even if observation storage fails.
+        raise
+
+
+def run_case(root, name, *, failure_output=None):
     if name not in CASES:
         raise ValueError("Unknown fault scenario")
-    journal = setup(root)
     checks = {}
-    with ExitStack() as stack:
-        peers = []
+    peers = []
+    with ExitStack() as stack, failure_boundary(root, name, peers, failure_output):
+        journal = setup(root)
         def start(role, *args):
             peer = Peer(role, *args)
             peers.append(peer)
@@ -330,11 +355,15 @@ def score():
             try:
                 cases.append(run_case(Path(directory) / name, name))
             except Exception as exc:
-                cases.append({"id": name, "passed": False, "checks": {"drill_completed": False},
+                case = {"id": name, "passed": False, "checks": {"drill_completed": False},
                               "failure": exc.code if isinstance(exc, DrillFailure) else "INCOMPLETE_DRILL",
-                              "diagnostic": exc.diagnostic if isinstance(exc, DrillFailure) else {"category": classify_failure(exc)}})
+                              "diagnostic": exc.diagnostic if isinstance(exc, DrillFailure) else {"category": classify_failure(exc)}}
+                if type(getattr(exc, "failure_evidence", None)) is failure_evidence.CapturedEvidence:
+                    case["failure_evidence"] = exc.failure_evidence.data()
+                cases.append(case)
     digest = hashlib.sha256()
-    for path in (Path(__file__), Path(__file__).with_name("provider_fault_peer.py"), ROOT / "runtime/failure_diagnostics.py"):
+    for path in (Path(__file__), Path(__file__).with_name("provider_fault_peer.py"),
+                 Path(__file__).with_name("failure_evidence.py"), ROOT / "runtime/failure_diagnostics.py"):
         digest.update(path.name.encode() + b"\0" + path.read_bytes().replace(b"\r\n", b"\n"))
     return {"schema": 1, "label": "SIMULATED", "harness_sha256": digest.hexdigest(), "provenance": provenance(),
             "case_count": len(cases),
