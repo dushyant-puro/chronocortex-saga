@@ -178,6 +178,15 @@ only for their earlier source. No actual provider or live audio was used.
 
 ## Unresolved reliability findings and diagnostic boundary
 
+The `codex/journal-contention-observations` follow-up adds
+[bounded transaction diagnosis](docs/engineering/journal-contention.md): fixed
+SQL-boundary/operation labels and redacted process-local peer observations on
+BUSY/LOCKED, captured before cleanup and logged afterward. Sixteen controlled
+diagnostic cases passed, including a real external-process writer, commit
+rollback, capacity/redaction and logging-failure safety. This changes no lock
+budget, lease, retry, journal mode or schema. Historical Windows contention
+remains unconfirmed; this instrumentation must not be called its fix.
+
 The session-review core PR Linux browser job `125096029097` at `4275d62`
 reported 1 failed, 20 passed: selecting the second walkthrough action left the
 first action displayed. A separate follow-up branch,
