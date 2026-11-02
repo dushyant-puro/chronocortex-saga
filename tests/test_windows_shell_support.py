@@ -13,6 +13,9 @@ from tests import windows_shell_support as support
     ("CCS_KEY_SETUP_STAGE:PROCESS_STARTED\nCCS_KEY_SETUP_STAGE:FLUSH_FILE\n", ["PROCESS_STARTED", "FLUSH_FILE"]),
     ("prefix CCS_KEY_SETUP_STAGE:COMPLETE", []),
     ("CCS_KEY_SETUP_STAGE:COMPLETE PRIVATE", []),
+    ("CCS_ACCEPTANCE_STAGE:LAUNCH_RUNTIME\nCCS_ACCEPTANCE_STAGE:RUNTIME_EXIT", ["LAUNCH_RUNTIME", "RUNTIME_EXIT"]),
+    ("CCS_ACCEPTANCE_STAGE:READ_SECRET\nCCS_KEY_SETUP_STAGE:LAUNCH_RUNTIME", []),
+    ("CCS_ACCEPTANCE_STAGE:VERIFY_ACL PRIVATE", []),
 ])
 def test_only_exact_bounded_stage_markers_are_retained(raw, expected):
     assert support.setup_stages(raw) == expected
@@ -26,7 +29,9 @@ def test_parser_bounds_tail_and_number_of_markers():
 
 @pytest.mark.parametrize("stderr,stage", [(None, "UNOBSERVED"), ("PRIVATE", "UNOBSERVED"),
     (b"CCS_KEY_SETUP_STAGE:PROCESS_STARTED\nCCS_KEY_SETUP_STAGE:READ_SECRET\nPRIVATE", "READ_SECRET"),
-    ("CCS_KEY_SETUP_STAGE:COMPLETE\n", "COMPLETE")])
+    ("CCS_KEY_SETUP_STAGE:COMPLETE\n", "COMPLETE"),
+    (b"CCS_ACCEPTANCE_STAGE:VERIFY_ACL\nPRIVATE", "VERIFY_ACL"),
+    (b"CCS_ACCEPTANCE_STAGE:LAUNCH_RUNTIME\nPRIVATE", "LAUNCH_RUNTIME")])
 def test_timeout_has_closed_stage_without_command_or_partial_payload(monkeypatch, stderr, stage):
     monkeypatch.setattr(support.shutil, "which", lambda _: "powershell.exe")
     attempts = []
