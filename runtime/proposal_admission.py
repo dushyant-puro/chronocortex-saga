@@ -3,7 +3,7 @@
 This is a trusted host API, not a model tool, voice participant authenticator,
 HTTP endpoint or hostile-Python boundary. Pending reviews are process-local.
 """
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 import json
 import uuid
 
@@ -49,6 +49,7 @@ class _Pending:
     refs: tuple = field(repr=False)
     workflow_id: str
     expires_ms: int
+    session_scope: str | None = None
 
 
 class ProposalAdmissionService:
@@ -85,6 +86,10 @@ class ProposalAdmissionService:
         No inference is made that argument values follow from transcript words.
         The reviewer must inspect that mapping. Grounding is an acoustic gate.
         """
+        return self._review(proposal, workflow_id, arguments,
+                            lambda db, now: self.authority._authenticate(db, token, now), ttl_ms)
+
+    def _review(self, proposal, workflow_id, arguments, authenticate, ttl_ms, session_scope=None):
         self._current(proposal)
         if type(ttl_ms) is not int or not 1 <= ttl_ms <= 300000:
             raise ProposalAdmissionError("PROPOSAL_REVIEW_LIFETIME_INVALID")
@@ -98,7 +103,7 @@ class ProposalAdmissionService:
         permissions = required_permissions(cp["workflow_contract"])
         with self.journal._transaction() as db:
             now = self.authority._now(db)
-            actor = self.authority._authenticate(db, token, now)
+            actor = authenticate(db, now)
             if not set(permissions) <= actor.permissions:
                 raise PermissionDeniedError("Proposal review permissions required")
         self._pending = {key: value for key, value in self._pending.items() if now < value.expires_ms}
@@ -118,7 +123,7 @@ class ProposalAdmissionService:
         validate_binding(binding, cp)
         self._pending[review_id] = _Pending(canonical(cp), proposal,
                                           binding_refs(list(template.steps), self.manager._saga.registry),
-                                          workflow_id, binding["expires_ms"])
+                                          workflow_id, binding["expires_ms"], session_scope)
         return ProposalReview(review_id, task_id, binding["digest"], canonical(binding))
 
     def admit(self, review_id, *, token):
@@ -127,18 +132,75 @@ class ProposalAdmissionService:
         On ambiguous storage failure inspect task_id. Never manufacture a new
         review/task as an automatic retry. Credentials are rechecked in SQLite.
         """
+        return self._admit(review_id, lambda cp: self.journal.admit_task(cp, token))
+
+    def _admit(self, review_id, commit, session_scope=None, expected_digest=None):
         self.ingress._owned()
         identity(review_id)
         pending = self._pending.get(review_id)
-        if pending is None:
+        if pending is None or pending.session_scope != session_scope:
             raise ProposalAdmissionError("PROPOSAL_REVIEW_UNAVAILABLE")
         self._current(pending.proposal)
         cp = json.loads(pending.checkpoint)
+        if expected_digest is not None and expected_digest != cp["proposal_binding"]["digest"]:
+            raise ProposalAdmissionError("PROPOSAL_REVIEW_DIGEST_CHANGED")
         template = self._templates[pending.workflow_id]
         current = self.manager._capture_workflow(template.workflow, list(template.steps))
         refs = binding_refs(list(template.steps), self.manager._saga.registry)
         if (current != canonical(cp["workflow_contract"]) or len(refs) != len(pending.refs) or
                 any(a is not b for a, b in zip(refs, pending.refs))):
             raise ProposalAdmissionError("PROPOSAL_DEPLOYMENT_CHANGED")
-        self.journal.admit_task(cp, token)
+        commit(cp)
         return AdmissionReceipt(cp["task_id"], cp["proposal_binding"]["digest"])
+
+    def _session_authenticator(self, session, csrf):
+        # No bearer token is recovered, retained or minted for the browser.
+        from runtime.control_store import ControlStore
+        if type(csrf) is not str or not csrf:
+            raise PermissionDeniedError("Proposal session CSRF required")
+        store = ControlStore(self.journal)
+        def authenticate(db, now):
+            actor, _, identity = store._session(db, session, csrf)
+            return replace(actor, expires_ms=min(actor.expires_ms, identity["expires_ms"]))
+        return authenticate
+
+    def review_session(self, proposal, workflow_id, arguments, *, session, csrf, ttl_ms=60000):
+        from runtime.control_store import digest as session_digest
+        authenticate = self._session_authenticator(session, csrf)
+        # Reject anonymous sessions before revealing current evidence status.
+        with self.journal._transaction() as db:
+            authenticate(db, self.authority._now(db))
+        return self._review(proposal, workflow_id, arguments, authenticate,
+                            ttl_ms, session_digest(session))
+
+    def admit_session(self, review_id, binding_digest, *, session, csrf):
+        from runtime.control_store import digest as session_digest
+        if type(binding_digest) is not str or len(binding_digest) != 64:
+            raise ProposalAdmissionError("PROPOSAL_REVIEW_DIGEST_INVALID")
+        authenticate = self._session_authenticator(session, csrf)
+        return self._admit(review_id, lambda cp: self.journal._admit_task_authenticated(cp, authenticate),
+                           session_digest(session), binding_digest)
+
+    def view_session(self, review_id, *, session, csrf):
+        """Protected process-local review/readback; unavailable after host restart."""
+        from runtime.control_store import digest as session_digest
+        self.ingress._owned()
+        authenticate = self._session_authenticator(session, csrf)
+        identity(review_id)
+        pending = self._pending.get(review_id)
+        if pending is None or pending.session_scope != session_digest(session):
+            raise ProposalAdmissionError("PROPOSAL_REVIEW_UNAVAILABLE")
+        with self.journal._transaction() as db:
+            now = self.authority._now(db)
+            actor = authenticate(db, now)
+            binding = json.loads(pending.checkpoint)["proposal_binding"]
+            if (not set(binding["required_permissions"]) <= actor.permissions or
+                    binding["reviewer"] != {"principal_id": actor.principal_id, "version": actor.version,
+                                            "credential_id": actor.credential_id}):
+                raise PermissionDeniedError("Proposal review authority changed")
+            row = db.execute("SELECT checkpoint FROM task_checkpoints WHERE task_id=?", (binding["task_id"],)).fetchone()
+            admitted = row is not None and json.loads(row[0]).get("proposal_binding") == binding
+        return {"binding": binding, "transcript": pending.proposal.text,
+                "current": pending.proposal is self.ingress.latest and pending.proposal.grounded,
+                "expired": now >= pending.expires_ms, "admitted": admitted,
+                "execution_authorized": False}

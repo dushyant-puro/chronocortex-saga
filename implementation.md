@@ -80,8 +80,10 @@ flowchart TD
     J --> U
 ```
 
-The review-to-task path is currently a **trusted local host API**, not a
-connected browser workflow. Voice proposals alone cannot authorize admission,
+The review-to-task path now has an opt-in [protected session API](docs/engineering/session-proposal-review.md)
+on `codex/session-proposal-review`, using trusted host evidence and atomic
+session revalidation. The human review UI and durable inbox are still absent.
+Voice proposals alone cannot authorize admission,
 approve a mutation, cancel work or complete a task. The web UI observes durable
 facts and submits scoped commands; it is never the source of truth.
 

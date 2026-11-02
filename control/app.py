@@ -18,6 +18,7 @@ from runtime.action_journal import JournalError
 from runtime.control_store import ControlStore, ControlError
 from runtime.policy_engine import PolicyError
 from runtime.failure_diagnostics import classify_failure
+from runtime.proposal_contract import ProposalAdmissionError
 
 
 logger = logging.getLogger("ccs.control")
@@ -74,10 +75,41 @@ async def _body(request):
         raise ControlError(408, "request_timeout", "The control request body timed out.") from None
 
 
-def create_app(journal, config=None):
+def create_app(journal, config=None, *, proposal_reviews=None):
     config = config or ControlConfig()
     store = ControlStore(journal)
     login_failures = []
+    if proposal_reviews is not None:
+        from control.proposal_reviews import ProposalReviewController
+        if type(proposal_reviews) is not ProposalReviewController or proposal_reviews.service.journal is not journal:
+            raise ValueError("Proposal reviews require the same owning-loop journal")
+
+    async def proposal_review(request):
+        # Deliberately synchronous on the owning loop: no await between current
+        # ingress validation and SQL authorization/insertion. Never threadpool
+        # VoiceIngress or hold a database transaction across a network await.
+        csrf = _csrf_header(request)
+        data = await _body(request)
+        if proposal_reviews is None:
+            raise ControlError(404, "not_configured", "Proposal review is not configured.")
+        if data:
+            raise ControlError(400, "invalid_request", "Review uses trusted host evidence only.")
+        return JSONResponse(proposal_reviews.review(request.cookies.get(COOKIE), csrf))
+
+    async def proposal_admit(request, read_only=False):
+        csrf = _csrf_header(request)
+        data = await _body(request)
+        if proposal_reviews is None:
+            raise ControlError(404, "not_configured", "Proposal review is not configured.")
+        if (set(data) != {"review_id", "binding_digest"} or
+                any(type(data[k]) is not str for k in data)):
+            raise ControlError(400, "invalid_request", "Accept one exact reviewed binding.")
+        operation = proposal_reviews.status if read_only else proposal_reviews.admit
+        return JSONResponse(operation(request.cookies.get(COOKIE), csrf,
+                                      data["review_id"], data["binding_digest"]))
+
+    async def proposal_status(request):
+        return await proposal_admit(request, read_only=True)
 
     async def page(request):
         return Response((STATIC / "index.html").read_bytes(), media_type="text/html")
@@ -134,6 +166,9 @@ def create_app(journal, config=None):
     app = Starlette(routes=[Route("/", page), Route("/assets/{name}", asset),
                             Route("/api/login", login, methods=["POST"]), Route("/api/session", session),
                             Route("/api/logout", logout, methods=["POST"]), Route("/api/snapshot", snapshot),
+                            Route("/api/proposals/review", proposal_review, methods=["POST"]),
+                            Route("/api/proposals/admit", proposal_admit, methods=["POST"]),
+                            Route("/api/proposals/status", proposal_status, methods=["POST"]),
                             Route("/api/records/{kind:record_kind}/{record_id}", detail),
                             Route("/api/commands/{command:control_kind}/{target}", command, methods=["POST"])])
     app.state.store, app.state.config = store, config
@@ -152,6 +187,8 @@ def create_app(journal, config=None):
             response = await call_next(request)
         except ControlError as exc:
             response = JSONResponse({"error": {"code": exc.code, "message": exc.message, "request_id": request_id}}, status_code=exc.status)
+        except ProposalAdmissionError:
+            response = JSONResponse({"error": {"code": "proposal_unavailable", "message": "Review is unavailable, stale or changed. Inspect durable task evidence before another admission attempt.", "request_id": request_id}}, status_code=409)
         except PolicyError:
             response = JSONResponse({"error": {"code": "authority_denied", "message": "Current authority does not permit this operation.", "request_id": request_id}}, status_code=403)
         except JournalError as exc:

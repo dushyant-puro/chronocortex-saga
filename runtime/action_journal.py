@@ -588,13 +588,21 @@ class SQLiteActionJournal:
         No tool calls or approval creation. Same task/binding is idempotent even
         after task progress; never overwrite its current checkpoint on replay.
         """
+        self._admit_task_authenticated(checkpoint, lambda db, now: SecurityAuthority(self)._authenticate(db, token, now))
+
+    def _admit_task_authenticated(self, checkpoint, authenticate):
+        """Trusted host-only authenticator, called inside the insertion transaction.
+
+        Never supply a cached actor: session/credential authority must be read
+        again using this exact connection before any durable admission.
+        """
         binding = checkpoint.get("proposal_binding")
         validate_binding(binding, checkpoint)
         task_id = checkpoint["task_id"]
         with self._transaction(writer_kind="TASK_CHECKPOINT", subject=task_id) as db:
             authority = SecurityAuthority(self)
             now = authority._now(db)
-            actor = authority._authenticate(db, token, now)
+            actor = authenticate(db, now)
             expected = binding["reviewer"]
             if (expected != {"principal_id": actor.principal_id, "version": actor.version,
                              "credential_id": actor.credential_id} or
