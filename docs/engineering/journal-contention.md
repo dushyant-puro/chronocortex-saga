@@ -82,3 +82,15 @@ policy. A later passing CI run does not close an earlier unknown cause.
 Rollback is a code revert. No schema migration or data rewrite is needed;
 preserve journals, approvals, operation claims, UNKNOWN records and remote IDs.
 This phase adds no provider integration, live audio or UI authority.
+
+## Source-attributed qualification
+
+Implementation `7b775ff`, [draft PR #35](https://github.com/dushyant-puro/chronocortex-saga/pull/35):
+16 focused diagnostic cases passed. Independent clean GitHub source passed
+1,449 runtime tests with 2 skips, and 25 browser-suite tests using the unchanged
+audited locked runtime/browser environments. This is clean-source verification,
+not a fresh environment installation. Distributed evaluation passed 5/5
+SIMULATED cases and 122 checks. Its expanded harness SHA-256 is
+`5da8b57656fbf31ebf0d11f0a1fd42e611a4c19694917cd9178247b6bbab8edf`.
+Hosted outcomes are tracked per head in the PR; no historical lock-holder
+identification or production-readiness claim follows from these passes.

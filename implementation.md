@@ -186,6 +186,28 @@ diagnostic cases passed, including a real external-process writer, commit
 rollback, capacity/redaction and logging-failure safety. This changes no lock
 budget, lease, retry, journal mode or schema. Historical Windows contention
 remains unconfirmed; this instrumentation must not be called its fix.
+The implementation is `7b775ff` in
+[draft PR #35](https://github.com/dushyant-puro/chronocortex-saga/pull/35).
+At that exact source, a fresh GitHub checkout passed **1,449 runtime tests,
+2 skipped**, and **25 browser-suite tests** (23 Chromium journeys plus two
+fixture-readiness cases). Existing audited runtime/browser environments were
+reused; locks are unchanged. The skips remain POSIX mode and unconfigured live
+SDK initialization. Sixteen focused diagnostic cases passed. An earlier
+development full run predating the final six cases/capture-emission split
+passed 1,443/2 and is excluded from final-source qualification.
+
+Clean-source distributed evaluation passed **5/5 SIMULATED cases and 122
+checks**. Its expanded harness hash, now including the observer module, is
+`5da8b57656fbf31ebf0d11f0a1fd42e611a4c19694917cd9178247b6bbab8edf`.
+Exact-head hosted CI outcomes are tracked in PR #35; local passes are not an
+all-green hosted qualification or a production release gate closure.
+
+The preceding `565ad47` PR #34 Windows runtime job `125099208439` ended
+cancelled after reporting **1 failed, 1,240 passed, 2 skipped**. The
+worker-revocation walkthrough failed at BEGIN IMMEDIATE/database locked. Its
+push run passed all five jobs; the PR's other four jobs passed. The suite did
+not complete, and later evaluation steps did not run in that job. That source
+predates the new observations, and its actual holder remains unidentified.
 
 The session-review core PR Linux browser job `125096029097` at `4275d62`
 reported 1 failed, 20 passed: selecting the second walkthrough action left the
