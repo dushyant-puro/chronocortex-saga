@@ -188,6 +188,12 @@ Both regressions fail before the JavaScript correction. The fix fences automatic
 inspection and panel close by the selection number; see the
 [causal schedule](docs/engineering/console-read-recovery.md).
 This is not a claimed explanation/fix for the unrelated SQLite contention.
+The corrected workspace Chromium suite passed 23 tests, including both causal
+schedules. Its walkthrough now waits for the actual shielded worker operation
+to complete before explicitly reading final task evidence; an approval receipt
+alone never proves completion. A prior 22-pass/1-failure static-panel run is
+retained. This corrective phase changes no runtime Python or journal schema;
+independent source/browser and exact-head CI evidence belong to its own PR.
 
 - [PR #32 Windows job](https://github.com/dushyant-puro/chronocortex-saga/actions/runs/41387626023/job/125091870626),
   source `5d43fd0`: workflow concluded cancelled with **3 failed, 981 passed,

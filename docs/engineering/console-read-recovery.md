@@ -28,6 +28,23 @@ No migration, credential change or provider call is involved. The separate
 session-review API remains opt-in; its human review UI/durable inbox are still
 unfinished.
 
+The initial corrected-JavaScript browser run passed both new schedules but
+failed the walkthrough's final static-panel assertion (22 passed, 1 failed).
+That assertion read the task immediately after an approval acknowledgment,
+before actual completion. The walkthrough now awaits the owned
+`WorkerOperation.wait()` on its host loop, with an eight-second completion
+deadline, then explicitly reads the task. It still requires COMPLETED in
+durable UI evidence and both separate ledger rows. This await issues no task
+command, approval or provider call; consumer timeout does not cancel the owned
+operation. The final workspace Chromium suite passed **23 tests**. Earlier
+failing development evidence is retained, rather than relabeled successful.
+
+Only JavaScript, browser tests and documentation change in this corrective
+phase. Runtime Python qualification remains attributed to session-admission
+implementation `4275d62` (1,433 passed, 2 skipped); do not claim that inherited
+result as a newly executed suite on this later source. Exact-head CI and
+independent fresh-source browser evidence are recorded in the corrective PR.
+
 ## Earlier read and session recovery boundary
 
 Base: `codex/verified-offline-wheels`, `1d303b3`. The previous phase's PR Windows

@@ -627,6 +627,12 @@ def test_local_walkthrough_requires_two_separate_browser_approvals(local_accepta
         page.get_by_role("button", name="Approve forward operation", exact=True).click()
         page.get_by_label("Execution principal").fill(ACCEPTANCE_WORKER)
         confirm(page)
+    # Approval acknowledgment is not task completion. Wait on the actual owned
+    # driver before explicitly reading its final durable/UI evidence. Otherwise
+    # this static detail panel can legitimately show the earlier checkpoint.
+    async def completed():
+        return await asyncio.wait_for(app.state.acceptance_operation.wait(), timeout=8)
+    assert asyncio.run_coroutine_threadsafe(completed(), app.state.acceptance_host._loop).result(timeout=9) == "COMPLETED"
     page.get_by_role("button", name="Refresh", exact=True).click()
     inspect(page, "tasks", app.state.acceptance_task_id)
     expect(page.locator("#detail")).to_contain_text("COMPLETED", timeout=8000)
