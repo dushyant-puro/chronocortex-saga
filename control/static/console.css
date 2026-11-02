@@ -1007,3 +1007,10 @@ dialog select {
     transition: none !important;
   }
 }
+.proposal-panel { margin: 18px 0 24px; padding: 24px; background: var(--white); border: 1px solid var(--line); border-radius: 16px; min-width: 0; }
+.proposal-panel input[readonly] { width: 100%; min-width: 0; font-family: monospace; }
+.proposal-panel .evidence { white-space: pre-wrap; overflow-wrap: anywhere; }
+.proposal-panel .details-list { grid-template-columns: minmax(90px, 160px) minmax(0, 1fr); overflow-wrap: anywhere; }
+.proposal-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+#proposal-start { margin-bottom: 16px; }
+.proposal-panel .proposal-warning { background: #fff7e4; border-color: #e7c878; color: #795713; }

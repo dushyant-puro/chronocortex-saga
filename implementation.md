@@ -82,7 +82,9 @@ flowchart TD
 
 The review-to-task path now has an opt-in [protected session API](docs/engineering/session-proposal-review.md)
 on `codex/session-proposal-review`, using trusted host evidence and atomic
-session revalidation. The human review UI and durable inbox are still absent.
+session revalidation. The opt-in [human review UI](docs/engineering/proposal-review-ui.md)
+now renders exact evidence and retains receipt identifiers across tab reload;
+the durable inbox and manual configured-host integration are still pending.
 Voice proposals alone cannot authorize admission,
 approve a mutation, cancel work or complete a task. The web UI observes durable
 facts and submits scoped commands; it is never the source of truth.
@@ -316,7 +318,9 @@ The two runtime skips remain the POSIX-only mode check and live SDK
 initialization without an API key. The API is opt-in and disabled in existing
 hosts. It binds review to a session, validates authority inside insertion SQL,
 and supports lost-ack status readback without admission/dispatch replay. There
-is no human proposal-review UI or durable inbox yet. Seven workstreams remain
+was no human proposal-review UI in that API phase. The subsequent opt-in UI
+adds protected human acceptance and tab receipt recovery; durable inbox work
+remains. Seven workstreams remain
 open, and the unresolved hosted reliability failures remain a qualification
 gate before production advancement.
 
@@ -344,8 +348,27 @@ All **seven major workstreams** remain open; each can need several bounded PRs.
 | Integration and release | Review/consolidate the unmerged stack; migration/rollback/security checks on a release candidate; explicitly approved merge/tag/deployment. |
 
 The project has substantial safety/recovery foundations and is **not a
-production release candidate**. The next corrective change should follow a
-deterministic causal reproduction of the observed reliability failures.
+production release candidate**. Per the current user priority, build the
+remaining product/integration surfaces before resuming the historical
+intermittent-CI investigation. Preserve its evidence and revisit it step by
+step during final integration/release qualification. New safety regressions
+still block the affected feature; passing components need no speculative fixes.
+
+Current build order: protected proposal review UI; durable inbox/delivery and
+cross-session receipt recovery; a configured local review walkthrough; remaining
+voice/provider integration and operational/recovery packaging; then consolidated
+security/evaluation/release qualification including the retained CI findings.
+
+The opt-in UI core is `c0c6a96`, [draft PR #37](https://github.com/dushyant-puro/chronocortex-saga/pull/37).
+Fresh GitHub source passed 1,453 runtime tests with 2 skips and 34 browser-suite
+cases, using unchanged audited runtime/browser profiles. Nine new browser cases
+exercise human acceptance, receipt uncertainty/reload, storage failure, stale
+evidence, cross-principal response fencing and mobile/text safety. The warning
+follow-up adds accessible uncertainty alerts; backend/worker/provider code is
+unchanged by it. The default canned launcher stays unchanged. Next product
+work is durable inbox/delivery, cross-session recovery and a configured manual
+review walkthrough. Historical intermittent-CI diagnosis stays deferred to final
+integration, without waiving its release gates.
 
 ## Reproduce on Windows
 

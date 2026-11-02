@@ -148,6 +148,29 @@
             decision controls are paused until refresh succeeds.
           </div>
           <div id="notice" class="notice" role="status" hidden></div>
+          <button id="proposal-start" class="primary" hidden>Review current proposal</button>
+          <section id="proposal-panel" class="proposal-panel" aria-labelledby="proposal-title" hidden>
+            <p class="eyebrow">TRANSCRIPT → EXPLICIT TASK ADMISSION</p>
+            <h2 id="proposal-title" tabindex="-1">Review proposed task</h2>
+            <p>Check how the transcript maps to the exact arguments. Acoustic grounding does not verify speaker identity or argument meaning.</p>
+            <div id="proposal-message" class="notice" role="status"></div>
+            <label for="proposal-task-id">Task identity — retain this for journal inspection</label>
+            <input id="proposal-task-id" readonly />
+            <div id="proposal-evidence" hidden>
+              <h3>Transcript</h3><pre id="proposal-transcript" class="evidence"></pre>
+              <dl id="proposal-metadata" class="details-list"></dl>
+              <h3>Exact arguments by workflow step</h3><pre id="proposal-arguments" class="evidence"></pre>
+            </div>
+            <form id="proposal-form">
+              <label class="check-label"><input id="proposal-confirmed" type="checkbox" required /><span>I reviewed this transcript and these exact arguments.</span></label>
+              <p class="fine">Admission records a task. Execution requires separate operation authority. Only review/task IDs and the binding digest are retained in this tab for receipt recovery.</p>
+              <div class="proposal-actions">
+                <button id="proposal-admit" class="primary" type="submit" disabled>Admit this task</button>
+                <button id="proposal-status" class="subtle" type="button" disabled>Read admission status</button>
+                <button id="proposal-finish" class="subtle" type="button">Close review</button>
+              </div>
+            </form>
+          </section>
           <section
             id="metrics"
             class="metrics"

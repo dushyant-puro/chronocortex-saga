@@ -116,7 +116,7 @@ def create_app(journal, config=None, *, proposal_reviews=None):
 
     async def asset(request):
         name = request.path_params["name"]
-        types = {"console.js": "text/javascript", "console.css": "text/css", "mark.svg": "image/svg+xml"}
+        types = {"console.js": "text/javascript", "proposals.js": "text/javascript", "console.css": "text/css", "mark.svg": "image/svg+xml"}
         if name not in types:
             return Response(status_code=404)
         return Response((STATIC / name).read_bytes(), media_type=types[name])
@@ -151,7 +151,9 @@ def create_app(journal, config=None, *, proposal_reviews=None):
         return response
 
     async def snapshot(request):
-        return JSONResponse(await run_in_threadpool(store.snapshot, request.cookies.get(COOKIE)))
+        data = await run_in_threadpool(store.snapshot, request.cookies.get(COOKIE))
+        data["capabilities"] = {"proposal_review": proposal_reviews is not None}
+        return JSONResponse(data)
 
     async def detail(request):
         return JSONResponse(await run_in_threadpool(store.detail, request.cookies.get(COOKIE), request.path_params["kind"], request.path_params["record_id"]))

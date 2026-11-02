@@ -184,6 +184,20 @@ def test_anonymous_review_cannot_observe_whether_grounded_proposal_exists(browse
     asyncio.run(scenario())
 
 
+def test_proposal_capability_discovery_is_authenticated_and_opt_in(browser):
+    e = browser
+    async def scenario():
+        for app, configured in ((create_app(e.journal), False), (e.app, True)):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=ORIGIN) as client:
+                anonymous = await client.get('/api/snapshot')
+                assert anonymous.status_code == 401 and 'capabilities' not in anonymous.json()
+                client.cookies.set('ccs_operator', e.session)
+                response = await client.get('/api/snapshot')
+                assert response.status_code == 200
+                assert response.json()['capabilities'] == {'proposal_review': configured}
+    asyncio.run(scenario())
+
+
 def test_lost_http_admission_ack_is_read_back_without_replay(browser, monkeypatch):
     e = browser
     original = e.journal._admit_task_authenticated

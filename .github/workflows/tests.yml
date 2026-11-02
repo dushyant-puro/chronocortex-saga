@@ -172,7 +172,7 @@ jobs:
       - run: ${{ matrix.python }} -m scripts.wheelhouse capture --profile browser --source results/wheel-source --output results/offline-wheels
       - run: ${{ matrix.python }} -m scripts.wheelhouse verify --profile browser --directory results/offline-wheels
       - run: ${{ matrix.python }} -m playwright install --with-deps chromium
-      - run: ${{ matrix.python }} -m pytest browser/console_cases.py -q -p no:cacheprovider
+      - run: ${{ matrix.python }} -m pytest browser/console_cases.py browser/proposal_cases.py -q -p no:cacheprovider
       - uses: actions/upload-artifact@v4
         if: always()
         with:

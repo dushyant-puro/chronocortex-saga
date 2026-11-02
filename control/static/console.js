@@ -1,3 +1,4 @@
+import { installProposalReview } from "/assets/proposals.js";
 const $ = (selector) => document.querySelector(selector);
 const state = {
   bootstrapping: true,
@@ -11,6 +12,11 @@ const state = {
   polling: null,
   failures: 0,
 };
+const proposalReview = installProposalReview({
+  api, session: () => state.session,
+  available: () => state.snapshot?.capabilities?.proposal_review === true && state.session?.permissions.includes("ccs:task:create"),
+  ready: () => state.fresh && !state.busy,
+});
 const titles = {
   overview: ["Operator overview", "Decisions grounded in durable evidence."],
   tasks: [
@@ -142,9 +148,11 @@ function freshness(current) {
       state.busy ||
       (button.closest("#detail") !== null && state.detail?.stale);
   });
+  proposalReview.sync();
 }
 
 function disconnected() {
+  proposalReview.reset();
   clearTimeout(state.polling);
   $("#decision-dialog").close();
   state.session = null;
