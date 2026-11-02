@@ -1,5 +1,35 @@
 # Console read recovery and uncertain decisions
 
+## Explicit selection outranks automatic refresh
+
+The Linux browser job at session-review source `4275d62` exposed a separate
+race: the second walkthrough action was requested while the first action's
+post-approval snapshot was still pending. The command handler then started an
+automatic read of the old selected record, incrementing the inspection number
+after the newer explicit request. The newer response was discarded and the old
+record remained visible. This did not establish a wrong remote effect, but it
+violated the operator's evidence-selection intent.
+
+The command handler now captures the inspection number before sending its
+command and refreshes details only if selection has not changed. Closing the
+panel also increments that number, so an already pending record read cannot
+reopen it. Session fencing, exact server-side decision binding and no automatic
+mutation retry remain in force. Selection does not confer execution authority.
+
+Two Chromium regressions hold real HTTP responses at explicit barriers rather
+than sleeping: hold the command snapshot, start/hold a newer explicit record
+read, finish command cleanup, then release the new record; and close a panel
+while a new record read is held, then release it. Both failed against the
+unmodified JavaScript before correction. The controlled schedule matches the
+observed browser symptom; it does not explain hosted SQLite renewal contention.
+
+Rollback is a code revert preserving all journals, reviews and UNKNOWN effects.
+No migration, credential change or provider call is involved. The separate
+session-review API remains opt-in; its human review UI/durable inbox are still
+unfinished.
+
+## Earlier read and session recovery boundary
+
 Base: `codex/verified-offline-wheels`, `1d303b3`. The previous phase's PR Windows
 browser run exposed a persistent error notice after a transient journal failure.
 Its push browser run passed. This follow-up retains that failure as evidence;

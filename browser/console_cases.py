@@ -336,6 +336,54 @@ def test_changed_evidence_notice_clears_only_after_successful_detail_read(consol
     expect(page.locator("#notice")).to_be_hidden()
 
 
+def test_post_decision_refresh_cannot_supersede_a_pending_explicit_selection(console):
+    env, page, _, _ = console
+    connect(env, page)
+    inspect(page, "actions", env.pending.action_id)
+    snapshots, selected = [], []
+    snapshot_pattern = "**/api/snapshot"
+    selected_pattern = f"**/api/records/actions/{env.unknown.action_id}"
+    page.route(snapshot_pattern, lambda route: snapshots.append(route))
+    page.route(selected_pattern, lambda route: selected.append(route))
+    page.get_by_role("button", name="Approve forward operation", exact=True).click()
+    page.get_by_label("Execution principal").fill("executor")
+    with page.expect_request(snapshot_pattern):
+        confirm(page)
+    assert len(snapshots) == 1
+    page.locator("#lookup-kind").select_option("actions")
+    page.locator("#lookup-id").fill(env.unknown.action_id)
+    with page.expect_request(selected_pattern):
+        page.locator("#lookup").get_by_role("button", name="Inspect").click()
+    assert len(selected) == 1
+    snapshots[0].fulfill(response=snapshots[0].fetch())
+    # This marks completion of the entire command handler, including its
+    # automatic detail refresh. No sleep or dependence on response speed.
+    expect(page.locator("#cancel-dialog")).to_be_enabled()
+    selected[0].fulfill(response=selected[0].fetch())
+    expect(page.locator("#detail > .record-id")).to_have_text(env.unknown.action_id)
+    page.unroute(snapshot_pattern)
+    page.unroute(selected_pattern)
+
+
+def test_closing_evidence_panel_fences_an_already_pending_detail_read(console):
+    env, page, _, _ = console
+    connect(env, page)
+    inspect(page, "actions", env.pending.action_id)
+    pending = []
+    pattern = f"**/api/records/actions/{env.unknown.action_id}"
+    page.route(pattern, lambda route: pending.append(route))
+    page.locator("#lookup-id").fill(env.unknown.action_id)
+    with page.expect_request(pattern):
+        page.locator("#lookup").get_by_role("button", name="Inspect").click()
+    page.get_by_role("button", name="Close evidence panel").click()
+    assert len(pending) == 1
+    with page.expect_response(pattern):
+        pending[0].fulfill(response=pending[0].fetch())
+    page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+    expect(page.locator("#detail")).to_be_hidden()
+    page.unroute(pattern)
+
+
 @pytest.mark.parametrize("failure", ["network", "invalid_json"])
 def test_unavailable_post_response_is_never_automatically_retried(console, failure):
     env, page, _, _ = console

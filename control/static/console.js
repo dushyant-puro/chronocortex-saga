@@ -519,6 +519,8 @@ async function inspect(kind, id) {
     const close = element("button", "×", "icon-button");
     close.setAttribute("aria-label", "Close evidence panel");
     close.addEventListener("click", () => {
+      // Closing is an explicit selection change: pending reads may not reopen.
+      state.inspection += 1;
       detail.hidden = true;
       $("#content-grid").classList.remove("with-detail");
       state.detail = null;
@@ -706,6 +708,7 @@ $("#decision-form").addEventListener("submit", async (event) => {
   if (!state.fresh || state.busy || !state.decision) return;
   const current = state.decision;
   const identity = state.session;
+  const inspection = state.inspection;
   if (current.kind === "APPROVE")
     Object.assign(current.body, {
       executor: $("#executor").value.trim(),
@@ -734,7 +737,10 @@ $("#decision-form").addEventListener("submit", async (event) => {
       `${messages[current.kind]}${result.replayed ? " This operation had already been recorded." : ""}`,
     );
     await refresh();
-    if (state.detail) await inspect(state.detail.kind, state.detail.record.id);
+    // Automatic post-command refresh must not outrank a newer user selection,
+    // including one whose record response has not arrived yet.
+    if (state.detail && state.inspection === inspection)
+      await inspect(state.detail.kind, state.detail.record.id);
   } catch (error) {
     if (state.session !== identity) return;
     $("#decision-error").textContent = error.message;

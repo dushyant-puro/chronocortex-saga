@@ -178,6 +178,17 @@ only for their earlier source. No actual provider or live audio was used.
 
 ## Unresolved reliability findings and diagnostic boundary
 
+The session-review core PR Linux browser job `125096029097` at `4275d62`
+reported 1 failed, 20 passed: selecting the second walkthrough action left the
+first action displayed. A separate follow-up branch,
+`codex/preserve-explicit-evidence-selection`, reproduces this with held HTTP
+responses: post-command automatic inspection can supersede a newer pending
+explicit selection. It also reproduces a pending read reopening a closed panel.
+Both regressions fail before the JavaScript correction. The fix fences automatic
+inspection and panel close by the selection number; see the
+[causal schedule](docs/engineering/console-read-recovery.md).
+This is not a claimed explanation/fix for the unrelated SQLite contention.
+
 - [PR #32 Windows job](https://github.com/dushyant-puro/chronocortex-saga/actions/runs/41387626023/job/125091870626),
   source `5d43fd0`: workflow concluded cancelled with **3 failed, 981 passed,
   2 skipped** reported before cancellation; the suite did not complete. The
