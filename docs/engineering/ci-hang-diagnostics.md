@@ -87,3 +87,14 @@ does not close that gap or explain the historical Windows failure.
 Rollback: revert the workflow options/tests; preserve all failure evidence and
 journals. No runtime/schema migration, provider action, real voice integration,
 merge or deployment is part of this phase.
+
+## Source-attributed qualification
+
+At `2d7e5ad`, [draft PR #36](https://github.com/dushyant-puro/chronocortex-saga/pull/36),
+the final three focused subprocess tests passed. Independent fresh GitHub source
+passed 1,452 runtime tests with 2 skips using the exact CI watchdog options and
+the unchanged audited runtime environment. This is clean-source verification,
+not a fresh installation claim. Earlier development failure evidence is retained
+separately. No new real provider, browser or performance result is claimed.
+Hosted qualification is recorded per source in the PR and does not explain
+the historical Windows failures.

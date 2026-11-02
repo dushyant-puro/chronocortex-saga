@@ -185,6 +185,21 @@ leases or SQLite behavior. Three native subprocess regressions exercise the
 actual checked-in exit policy, preserved pass/fail outcomes and a terminating
 negative control. See [scope and metadata](docs/engineering/ci-hang-diagnostics.md).
 
+Watchdog implementation `2d7e5ad`, [draft PR #36](https://github.com/dushyant-puro/chronocortex-saga/pull/36):
+the three final focused cases passed, and a fresh GitHub checkout passed
+**1,452 runtime tests, 2 skipped** using the exact 60-second/nonterminating CI
+options. The existing locked runtime environment was reused and audited;
+dependencies are unchanged. Skips remain POSIX mode and unconfigured live SDK
+initialization. No new browser/provider result is inferred from this CI-only
+change. Linux core CI runtime/browser/advisory jobs passed; Windows and final
+report-head outcomes must be read per exact head in the PR.
+
+The exploratory 1-failed/2-passed synthetic-child exit-wait result is retained
+separately from final qualification. The fixture now shares the original
+combined 15-second coordination/exit allowance and avoids synthetic traceback
+formatting; production/job/native/lease budgets did not change. This validates
+watchdog behavior, not a fix for historical startup or SQLite failures.
+
 Final PR #35 qualification was 9/10 jobs successful for both code/report heads;
 the Windows PR job differed from its successful push counterpart. Core
 `7b775ff` job `125103254471`: 1 failed, 1,448 passed, 2 skipped, native launcher
