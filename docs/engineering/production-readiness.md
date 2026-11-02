@@ -1,6 +1,6 @@
 # Production-readiness ledger
 
-Evidence review date: **2026-10-31**. This ledger separates implemented offline
+Evidence review date: **2026-11-02**. This ledger separates implemented offline
 foundations from outstanding acceptance. It is not a production-readiness
 certificate or a completion percentage.
 
@@ -16,8 +16,9 @@ budget and native credential checks. Its historical timeout cause remains open.
 The [reviewed task admission API](reviewed-task-admission.md) now binds explicit
 local-credential acceptance to current evidence, a versioned workflow and exact
 immutable arguments. It creates PENDING work atomically without dispatch or
-operation approval. Its protected UI, participant identity and live acceptance
-remain open; schema 7 requires an explicit offline migration.
+operation approval. Its opt-in [protected UI](proposal-review-ui.md) is now
+implemented; configured-host delivery, participant identity and live acceptance
+remain open. Schema 7 requires an explicit offline migration.
 That phase's initial Windows PR run also exposed a shutdown/drain lock-contention
 failure (`FORWARD_COMMITTED`, renewal `AUTHORIZE`/`SQLITE_BUSY`). Passing local and
 push runs do not close its unconfirmed cause; see the qualification record above.
@@ -61,13 +62,23 @@ operations, recovery, independent research and release qualification. You can
 test the isolated local walkthrough before those larger gates close. This is
 a dependency grouping, not a promise of seven small PRs or a release date.
 
+## Current implementation priority
+
+Per the user's direction, continue the product/integration surfaces around the
+passing runtime and defer historical intermittent-CI diagnosis to final
+integration/release qualification. Retain all findings; do not speculate about
+fixes or waive their release gates. New safety regressions still block their
+affected feature. The current product step is the opt-in
+[proposal-review UI](proposal-review-ui.md), followed by durable inbox/delivery,
+cross-session receipt recovery and a configured local review walkthrough.
+
 ## Seven remaining acceptance areas
 
 | Area | Current boundary | Work and exit evidence still required |
 | --- | --- | --- |
 | 1. Real provider acceptance | Adapter, approval flow and offline/process faults exist. | Configure a dedicated sandbox and protected restricted credential; pass GET-only preflight, one exact approved mutation and authoritative readback; demonstrate uncertainty handling without replay and retain redacted evidence. Requires real account access. |
 | 2. Real voice acceptance | Pinned SDK hooks and synthetic protocol tests exist. | Choose/configure the STT deployment; test microphone/WebRTC, actual revision/confidence/timing semantics, playback interruption, disconnect/cleanup, participant identity and consent/retention. No fabricated confidence fallback. Requires audio/provider assets. |
-| 3. Authenticated proposal-to-task product flow | The local review/admission API atomically binds evidence, principal/version/credential, task, workflow and immutable per-step arguments; stale/cross-principal and UNKNOWN regressions exist. | Build the protected transcript/argument review API/UI and durable delivery/inbox; establish participant identity, consent/retention and explicit correction/replacement UX; qualify the resulting end-to-end product flow. Speech alone must never become approval or cancellation authority. |
+| 3. Authenticated proposal-to-task product flow | The local review/admission API atomically binds exact evidence and authority. The opt-in UI adds explicit human review and tab receipt recovery. | Build durable delivery/inbox, cross-session receipt recovery and manual configured-host integration; establish participant identity, consent/retention and correction/replacement UX; qualify the resulting end-to-end product flow. Speech alone must never become approval or cancellation authority. |
 | 4. Deployment, identity and operations | Modular local-host supervisor/console protocol exists. | Supply a reviewed Windows Service/systemd/container deployment, external watchdog, secrets/configuration lifecycle and TLS/remote identity if exposed beyond the local host. Validate startup/shutdown/readiness, log/audit retention, capacity/backpressure, failure recovery and measured SLOs. Keep the architecture modular and simple. |
 | 5. Disaster recovery and artifact custody | Encrypted snapshots, memory drills, rotation and wheel verification exist. | Establish retained key/archive inventories and redundant off-host recovery copies; test bootstrap/native deployment assets. Design/test live recovery activation with independent freshness, worker fencing and current provider reconciliation. A valid old snapshot must not revive dispatch authority. |
 | 6. Independent research evaluation and novelty | Small selected synthetic corpora, transparent toy controls and one integration ablation exist. | Add licensed/independently sourced held-out cases, broader cross-task/worker/security scenarios, fair comparator implementations and further ablations. Refresh related work, predeclare metrics/denominators, retain raw evidence and measure real audio/provider latency in a disclosed environment. No universal novelty or deployment-rate claim follows from current scores. |

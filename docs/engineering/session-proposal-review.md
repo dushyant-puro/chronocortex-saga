@@ -1,7 +1,8 @@
 # Protected proposal-review API
 
 Status: **LOCAL BRANCH VERIFIED** API slice. Voice/effects in qualification are
-**SIMULATED**. This does not complete the review UI, durable inbox, real voice,
+**SIMULATED**. A subsequent [opt-in human review UI](proposal-review-ui.md) now
+uses this API. This does not complete the durable inbox, real voice,
 speaker authentication or provider acceptance workstreams.
 
 ## Authority and data flow
