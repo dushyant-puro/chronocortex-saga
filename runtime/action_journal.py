@@ -7,6 +7,7 @@ from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 import json
 from pathlib import Path
+from runtime import journal_observation
 import sqlite3
 import time
 from typing import Any
@@ -87,7 +88,7 @@ class SQLiteActionJournal:
         self._lease = None
         self._lifecycle = None
         try:
-            with self._transaction(initialize=True) as db:
+            with self._transaction(initialize=True, operation="OPEN") as db:
                 version = db.execute("PRAGMA user_version").fetchone()[0]
                 app_id = db.execute("PRAGMA application_id").fetchone()[0]
                 tables = db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
@@ -333,63 +334,88 @@ class SQLiteActionJournal:
         db.execute("PRAGMA user_version=2")
 
     @contextmanager
-    def _transaction(self, *, initialize=False, writer_kind=None, subject=None):
+    def _transaction(self, *, initialize=False, writer_kind=None, subject=None, operation=None):
         db = None
+        failure_observation = None
+        observation = journal_observation.begin(self.path, writer_kind if writer_kind is not None else operation)
         try:
             db = sqlite3.connect(self.path, timeout=self.timeout, isolation_level=None)
+            journal_observation.stage(observation, "CONFIGURE")
             db.execute("PRAGMA foreign_keys=ON")
             db.execute("PRAGMA synchronous=EXTRA")
             # Do not silently weaken an existing deployment's journal mode.
             mode = db.execute("PRAGMA journal_mode").fetchone()[0]
             if mode != "delete" or db.execute("PRAGMA synchronous").fetchone()[0] != 3:
                 raise JournalError("Journal requires DELETE mode and synchronous EXTRA")
+            journal_observation.stage(observation, "BEGIN")
             db.execute("BEGIN IMMEDIATE")
+            journal_observation.stage(observation, "SCHEMA")
             if not initialize:
                 if (db.execute("PRAGMA user_version").fetchone()[0] != _VERSION or
                         db.execute("PRAGMA application_id").fetchone()[0] != _APP_ID):
                     raise JournalError("Journal schema changed")
             observed = None
             if writer_kind is not None:
+                journal_observation.stage(observation, "LEASE")
                 try:
                     observed = self._require_lease(db)
                 except JournalLeaseError:
                     # Only the guard has run. Commit its clock high-water mark,
                     # never action/task/chain changes or a successful write event.
+                    journal_observation.stage(observation, "COMMIT")
                     db.execute("COMMIT")
                     raise
                 if writer_kind in {"STAGED", "DISPATCH_INTENT", "COMPENSATION_INTENT"}:
                     self._guard_new_work(db)
+            journal_observation.stage(observation, "BODY")
             yield db
             if writer_kind is not None:
                 db.execute("INSERT INTO worker_events(owner,generation,kind,subject,observed_ms) VALUES (?,?,?,?,?)",
                            (self._lease.owner, self._lease.generation, writer_kind, subject, observed))
+            journal_observation.stage(observation, "COMMIT")
             db.execute("COMMIT")
         except PolicyError:
             # Roll back approval consumption, action/worker events and all other
             # writes. Persist only observed time so expiry cannot resurrect after
             # a clock rollback. Never commit partial authorization on denial.
-            if db is not None and db.in_transaction:
-                security_time = db.execute("SELECT last_seen_ms FROM security_clock WHERE singleton=1").fetchone()
-                lease_time = db.execute("SELECT last_seen_ms FROM worker_lease WHERE singleton=1").fetchone()
-                db.rollback()
-                db.execute("BEGIN IMMEDIATE")
-                if security_time is not None:
-                    db.execute("UPDATE security_clock SET last_seen_ms=max(last_seen_ms,?) WHERE singleton=1", security_time)
-                if lease_time is not None:
-                    db.execute("UPDATE worker_lease SET last_seen_ms=max(last_seen_ms,?) WHERE singleton=1", lease_time)
-                db.execute("COMMIT")
+            try:
+                if db is not None and db.in_transaction:
+                    journal_observation.stage(observation, "CLOCK_ROLLBACK")
+                    security_time = db.execute("SELECT last_seen_ms FROM security_clock WHERE singleton=1").fetchone()
+                    lease_time = db.execute("SELECT last_seen_ms FROM worker_lease WHERE singleton=1").fetchone()
+                    db.rollback()
+                    journal_observation.stage(observation, "CLOCK_BEGIN")
+                    db.execute("BEGIN IMMEDIATE")
+                    if security_time is not None:
+                        db.execute("UPDATE security_clock SET last_seen_ms=max(last_seen_ms,?) WHERE singleton=1", security_time)
+                    if lease_time is not None:
+                        db.execute("UPDATE worker_lease SET last_seen_ms=max(last_seen_ms,?) WHERE singleton=1", lease_time)
+                    journal_observation.stage(observation, "CLOCK_COMMIT")
+                    db.execute("COMMIT")
+            except sqlite3.Error as exc:
+                failure_observation = journal_observation.capture(observation, self.path, exc)
+                raise
             raise
         except (sqlite3.Error, ValueError, TypeError, KeyError, RecursionError) as exc:
+            failure_observation = journal_observation.capture(observation, self.path, exc)
             raise JournalError("Journal transaction failed") from exc
         finally:
-            if db is not None:
-                try:
-                    if db.in_transaction:
-                        db.rollback()
-                except sqlite3.Error as exc:
-                    raise JournalError("Journal rollback failed; recovery required") from exc
-                finally:
-                    db.close()
+            try:
+                if db is not None:
+                    try:
+                        if db.in_transaction:
+                            journal_observation.stage(observation, "ROLLBACK")
+                            db.rollback()
+                    except sqlite3.Error as exc:
+                        if failure_observation is None:
+                            failure_observation = journal_observation.capture(observation, self.path, exc)
+                        raise JournalError("Journal rollback failed; recovery required") from exc
+                    finally:
+                        journal_observation.stage(observation, "CLOSE")
+                        db.close()
+            finally:
+                journal_observation.finish(observation)
+                journal_observation.emit(failure_observation)
 
     def create(self, record: dict) -> int:
         self._validate_ownership(record)
@@ -523,7 +549,7 @@ class SQLiteActionJournal:
                 db.execute("INSERT INTO chain_events(chain_id,kind) VALUES (?, 'CLOSED_FOR_UNWIND')", (chain_id,))
 
     def records(self) -> list[tuple[int, dict]]:
-        with self._transaction() as db:
+        with self._transaction(operation="READ_ACTIONS") as db:
             rows = db.execute("SELECT version,record FROM actions ORDER BY rowid").fetchall()
             return [(version, json.loads(record)) for version, record in rows]
 
@@ -628,7 +654,7 @@ class SQLiteActionJournal:
                              credential_id=actor.credential_id, binding_digest=binding["digest"])
 
     def load_task(self, task_id: str) -> tuple[int, dict] | None:
-        with self._transaction() as db:
+        with self._transaction(operation="READ_TASK") as db:
             row = db.execute("SELECT version,checkpoint FROM task_checkpoints WHERE task_id=?", (task_id,)).fetchone()
             if row is None:
                 return None

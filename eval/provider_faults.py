@@ -363,7 +363,8 @@ def score():
                 cases.append(case)
     digest = hashlib.sha256()
     for path in (Path(__file__), Path(__file__).with_name("provider_fault_peer.py"),
-                 Path(__file__).with_name("failure_evidence.py"), ROOT / "runtime/failure_diagnostics.py"):
+                 Path(__file__).with_name("failure_evidence.py"), ROOT / "runtime/failure_diagnostics.py",
+                 ROOT / "runtime/journal_observation.py"):
         digest.update(path.name.encode() + b"\0" + path.read_bytes().replace(b"\r\n", b"\n"))
     return {"schema": 1, "label": "SIMULATED", "harness_sha256": digest.hexdigest(), "provenance": provenance(),
             "case_count": len(cases),

@@ -190,7 +190,7 @@ class SecurityAuthority:
             self._event(db, "CREDENTIAL_REVOKED", now, credential_id=credential_id, principal_id=row[0])
 
     def authenticate(self, token):
-        with self.journal._transaction() as db:
+        with self.journal._transaction(operation="AUTHENTICATE") as db:
             now = self._now(db)
             snapshot = self._authenticate(db, token, now)
             self._event(db, "AUTHENTICATED", now, principal_id=snapshot.principal_id,
