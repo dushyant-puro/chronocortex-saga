@@ -46,6 +46,8 @@ A negative status does not prove a previously delayed admission request can
 never arrive. It therefore does not re-enable admission or create another task.
 Corrupt retained metadata also parks the flow. There is no automatic retry,
 replacement proposal or authority inferred from the cache.
+Unconfirmed, stale and storage-failure messages use warning styling and an
+accessible alert; confirmed admission uses a separate positive status message.
 
 Disconnect clears private review content and invalidates outstanding UI
 responses. A delayed response cannot populate another principal's screen.
@@ -87,3 +89,14 @@ includes both suites. Existing control/admission regression tests also run.
 Rollback is an atomic code revert, preserving admitted tasks, operation claims,
 UNKNOWN effects and any retained receipt identifiers. No schema, worker loop,
 provider reconciliation or remote cancellation semantics change here.
+
+## Qualification record
+
+Core implementation `c0c6a96`, [draft PR #37](https://github.com/dushyant-puro/chronocortex-saga/pull/37):
+independent fresh GitHub source passed 1,453 runtime tests (2 skipped) and
+34 browser-suite cases (32 Chromium journeys plus two existing fixture-readiness
+cases). Existing audited runtime/browser environments were reused; locks and
+dependencies are unchanged. Skips remain POSIX mode and unconfigured live SDK
+initialization. The UI warning follow-up changes only client presentation,
+browser checks and documentation; exact-source evidence is recorded in the PR.
+No new real provider/audio acceptance or production-readiness claim follows.

@@ -15,7 +15,12 @@ export function installProposalReview({ api, session, available, ready }) {
     if (!Array.isArray(value.binding.arguments) || !value.binding.source || !value.binding.reviewer) throw new Error("Review evidence unavailable.");
     return value;
   }
-  function message(text) { $("proposal-message").textContent = text; }
+  function message(text, warning = false) {
+    const node = $("proposal-message");
+    node.setAttribute("role", warning ? "alert" : "status");
+    node.className = warning ? "notice proposal-warning" : "notice";
+    node.textContent = text;
+  }
   function wipe() {
     view = ids = null; busy = attempted = admitted = blocked = false; generation += 1;
     $("proposal-panel").hidden = true;
@@ -60,12 +65,12 @@ export function installProposalReview({ api, session, available, ready }) {
           attempted = true;
           ids = identifiers(JSON.parse(stored));
           $("proposal-panel").hidden = false;
-          message("A receipt identity was retained in this tab. Read authoritative admission status before another admission.");
+          message("A receipt identity was retained in this tab. Read authoritative admission status before another admission.", true);
         }
       } catch {
         blocked = true;
         $("proposal-panel").hidden = false;
-        message("Receipt storage is unavailable or invalid. Admission is paused; preserve any known task ID for journal inspection.");
+        message("Receipt storage is unavailable or invalid. Admission is paused; preserve any known task ID for journal inspection.", true);
       }
     }
     render();
@@ -88,11 +93,11 @@ export function installProposalReview({ api, session, available, ready }) {
       if (kind === "admit") {
         try { remember(); } catch {
           blocked = true;
-          message("Receipt storage could not be verified. No admission request was sent.");
+          message("Receipt storage could not be verified. No admission request was sent.", true);
           return;
         }
         attempted = true;
-        message("Admission sent. Keep this task identity until its outcome is confirmed.");
+        message("Admission sent. Keep this task identity until its outcome is confirmed.", true);
       }
       const result = await api(`/api/proposals/${kind}`, kind === "review" ? {} : { review_id: ids.review_id, binding_digest: ids.digest });
       if (session() !== identity || generation !== version) return;
@@ -106,15 +111,15 @@ export function installProposalReview({ api, session, available, ready }) {
         admitted = view.admitted;
         $("proposal-confirmed").checked = false;
         if (admitted) message("Journal confirms this task was admitted. Execution authority remains separate.");
-        else if (attempted) message("Admission remains unconfirmed. Inspect this exact task in the journal; no retry was sent.");
-        else if (!view.current || view.expired) message("This review is stale or expired. Request a current proposal review before admission.");
+        else if (attempted) message("Admission remains unconfirmed. Inspect this exact task in the journal; no retry was sent.", true);
+        else if (!view.current || view.expired) message("This review is stale or expired. Request a current proposal review before admission.", true);
         else message("Inspect the transcript and exact arguments, then explicitly accept this task.");
         $("proposal-title").focus();
       }
     } catch (error) {
       if (session() !== identity || generation !== version) return;
       blocked = true;
-      message(attempted ? "Admission outcome is unconfirmed. Keep this task ID and read admission status. No retry was sent." : `Review unavailable. ${error.network ? "No admission was sent." : error.message}`);
+      message(attempted ? "Admission outcome is unconfirmed. Keep this task ID and read admission status. No retry was sent." : `Review unavailable. ${error.network ? "No admission was sent." : error.message}`, true);
     } finally {
       if (session() === identity && generation === version) { busy = false; render(); }
     }
@@ -125,7 +130,7 @@ export function installProposalReview({ api, session, available, ready }) {
   $("proposal-confirmed").addEventListener("change", render);
   $("proposal-finish").addEventListener("click", () => {
     if (busy || (attempted && !admitted)) return;
-    try { if (key) sessionStorage.removeItem(key); } catch { message("Receipt storage could not be cleared. Preserve the task ID."); return; }
+    try { if (key) sessionStorage.removeItem(key); } catch { message("Receipt storage could not be cleared. Preserve the task ID.", true); return; }
     wipe(); render();
   });
   return { sync, reset() { wipe(); owner = key = null; $("proposal-start").hidden = true; } };

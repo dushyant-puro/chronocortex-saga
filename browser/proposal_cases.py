@@ -162,6 +162,7 @@ def test_uncertain_admission_survives_reload_and_reads_status_without_replay(rev
     page.route('**/api/proposals/admit', lose)
     page.locator('#proposal-admit').click()
     expect(page.locator('#proposal-message')).to_contain_text('outcome is unconfirmed')
+    expect(page.locator('#proposal-panel').get_by_role('alert')).to_contain_text('outcome is unconfirmed')
     task_id = page.locator('#proposal-task-id').input_value()
     expect(page.locator('#proposal-start')).to_be_disabled()
     page.reload()

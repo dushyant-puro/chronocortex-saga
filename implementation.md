@@ -359,6 +359,17 @@ cross-session receipt recovery; a configured local review walkthrough; remaining
 voice/provider integration and operational/recovery packaging; then consolidated
 security/evaluation/release qualification including the retained CI findings.
 
+The opt-in UI core is `c0c6a96`, [draft PR #37](https://github.com/dushyant-puro/chronocortex-saga/pull/37).
+Fresh GitHub source passed 1,453 runtime tests with 2 skips and 34 browser-suite
+cases, using unchanged audited runtime/browser profiles. Nine new browser cases
+exercise human acceptance, receipt uncertainty/reload, storage failure, stale
+evidence, cross-principal response fencing and mobile/text safety. The warning
+follow-up adds accessible uncertainty alerts; backend/worker/provider code is
+unchanged by it. The default canned launcher stays unchanged. Next product
+work is durable inbox/delivery, cross-session recovery and a configured manual
+review walkthrough. Historical intermittent-CI diagnosis stays deferred to final
+integration, without waiving its release gates.
+
 ## Reproduce on Windows
 
 Use the repository's [locked environment instructions](docs/engineering/locked-environments.md)
