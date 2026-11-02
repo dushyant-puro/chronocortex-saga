@@ -194,6 +194,12 @@ to complete before explicitly reading final task evidence; an approval receipt
 alone never proves completion. A prior 22-pass/1-failure static-panel run is
 retained. This corrective phase changes no runtime Python or journal schema;
 independent source/browser and exact-head CI evidence belong to its own PR.
+The subsequent `b17f90f` PR Linux cancellation-panel failure (22 passed,
+1 failed) is also retained. Its HTTP response was not captured. The fixture
+readiness check now waits for a matching durable authorization checkpoint,
+tested against staged-before-checkpoint schedules; full workspace browser
+qualification then passed 25 tests. This strengthens the evaluation barrier
+without weakening production stale-review rejection or cancellation assertions.
 
 - [PR #32 Windows job](https://github.com/dushyant-puro/chronocortex-saga/actions/runs/41387626023/job/125091870626),
   source `5d43fd0`: workflow concluded cancelled with **3 failed, 981 passed,

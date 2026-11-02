@@ -607,12 +607,40 @@ def local_acceptance(tmp_path, chromium):
 def acceptance_pending(app, previous=None):
     deadline = time.monotonic() + 8
     while time.monotonic() < deadline:
-        records = SQLiteActionJournal(app.state.acceptance_files.journal).records()
+        journal = SQLiteActionJournal(app.state.acceptance_files.journal)
+        records = journal.records()
         pending = [r["action_id"] for _, r in records if r["state"] == "PENDING" and r["action_id"] != previous]
-        if pending:
-            return pending[-1]
+        found = journal.load_task(app.state.acceptance_task_id)
+        if found is not None and found[1]["state"] == "WAITING_FOR_AUTHORIZATION":
+            checkpoint = found[1]
+            current = checkpoint["step_action_ids"][checkpoint["current_step_index"]]
+            if current in pending:
+                return current
         time.sleep(.01)
     raise AssertionError("Expected a fresh approval boundary")
+
+
+@pytest.mark.parametrize("first_checkpoint", [
+    {"state": "RUNNING", "current_step_index": 0, "step_action_ids": [None, None]},
+    {"state": "WAITING_FOR_AUTHORIZATION", "current_step_index": 0, "step_action_ids": ["old", None]},
+])
+def test_acceptance_readiness_waits_for_the_matching_durable_checkpoint(monkeypatch, first_checkpoint):
+    calls = []
+    class StagedBeforeCheckpoint:
+        def records(self):
+            return [(0, {"action_id": "new", "state": "PENDING"})]
+        def load_task(self, task_id):
+            assert task_id == "SIMULATED-task"
+            calls.append(1)
+            return 1, (first_checkpoint if len(calls) == 1 else
+                       {"state": "WAITING_FOR_AUTHORIZATION", "current_step_index": 1,
+                        "step_action_ids": ["old", "new"]})
+    monkeypatch.setattr(__import__(__name__, fromlist=['SQLiteActionJournal']), 'SQLiteActionJournal', lambda _: StagedBeforeCheckpoint())
+    monkeypatch.setattr(time, 'sleep', lambda _: None)
+    app = SimpleNamespace(state=SimpleNamespace(acceptance_files=SimpleNamespace(journal="SIMULATED"),
+                                               acceptance_task_id="SIMULATED-task"))
+    assert acceptance_pending(app, "old") == "new"
+    assert calls == [1, 1]  # A staged row alone must not end the barrier.
 
 
 def test_local_walkthrough_requires_two_separate_browser_approvals(local_acceptance):

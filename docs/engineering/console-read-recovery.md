@@ -45,6 +45,22 @@ implementation `4275d62` (1,433 passed, 2 skipped); do not claim that inherited
 result as a newly executed suite on this later source. Exact-head CI and
 independent fresh-source browser evidence are recorded in the corrective PR.
 
+The `b17f90f` PR Linux browser job `125098243977` later reported 22 passed,
+1 failed at the mobile cancellation panel's CANCELLED assertion; its push
+browser passed. The captured output does not include the actual cancellation
+HTTP response, so its causal schedule remains unconfirmed. Inspection found
+the readiness helper returned any PENDING action before checking the task's
+authorization-wait checkpoint. A controlled evaluation of the published helper
+accepted a staged action without reading either a RUNNING or previous-step
+checkpoint. This is a fixture readiness gap, not proof of the CI response.
+
+The helper now requires the durable task to be WAITING_FOR_AUTHORIZATION with
+that exact current action before review. Two deterministic fixture regressions
+hold the checkpoint behind the staged row and require a second observation.
+They do not change server-side stale-review rejection, task cancellation or
+production retry/time budgets. The updated full workspace browser suite passed
+25 tests; prior 23-test results remain attributed to `b17f90f`.
+
 ## Earlier read and session recovery boundary
 
 Base: `codex/verified-offline-wheels`, `1d303b3`. The previous phase's PR Windows
