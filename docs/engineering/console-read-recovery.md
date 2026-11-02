@@ -1,5 +1,68 @@
 # Console read recovery and uncertain decisions
 
+## Explicit selection outranks automatic refresh
+
+The Linux browser job at session-review source `4275d62` exposed a separate
+race: the second walkthrough action was requested while the first action's
+post-approval snapshot was still pending. The command handler then started an
+automatic read of the old selected record, incrementing the inspection number
+after the newer explicit request. The newer response was discarded and the old
+record remained visible. This did not establish a wrong remote effect, but it
+violated the operator's evidence-selection intent.
+
+The command handler now captures the inspection number before sending its
+command and refreshes details only if selection has not changed. Closing the
+panel also increments that number, so an already pending record read cannot
+reopen it. Session fencing, exact server-side decision binding and no automatic
+mutation retry remain in force. Selection does not confer execution authority.
+
+Two Chromium regressions hold real HTTP responses at explicit barriers rather
+than sleeping: hold the command snapshot, start/hold a newer explicit record
+read, finish command cleanup, then release the new record; and close a panel
+while a new record read is held, then release it. Both failed against the
+unmodified JavaScript before correction. The controlled schedule matches the
+observed browser symptom; it does not explain hosted SQLite renewal contention.
+
+Rollback is a code revert preserving all journals, reviews and UNKNOWN effects.
+No migration, credential change or provider call is involved. The separate
+session-review API remains opt-in; its human review UI/durable inbox are still
+unfinished.
+
+The initial corrected-JavaScript browser run passed both new schedules but
+failed the walkthrough's final static-panel assertion (22 passed, 1 failed).
+That assertion read the task immediately after an approval acknowledgment,
+before actual completion. The walkthrough now awaits the owned
+`WorkerOperation.wait()` on its host loop, with an eight-second completion
+deadline, then explicitly reads the task. It still requires COMPLETED in
+durable UI evidence and both separate ledger rows. This await issues no task
+command, approval or provider call; consumer timeout does not cancel the owned
+operation. The final workspace Chromium suite passed **23 tests**. Earlier
+failing development evidence is retained, rather than relabeled successful.
+
+Only JavaScript, browser tests and documentation change in this corrective
+phase. Runtime Python qualification remains attributed to session-admission
+implementation `4275d62` (1,433 passed, 2 skipped); do not claim that inherited
+result as a newly executed suite on this later source. Exact-head CI and
+independent fresh-source browser evidence are recorded in the corrective PR.
+
+The `b17f90f` PR Linux browser job `125098243977` later reported 22 passed,
+1 failed at the mobile cancellation panel's CANCELLED assertion; its push
+browser passed. The captured output does not include the actual cancellation
+HTTP response, so its causal schedule remains unconfirmed. Inspection found
+the readiness helper returned any PENDING action before checking the task's
+authorization-wait checkpoint. A controlled evaluation of the published helper
+accepted a staged action without reading either a RUNNING or previous-step
+checkpoint. This is a fixture readiness gap, not proof of the CI response.
+
+The helper now requires the durable task to be WAITING_FOR_AUTHORIZATION with
+that exact current action before review. Two deterministic fixture regressions
+hold the checkpoint behind the staged row and require a second observation.
+They do not change server-side stale-review rejection, task cancellation or
+production retry/time budgets. The updated full workspace browser suite passed
+25 tests; prior 23-test results remain attributed to `b17f90f`.
+
+## Earlier read and session recovery boundary
+
 Base: `codex/verified-offline-wheels`, `1d303b3`. The previous phase's PR Windows
 browser run exposed a persistent error notice after a transient journal failure.
 Its push browser run passed. This follow-up retains that failure as evidence;

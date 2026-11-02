@@ -336,6 +336,54 @@ def test_changed_evidence_notice_clears_only_after_successful_detail_read(consol
     expect(page.locator("#notice")).to_be_hidden()
 
 
+def test_post_decision_refresh_cannot_supersede_a_pending_explicit_selection(console):
+    env, page, _, _ = console
+    connect(env, page)
+    inspect(page, "actions", env.pending.action_id)
+    snapshots, selected = [], []
+    snapshot_pattern = "**/api/snapshot"
+    selected_pattern = f"**/api/records/actions/{env.unknown.action_id}"
+    page.route(snapshot_pattern, lambda route: snapshots.append(route))
+    page.route(selected_pattern, lambda route: selected.append(route))
+    page.get_by_role("button", name="Approve forward operation", exact=True).click()
+    page.get_by_label("Execution principal").fill("executor")
+    with page.expect_request(snapshot_pattern):
+        confirm(page)
+    assert len(snapshots) == 1
+    page.locator("#lookup-kind").select_option("actions")
+    page.locator("#lookup-id").fill(env.unknown.action_id)
+    with page.expect_request(selected_pattern):
+        page.locator("#lookup").get_by_role("button", name="Inspect").click()
+    assert len(selected) == 1
+    snapshots[0].fulfill(response=snapshots[0].fetch())
+    # This marks completion of the entire command handler, including its
+    # automatic detail refresh. No sleep or dependence on response speed.
+    expect(page.locator("#cancel-dialog")).to_be_enabled()
+    selected[0].fulfill(response=selected[0].fetch())
+    expect(page.locator("#detail > .record-id")).to_have_text(env.unknown.action_id)
+    page.unroute(snapshot_pattern)
+    page.unroute(selected_pattern)
+
+
+def test_closing_evidence_panel_fences_an_already_pending_detail_read(console):
+    env, page, _, _ = console
+    connect(env, page)
+    inspect(page, "actions", env.pending.action_id)
+    pending = []
+    pattern = f"**/api/records/actions/{env.unknown.action_id}"
+    page.route(pattern, lambda route: pending.append(route))
+    page.locator("#lookup-id").fill(env.unknown.action_id)
+    with page.expect_request(pattern):
+        page.locator("#lookup").get_by_role("button", name="Inspect").click()
+    page.get_by_role("button", name="Close evidence panel").click()
+    assert len(pending) == 1
+    with page.expect_response(pattern):
+        pending[0].fulfill(response=pending[0].fetch())
+    page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+    expect(page.locator("#detail")).to_be_hidden()
+    page.unroute(pattern)
+
+
 @pytest.mark.parametrize("failure", ["network", "invalid_json"])
 def test_unavailable_post_response_is_never_automatically_retried(console, failure):
     env, page, _, _ = console
@@ -559,12 +607,40 @@ def local_acceptance(tmp_path, chromium):
 def acceptance_pending(app, previous=None):
     deadline = time.monotonic() + 8
     while time.monotonic() < deadline:
-        records = SQLiteActionJournal(app.state.acceptance_files.journal).records()
+        journal = SQLiteActionJournal(app.state.acceptance_files.journal)
+        records = journal.records()
         pending = [r["action_id"] for _, r in records if r["state"] == "PENDING" and r["action_id"] != previous]
-        if pending:
-            return pending[-1]
+        found = journal.load_task(app.state.acceptance_task_id)
+        if found is not None and found[1]["state"] == "WAITING_FOR_AUTHORIZATION":
+            checkpoint = found[1]
+            current = checkpoint["step_action_ids"][checkpoint["current_step_index"]]
+            if current in pending:
+                return current
         time.sleep(.01)
     raise AssertionError("Expected a fresh approval boundary")
+
+
+@pytest.mark.parametrize("first_checkpoint", [
+    {"state": "RUNNING", "current_step_index": 0, "step_action_ids": [None, None]},
+    {"state": "WAITING_FOR_AUTHORIZATION", "current_step_index": 0, "step_action_ids": ["old", None]},
+])
+def test_acceptance_readiness_waits_for_the_matching_durable_checkpoint(monkeypatch, first_checkpoint):
+    calls = []
+    class StagedBeforeCheckpoint:
+        def records(self):
+            return [(0, {"action_id": "new", "state": "PENDING"})]
+        def load_task(self, task_id):
+            assert task_id == "SIMULATED-task"
+            calls.append(1)
+            return 1, (first_checkpoint if len(calls) == 1 else
+                       {"state": "WAITING_FOR_AUTHORIZATION", "current_step_index": 1,
+                        "step_action_ids": ["old", "new"]})
+    monkeypatch.setattr(__import__(__name__, fromlist=['SQLiteActionJournal']), 'SQLiteActionJournal', lambda _: StagedBeforeCheckpoint())
+    monkeypatch.setattr(time, 'sleep', lambda _: None)
+    app = SimpleNamespace(state=SimpleNamespace(acceptance_files=SimpleNamespace(journal="SIMULATED"),
+                                               acceptance_task_id="SIMULATED-task"))
+    assert acceptance_pending(app, "old") == "new"
+    assert calls == [1, 1]  # A staged row alone must not end the barrier.
 
 
 def test_local_walkthrough_requires_two_separate_browser_approvals(local_acceptance):
@@ -579,6 +655,12 @@ def test_local_walkthrough_requires_two_separate_browser_approvals(local_accepta
         page.get_by_role("button", name="Approve forward operation", exact=True).click()
         page.get_by_label("Execution principal").fill(ACCEPTANCE_WORKER)
         confirm(page)
+    # Approval acknowledgment is not task completion. Wait on the actual owned
+    # driver before explicitly reading its final durable/UI evidence. Otherwise
+    # this static detail panel can legitimately show the earlier checkpoint.
+    async def completed():
+        return await asyncio.wait_for(app.state.acceptance_operation.wait(), timeout=8)
+    assert asyncio.run_coroutine_threadsafe(completed(), app.state.acceptance_host._loop).result(timeout=9) == "COMPLETED"
     page.get_by_role("button", name="Refresh", exact=True).click()
     inspect(page, "tasks", app.state.acceptance_task_id)
     expect(page.locator("#detail")).to_contain_text("COMPLETED", timeout=8000)

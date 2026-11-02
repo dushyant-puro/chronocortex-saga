@@ -178,6 +178,29 @@ only for their earlier source. No actual provider or live audio was used.
 
 ## Unresolved reliability findings and diagnostic boundary
 
+The session-review core PR Linux browser job `125096029097` at `4275d62`
+reported 1 failed, 20 passed: selecting the second walkthrough action left the
+first action displayed. A separate follow-up branch,
+`codex/preserve-explicit-evidence-selection`, reproduces this with held HTTP
+responses: post-command automatic inspection can supersede a newer pending
+explicit selection. It also reproduces a pending read reopening a closed panel.
+Both regressions fail before the JavaScript correction. The fix fences automatic
+inspection and panel close by the selection number; see the
+[causal schedule](docs/engineering/console-read-recovery.md).
+This is not a claimed explanation/fix for the unrelated SQLite contention.
+The corrected workspace Chromium suite passed 23 tests, including both causal
+schedules. Its walkthrough now waits for the actual shielded worker operation
+to complete before explicitly reading final task evidence; an approval receipt
+alone never proves completion. A prior 22-pass/1-failure static-panel run is
+retained. This corrective phase changes no runtime Python or journal schema;
+independent source/browser and exact-head CI evidence belong to its own PR.
+The subsequent `b17f90f` PR Linux cancellation-panel failure (22 passed,
+1 failed) is also retained. Its HTTP response was not captured. The fixture
+readiness check now waits for a matching durable authorization checkpoint,
+tested against staged-before-checkpoint schedules; full workspace browser
+qualification then passed 25 tests. This strengthens the evaluation barrier
+without weakening production stale-review rejection or cancellation assertions.
+
 - [PR #32 Windows job](https://github.com/dushyant-puro/chronocortex-saga/actions/runs/41387626023/job/125091870626),
   source `5d43fd0`: workflow concluded cancelled with **3 failed, 981 passed,
   2 skipped** reported before cancellation; the suite did not complete. The
