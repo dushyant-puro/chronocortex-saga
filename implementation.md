@@ -80,8 +80,10 @@ flowchart TD
     J --> U
 ```
 
-The review-to-task path is currently a **trusted local host API**, not a
-connected browser workflow. Voice proposals alone cannot authorize admission,
+The review-to-task path now has an opt-in [protected session API](docs/engineering/session-proposal-review.md)
+on `codex/session-proposal-review`, using trusted host evidence and atomic
+session revalidation. The human review UI and durable inbox are still absent.
+Voice proposals alone cannot authorize admission,
 approve a mutation, cancel work or complete a task. The web UI observes durable
 facts and submits scoped commands; it is never the source of truth.
 
@@ -176,6 +178,14 @@ only for their earlier source. No actual provider or live audio was used.
 
 ## Unresolved reliability findings and diagnostic boundary
 
+- [PR #32 Windows job](https://github.com/dushyant-puro/chronocortex-saga/actions/runs/41387626023/job/125091870626),
+  source `5d43fd0`: workflow concluded cancelled with **3 failed, 981 passed,
+  2 skipped** reported before cancellation; the suite did not complete. The
+  durable-task matrix rejected submission after renewal reported `SQLITE_BUSY`;
+  two local walkthrough cancellation/stop cases raised database-lock errors.
+  Its same-source push job and independent local full suites passed. The lock
+  holder and causal schedule are unconfirmed. Preserve this finding; do not
+  infer a fix from later passes, extend timeouts or rerun it to green.
 - [Initial Windows PR job](https://github.com/dushyant-puro/chronocortex-saga/actions/runs/41182510247/job/124482628422):
   `test_cancelled_shutdown_waiter_cannot_cancel_drain` failed with SQLite busy
   during `FORWARD_COMMITTED`; renewal `AUTHORIZE` also classified `SQLITE_BUSY`.
@@ -201,6 +211,27 @@ UNAVAILABLE, not zero effects. Raw journals, credentials, provider payloads,
 request paths/IDs and peer stderr must never be uploaded as diagnostic artifacts.
 
 ## Remaining stages and acceptance gates
+
+The protected session-review API implementation is `4275d62` on
+`codex/session-proposal-review`, [draft PR #33](https://github.com/dushyant-puro/chronocortex-saga/pull/33).
+Qualification at that exact source:
+
+| Check | Observed result |
+| --- | --- |
+| Focused admission/session/control tests | 141 passed. |
+| Full Windows workspace | 1,433 passed, 2 skipped. |
+| Fresh GitHub source, same audited locked environment | 1,433 passed, 2 skipped; clean source, not a newly installed environment. |
+| Independent distributed fault drill | 5/5 SIMULATED cases, 122 checks; unchanged `c80247e...` harness hash stated above. |
+| Runtime dependency audit | Passed; locks/dependencies unchanged. |
+| Hosted CI | Observe exact-head outcomes in PR #33; local qualification does not imply hosted CI passed. |
+
+The two runtime skips remain the POSIX-only mode check and live SDK
+initialization without an API key. The API is opt-in and disabled in existing
+hosts. It binds review to a session, validates authority inside insertion SQL,
+and supports lost-ack status readback without admission/dispatch replay. There
+is no human proposal-review UI or durable inbox yet. Seven workstreams remain
+open, and the unresolved hosted reliability failures remain a qualification
+gate before production advancement.
 
 The bounded follow-up on `codex/acceptance-launcher-verification` adds native
 ACL readback before Python can create acceptance credentials, plus opt-in
