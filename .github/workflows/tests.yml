@@ -84,7 +84,10 @@ jobs:
           --dest results/wheel-source -r requirements.txt
       - run: ${{ matrix.python }} -m scripts.wheelhouse capture --profile runtime --source results/wheel-source --output results/offline-wheels
       - run: ${{ matrix.python }} -m scripts.wheelhouse verify --profile runtime --directory results/offline-wheels
-      - run: ${{ matrix.python }} -m pytest -q -p no:cacheprovider --junitxml=results/runtime-tests.xml
+      - run: >-
+          ${{ matrix.python }} -m pytest -q -p no:cacheprovider
+          -o faulthandler_timeout=60 -o faulthandler_exit_on_timeout=false
+          --junitxml=results/runtime-tests.xml
       - run: ${{ matrix.python }} -m eval.voice_replay --output results/voice-evidence-scorecard.json
       - run: ${{ matrix.python }} -m eval.provider_faults --output results/provider-process-scorecard.json
       - run: ${{ matrix.python }} -m eval.mutation_comparison --output results/mutation-comparison.json

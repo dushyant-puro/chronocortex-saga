@@ -178,6 +178,39 @@ only for their earlier source. No actual provider or live audio was used.
 
 ## Unresolved reliability findings and diagnostic boundary
 
+The next bounded phase, `codex/ci-hang-diagnostics`, enables pytest's existing
+nonterminating thread-stack watchdog in runtime CI after 60 seconds per test
+protocol. It does not extend a test/job deadline or change worker cancellation,
+leases or SQLite behavior. Three native subprocess regressions exercise the
+actual checked-in exit policy, preserved pass/fail outcomes and a terminating
+negative control. See [scope and metadata](docs/engineering/ci-hang-diagnostics.md).
+
+Watchdog implementation `2d7e5ad`, [draft PR #36](https://github.com/dushyant-puro/chronocortex-saga/pull/36):
+the three final focused cases passed, and a fresh GitHub checkout passed
+**1,452 runtime tests, 2 skipped** using the exact 60-second/nonterminating CI
+options. The existing locked runtime environment was reused and audited;
+dependencies are unchanged. Skips remain POSIX mode and unconfigured live SDK
+initialization. No new browser/provider result is inferred from this CI-only
+change. Linux core CI runtime/browser/advisory jobs passed; Windows and final
+report-head outcomes must be read per exact head in the PR.
+
+The exploratory 1-failed/2-passed synthetic-child exit-wait result is retained
+separately from final qualification. The fixture now shares the original
+combined 15-second coordination/exit allowance and avoids synthetic traceback
+formatting; production/job/native/lease budgets did not change. This validates
+watchdog behavior, not a fix for historical startup or SQLite failures.
+
+Final PR #35 qualification was 9/10 jobs successful for both code/report heads;
+the Windows PR job differed from its successful push counterpart. Core
+`7b775ff` job `125103254471`: 1 failed, 1,448 passed, 2 skipped, native launcher
+VERIFY_ACL timeout. Report `d1ac8f5` job `125104138346`: 1,449 passed, 2 skipped,
+then distributed drill 4/5 cases passed, one proxy barrier incomplete after a
+worker OBSERVATION_FAILED/SQLITE_BUSY report. The safe pre-cleanup oracle
+observed zero POSTs/effects and no dispatch intent in separate snapshots.
+That is not a historical holder identification or blanket retry authority.
+The peer protocol did not forward the worker's journal JSON; validated
+forwarding remains the next diagnostic step. Raw stderr stays excluded.
+
 The `codex/journal-contention-observations` follow-up adds
 [bounded transaction diagnosis](docs/engineering/journal-contention.md): fixed
 SQL-boundary/operation labels and redacted process-local peer observations on
