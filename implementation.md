@@ -178,6 +178,24 @@ only for their earlier source. No actual provider or live audio was used.
 
 ## Unresolved reliability findings and diagnostic boundary
 
+The next bounded phase, `codex/ci-hang-diagnostics`, enables pytest's existing
+nonterminating thread-stack watchdog in runtime CI after 60 seconds per test
+protocol. It does not extend a test/job deadline or change worker cancellation,
+leases or SQLite behavior. Three native subprocess regressions exercise the
+actual checked-in exit policy, preserved pass/fail outcomes and a terminating
+negative control. See [scope and metadata](docs/engineering/ci-hang-diagnostics.md).
+
+Final PR #35 qualification was 9/10 jobs successful for both code/report heads;
+the Windows PR job differed from its successful push counterpart. Core
+`7b775ff` job `125103254471`: 1 failed, 1,448 passed, 2 skipped, native launcher
+VERIFY_ACL timeout. Report `d1ac8f5` job `125104138346`: 1,449 passed, 2 skipped,
+then distributed drill 4/5 cases passed, one proxy barrier incomplete after a
+worker OBSERVATION_FAILED/SQLITE_BUSY report. The safe pre-cleanup oracle
+observed zero POSTs/effects and no dispatch intent in separate snapshots.
+That is not a historical holder identification or blanket retry authority.
+The peer protocol did not forward the worker's journal JSON; validated
+forwarding remains the next diagnostic step. Raw stderr stays excluded.
+
 The `codex/journal-contention-observations` follow-up adds
 [bounded transaction diagnosis](docs/engineering/journal-contention.md): fixed
 SQL-boundary/operation labels and redacted process-local peer observations on
