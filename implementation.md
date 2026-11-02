@@ -1,6 +1,6 @@
 # ChronoCortex-Saga implementation record
 
-Review date: **2026-10-31** (client date). Repository:
+Review date: **2026-11-02** (client date). Repository:
 [dushyant-puro/chronocortex-saga](https://github.com/dushyant-puro/chronocortex-saga).
 
 This is an implementation and acceptance ledger, not a production-readiness
@@ -201,6 +201,17 @@ UNAVAILABLE, not zero effects. Raw journals, credentials, provider payloads,
 request paths/IDs and peer stderr must never be uploaded as diagnostic artifacts.
 
 ## Remaining stages and acceptance gates
+
+The bounded follow-up on `codex/acceptance-launcher-verification` adds native
+ACL readback before Python can create acceptance credentials, plus opt-in
+fixed-stage startup diagnostics. Native adversarial cases reject altered
+owner/protection/rules/rights/inheritance/propagation; failed child execution
+is not retried. This changes no journal schema, worker policy or provider path.
+Rollback is a code revert with evidence directories retained, never credential
+reuse or a retry of an uncertain mutation. The prior PR #31 push Windows job
+ended with a native 20-second `UNOBSERVED` timeout (1 failed, 1,400 passed,
+2 skipped), while its PR jobs all passed. Root cause remains unconfirmed;
+new diagnostics are not a retrospective causal reproduction.
 
 All **seven major workstreams** remain open; each can need several bounded PRs.
 

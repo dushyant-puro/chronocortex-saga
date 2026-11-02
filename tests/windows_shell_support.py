@@ -6,8 +6,12 @@ import subprocess
 
 TIMEOUT_SECONDS = 20
 PREFIX = "CCS_KEY_SETUP_STAGE:"
-STAGES = frozenset({"PROCESS_STARTED", "VALIDATE_PATH", "CREATE_DIRECTORY", "APPLY_ACL", "VERIFY_ACL",
-                    "READ_SECRET", "VALIDATE_SECRET", "CREATE_FILE", "WRITE_FILE", "FLUSH_FILE", "CLEANUP", "COMPLETE"})
+ACCEPTANCE_PREFIX = "CCS_ACCEPTANCE_STAGE:"
+ACCEPTANCE_STAGES = frozenset({"VALIDATE_PATH", "CREATE_DIRECTORY", "APPLY_ACL", "VERIFY_ACL",
+                               "LAUNCH_RUNTIME", "RUNTIME_EXIT"})
+KEY_STAGES = frozenset({"PROCESS_STARTED", "VALIDATE_PATH", "CREATE_DIRECTORY", "APPLY_ACL", "VERIFY_ACL",
+                        "READ_SECRET", "VALIDATE_SECRET", "CREATE_FILE", "WRITE_FILE", "FLUSH_FILE", "CLEANUP", "COMPLETE"})
+STAGES = KEY_STAGES | ACCEPTANCE_STAGES
 
 
 def setup_stages(stderr):
@@ -17,8 +21,13 @@ def setup_stages(stderr):
         stderr = stderr[-8192:]
     else:
         return []
-    return [line[len(PREFIX):] for line in stderr.splitlines()
-            if line.startswith(PREFIX) and line[len(PREFIX):] in STAGES][-64:]
+    stages = []
+    for line in stderr.splitlines():
+        for prefix, allowed in ((PREFIX, KEY_STAGES),
+                                (ACCEPTANCE_PREFIX, ACCEPTANCE_STAGES)):
+            if line.startswith(prefix) and line[len(prefix):] in allowed:
+                stages.append(line[len(prefix):])
+    return stages[-64:]
 
 
 class WindowsShellFailure(RuntimeError):

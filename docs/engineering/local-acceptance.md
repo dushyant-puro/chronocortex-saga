@@ -135,6 +135,30 @@ No existing user journal is migrated or adopted by this entrypoint.
 
 ## Automated verification and remaining building
 
+The Windows launcher reads back the directory security descriptor before
+starting Python: owner, protected DACL, exactly two caller/SYSTEM allow rules,
+FullControl, child inheritance and no propagation flags must match. A mismatch
+stops startup and retains the directory. This protects the credential-creation
+boundary; it does not defend a machine compromised by the caller or SYSTEM.
+
+Optional startup diagnostics emit only fixed stage names to stderr:
+
+```powershell
+.\scripts\start_local_acceptance.ps1 -Diagnostics
+```
+
+`VERIFY_ACL` precedes readback, `LAUNCH_RUNTIME` precedes interpreter invocation,
+and `RUNTIME_EXIT` means the child returned, not that it succeeded. No stage
+means unavailable evidence, not proof that the process never started. The
+launcher still prints its ordinary local directory/URL instructions; those are
+not diagnostic artifacts to upload. Diagnostic writer failure does not bypass
+ACL verification. There is no startup retry or longer test timeout.
+
+The prior PR #31 Windows push job timed out at the unchanged 20-second native
+shell budget without an observed startup marker (1 failed, 1,400 passed, 2
+skipped); same-source PR CI passed. These checks do **not** establish or fix
+that historical cause. Keep that reliability finding open.
+
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q tests/test_local_acceptance.py tests/test_windows_local_acceptance.py
 .\.venv\Scripts\python.exe -m pytest -q --junitxml=results/runtime-tests.xml
