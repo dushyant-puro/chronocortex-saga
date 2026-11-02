@@ -93,3 +93,11 @@ Regression/adversarial schedules include cross-session and bearer bypass,
 revocation at the final SQL boundary, missing domain/create grants, stale
 correction/digest/expiry, same-origin/CSRF/body rejection, anonymous evidence
 privacy, lost acknowledgment readback and zero dispatch/approval on admission.
+
+At implementation `4275d62`, the focused suite passed 141 tests. Both the
+workspace and an independent clean GitHub checkout passed 1,433 runtime tests
+with 2 skips, using the unchanged audited runtime environment. Clean-source
+distributed evaluation passed 5/5 SIMULATED cases and 122 checks. CI outcomes
+are recorded per head in [PR #33](https://github.com/dushyant-puro/chronocortex-saga/pull/33).
+These passes do not close the earlier hosted SQLite contention/cancellation
+findings in the [implementation record](../../implementation.md).
