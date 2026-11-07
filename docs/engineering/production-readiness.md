@@ -76,6 +76,9 @@ affected feature. The current product step is the opt-in
 [proposal-review UI](proposal-review-ui.md), followed by durable inbox/delivery,
 cross-tab recovery and a configured local review walkthrough. Positive receipt
 readback across sessions is implemented in the bounded follow-up above.
+The subsequent [admitted-history inbox](admitted-proposal-inbox.md) adds protected
+cross-tab identity discovery. Persistent delivery of pending proposals and its
+retention/correction semantics remain open; this history does not close them.
 
 ## Seven remaining acceptance areas
 

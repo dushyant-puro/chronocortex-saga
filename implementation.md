@@ -386,8 +386,23 @@ tests and five new Chromium journeys are included in those totals. Full hosted
 Windows results were pending at the last core observation. No REAL PROVIDER or
 real microphone qualification was run.
 
-Still next: durable proposal inbox/delivery and correction/replacement semantics,
-cross-tab recovery, configured manual review-host walkthrough, real voice and
+The completed bounded product phase, `codex/admitted-proposal-inbox`, adds
+[protected admitted history and cross-tab discovery](docs/engineering/admitted-proposal-inbox.md).
+It scans existing task provenance with bounded keyset pages and current
+original-reviewer/permission checks. A new tab can discover exact admitted IDs
+and explicitly read their receipt without admission replay or raw transcript/
+argument delivery. This does not clear another tab's uncertainty or persist
+unadmitted reviews. Its independent qualification is recorded in the phase PR.
+Core `c648a29`, [draft PR #39](https://github.com/dushyant-puro/chronocortex-saga/pull/39),
+passed 1,503 runtime tests with 2 skips and all 49 browser cases from fresh
+GitHub source using existing audited locked environments. The 29 new runtime
+cases and ten new Chromium journeys are included in those totals. Both profile
+audits passed. At the last core observation Linux/advisory CI jobs passed and
+Windows jobs were pending. Voice/tools remain SIMULATED; pending-review delivery,
+real provider/audio and production readiness are not claimed.
+
+Still next: persistent pending-proposal delivery and correction/replacement semantics,
+configured manual review-host walkthrough, real voice and
 provider acceptance, operations/recovery packaging and independent evaluation,
 then consolidated security/release qualification and the retained CI diagnosis.
 All seven major workstreams remain open. No merge/deployment is authorized or

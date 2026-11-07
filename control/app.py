@@ -120,12 +120,20 @@ def create_app(journal, config=None, *, proposal_reviews=None):
                             request.cookies.get(COOKIE), csrf, data["task_id"],
                             data["review_id"], data["binding_digest"]))
 
+    async def admission_inbox(request):
+        csrf = _csrf_header(request)
+        data = await _body(request)
+        if set(data) != {"before"}:
+            raise ControlError(400, "invalid_request", "Supply only the journal scan cursor.")
+        return JSONResponse(await run_in_threadpool(store.admission_inbox,
+                            request.cookies.get(COOKIE), csrf, data["before"]))
+
     async def page(request):
         return Response((STATIC / "index.html").read_bytes(), media_type="text/html")
 
     async def asset(request):
         name = request.path_params["name"]
-        types = {"console.js": "text/javascript", "proposals.js": "text/javascript", "console.css": "text/css", "mark.svg": "image/svg+xml"}
+        types = {"console.js": "text/javascript", "proposals.js": "text/javascript", "inbox.js": "text/javascript", "console.css": "text/css", "mark.svg": "image/svg+xml"}
         if name not in types:
             return Response(status_code=404)
         return Response((STATIC / name).read_bytes(), media_type=types[name])
@@ -181,6 +189,7 @@ def create_app(journal, config=None, *, proposal_reviews=None):
                             Route("/api/proposals/admit", proposal_admit, methods=["POST"]),
                             Route("/api/proposals/status", proposal_status, methods=["POST"]),
                             Route("/api/proposals/receipt", admission_receipt, methods=["POST"]),
+                            Route("/api/proposals/inbox", admission_inbox, methods=["POST"]),
                             Route("/api/records/{kind:record_kind}/{record_id}", detail),
                             Route("/api/commands/{command:control_kind}/{target}", command, methods=["POST"])])
     app.state.store, app.state.config = store, config

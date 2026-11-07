@@ -115,8 +115,6 @@ class ControlStore:
         authority and the original reviewing principal are both required. A miss
         cannot prove a delayed admission will never arrive and grants no retry.
         """
-        from runtime.proposal_contract import validate_binding
-
         self._session_token(token)
         if type(csrf) is not str or not csrf:
             raise ControlError(403, "csrf_required", "Refresh the operator session before a receipt lookup.")
@@ -130,24 +128,64 @@ class ControlStore:
             row = db.execute("SELECT checkpoint FROM task_checkpoints WHERE task_id=?", (task_id,)).fetchone()
             if row is None:
                 raise unavailable
-            try:
-                cp = json.loads(row[0])
-                if type(cp) is not dict:
-                    raise ValueError("Invalid checkpoint")
-                binding = cp.get("proposal_binding")
-                if binding is None:
-                    raise unavailable
-                validate_binding(binding, cp)
-            except (ValueError, TypeError, KeyError, WorkflowContractError):
-                raise ControlError(503, "invalid_evidence", "Stored admission evidence needs operator review.") from None
+            cp, binding = self._admission_checkpoint(row[0], task_id)
+            if binding is None:
+                raise unavailable
             if (binding["task_id"] != task_id or binding["review_id"] != review_id or
                     not hmac.compare_digest(binding["digest"], binding_digest) or
-                    binding["reviewer"]["principal_id"] != actor.principal_id or
-                    not set(binding["required_permissions"]) <= actor.granted_permissions or
-                    not self._task_permissions(db, cp) <= actor.granted_permissions):
+                    not self._admission_visible(db, actor, cp, binding)):
                 raise unavailable
             return {"task_id": task_id, "review_id": review_id, "binding_digest": binding_digest,
                     "state": "ADMITTED", "execution_authorized": False}
+
+    @staticmethod
+    def _admission_checkpoint(payload, task_id):
+        from runtime.proposal_contract import validate_binding
+        try:
+            cp = json.loads(payload)
+            if type(cp) is not dict or cp.get("task_id") != task_id:
+                raise ValueError("Invalid checkpoint")
+            binding = cp.get("proposal_binding")
+            if binding is not None:
+                validate_binding(binding, cp)
+            return cp, binding
+        except (ValueError, TypeError, KeyError, WorkflowContractError):
+            raise ControlError(503, "invalid_evidence", "Stored admission evidence needs operator review.") from None
+
+    def _admission_visible(self, db, actor, cp, binding):
+        return (binding["reviewer"]["principal_id"] == actor.principal_id and
+                set(binding["required_permissions"]) <= actor.granted_permissions and
+                self._task_permissions(db, cp) <= actor.granted_permissions)
+
+    def admission_inbox(self, token, csrf, before=None):
+        """Bounded keyset scan of admitted history; never pending proposal delivery.
+
+        The cursor is only a scan position, not authority or a completeness
+        assertion. Reauthenticate/filter each page, including empty pages.
+        """
+        self._session_token(token)
+        if type(csrf) is not str or not csrf:
+            raise ControlError(403, "csrf_required", "Refresh the operator session before an inbox read.")
+        with self.journal._transaction() as db:
+            actor, _, _ = self._session(db, token, csrf)
+            if before is not None and (type(before) is not str or
+                    re.fullmatch(r"[1-9][0-9]{0,18}", before) is None or int(before) > 2**63-1):
+                raise ControlError(400, "invalid_request", "Use the returned journal scan cursor.")
+            query = "SELECT rowid,task_id,checkpoint FROM task_checkpoints"
+            params = (self.WINDOW + 1,)
+            if before is not None:
+                query += " WHERE rowid<?"
+                params = (int(before), self.WINDOW + 1)
+            rows = db.execute(query + " ORDER BY rowid DESC LIMIT ?", params).fetchall()
+            items = []
+            for _, task_id, payload in rows[:self.WINDOW]:
+                cp, binding = self._admission_checkpoint(payload, task_id)
+                if binding is not None and self._admission_visible(db, actor, cp, binding):
+                    items.append({"task_id": binding["task_id"], "review_id": binding["review_id"],
+                                  "binding_digest": binding["digest"], "name": binding["task_name"],
+                                  "state": "ADMITTED", "execution_authorized": False})
+            return {"items": items, "next_before": str(rows[self.WINDOW-1][0]) if len(rows) > self.WINDOW else None,
+                    "scan_limit": self.WINDOW, "scope": "ADMITTED_HISTORY_ONLY", "execution_authorized": False}
 
     @staticmethod
     def _action_scope(record):
