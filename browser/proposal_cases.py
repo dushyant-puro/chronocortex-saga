@@ -67,7 +67,7 @@ def review_console(tmp_path, chromium):
                 env.loop = asyncio.get_running_loop()
                 yield
             app.router.lifespan_context = lifespan
-            env.journal, env.revise = journal, revise
+            env.journal, env.revise, env.service = journal, revise, service
             env.server = uvicorn.Server(uvicorn.Config(app, log_level='critical', access_log=False, proxy_headers=False))
             env.ready.set()
             env.server.run(sockets=[sock])
@@ -238,3 +238,77 @@ def test_mobile_review_and_corrupt_receipt_fail_closed(review_console):
     expect(page.locator('#proposal-message')).to_contain_text('unavailable or invalid')
     expect(page.locator('#proposal-start')).to_be_disabled()
     expect(page.locator('#proposal-finish')).to_be_disabled()
+
+
+def test_durable_receipt_after_relogin_without_process_local_review(review_console):
+    env, page = review_console
+    review(page)
+    requests = []
+    page.on('request', lambda request: requests.append(request.url.rsplit('/', 1)[-1])
+            if '/api/proposals/' in request.url else None)
+    page.locator('#proposal-admit').click()
+    expect(page.locator('#proposal-message')).to_contain_text('Task admitted')
+    task_id = page.locator('#proposal-task-id').input_value()
+    async def forget():
+        env.service._pending.clear()
+        env.revise('SIMULATED corrected cargo')
+    asyncio.run_coroutine_threadsafe(forget(), env.loop).result(timeout=5)
+    page.get_by_role('button', name='Disconnect', exact=True).click()
+    connect(env, page, env.viewer)
+    expect(page.locator('#proposal-panel')).to_be_hidden()
+    page.get_by_role('button', name='Disconnect', exact=True).click()
+    connect(env, page)
+    expect(page.locator('#proposal-task-id')).to_have_value(task_id)
+    expect(page.locator('#proposal-transcript')).to_be_empty()
+    with page.expect_request('**/api/proposals/receipt') as request:
+        page.locator('#proposal-status').click()
+    assert set(request.value.post_data_json) == {'task_id', 'review_id', 'binding_digest'}
+    expect(page.locator('#proposal-message')).to_contain_text('Journal confirms')
+    expect(page.locator('#proposal-transcript')).to_be_empty()
+    assert requests == ['admit', 'receipt']
+    assert counts(env) == dict(task_checkpoints=1, task_events=1, actions=0, approvals=0)
+
+
+@pytest.mark.parametrize('field', ['task_id', 'review_id', 'binding_digest'])
+def test_mismatched_durable_receipt_keeps_admission_parked(review_console, field):
+    env, page = review_console
+    review(page)
+    page.locator('#proposal-admit').click()
+    expect(page.locator('#proposal-message')).to_contain_text('Task admitted')
+    page.reload()
+    expect(page.locator('#proposal-message')).to_contain_text('receipt identity')
+    def mismatch(route):
+        result = route.fetch()
+        assert result.status == 200
+        receipt = result.json()
+        receipt[field] = '0'*64 if field == 'binding_digest' else 'SIMULATED-mismatch'
+        route.fulfill(status=200, content_type='application/json', body=json.dumps(receipt))
+    page.route('**/api/proposals/receipt', mismatch)
+    page.locator('#proposal-status').click()
+    expect(page.locator('#proposal-message')).to_contain_text('remains unconfirmed')
+    expect(page.locator('#proposal-finish')).to_be_disabled()
+    expect(page.locator('#proposal-start')).to_be_disabled()
+    assert counts(env) == dict(task_checkpoints=1, task_events=1, actions=0, approvals=0)
+
+
+def test_delayed_durable_receipt_cannot_populate_another_principal(review_console):
+    env, page = review_console
+    review(page)
+    page.locator('#proposal-admit').click()
+    expect(page.locator('#proposal-message')).to_contain_text('Task admitted')
+    page.reload()
+    expect(page.locator('#proposal-message')).to_contain_text('receipt identity')
+    held = []
+    pattern = '**/api/proposals/receipt'
+    page.route(pattern, lambda route: held.append((route, route.fetch())))
+    with page.expect_request(pattern):
+        page.locator('#proposal-status').click()
+    page.get_by_role('button', name='Disconnect', exact=True).click()
+    connect(env, page, env.viewer)
+    assert len(held) == 1
+    with page.expect_response(pattern):
+        held[0][0].fulfill(response=held[0][1])
+    page.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+    expect(page.locator('#proposal-panel')).to_be_hidden()
+    expect(page.locator('#proposal-task-id')).to_have_value('')
+    expect(page.locator('#proposal-message')).to_be_empty()

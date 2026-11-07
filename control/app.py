@@ -111,6 +111,15 @@ def create_app(journal, config=None, *, proposal_reviews=None):
     async def proposal_status(request):
         return await proposal_admit(request, read_only=True)
 
+    async def admission_receipt(request):
+        csrf = _csrf_header(request)
+        data = await _body(request)
+        if set(data) != {"task_id", "review_id", "binding_digest"}:
+            raise ControlError(400, "invalid_request", "Supply one exact retained receipt identity.")
+        return JSONResponse(await run_in_threadpool(store.admission_receipt,
+                            request.cookies.get(COOKIE), csrf, data["task_id"],
+                            data["review_id"], data["binding_digest"]))
+
     async def page(request):
         return Response((STATIC / "index.html").read_bytes(), media_type="text/html")
 
@@ -171,6 +180,7 @@ def create_app(journal, config=None, *, proposal_reviews=None):
                             Route("/api/proposals/review", proposal_review, methods=["POST"]),
                             Route("/api/proposals/admit", proposal_admit, methods=["POST"]),
                             Route("/api/proposals/status", proposal_status, methods=["POST"]),
+                            Route("/api/proposals/receipt", admission_receipt, methods=["POST"]),
                             Route("/api/records/{kind:record_kind}/{record_id}", detail),
                             Route("/api/commands/{command:control_kind}/{target}", command, methods=["POST"])])
     app.state.store, app.state.config = store, config
