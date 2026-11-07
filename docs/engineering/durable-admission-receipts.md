@@ -71,3 +71,29 @@ retain journals, UNKNOWN effects and receipt identifiers. Older UI status may be
 unavailable after session loss; never clear evidence or retry a mutation to work
 around that limitation. Historical intermittent CI investigations stay parked
 for final integration, without waiving release gates.
+
+## Qualification record
+
+Core `210b685de02badbe939a5f6aee53ef7eca7225ad`,
+[draft PR #38](https://github.com/dushyant-puro/chronocortex-saga/pull/38),
+qualified on 2026-11-07 from an independent fresh GitHub checkout:
+
+| Check | Observed result |
+| --- | --- |
+| Full Windows runtime suite | 1,474 passed, 2 skipped. |
+| Full browser suite | 39 passed: 37 Chromium journeys plus 2 fixture-readiness cases. |
+| New receipt-specific regressions/adversarial cases | 21 passed; included in full runtime denominator. |
+| Dependency profiles | Runtime and browser audits passed against the fresh source. |
+
+The runtime environment was reused; the unchanged hash-locked browser profile
+and Chromium were freshly installed. This is clean-source qualification, not a
+fresh OS/interpreter installation. Runtime skips remain POSIX-only mode and live
+SDK initialization without an API key. The retained evidence bundle is
+`results/durable-receipts-qualification/acceptance.json`; development failures
+and the earlier workspace run before the final shape guard are excluded from
+these exact-source totals. No live provider/audio acceptance is implied.
+
+At the last core CI observation, both push/PR Linux runtime/browser and advisory
+jobs passed; Windows jobs remained pending. Do not infer their outcome from
+local results. The subsequent qualification-record commit changes documentation
+only; core source attribution is retained. Seven workstreams remain open.

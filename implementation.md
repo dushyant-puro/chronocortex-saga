@@ -370,7 +370,7 @@ work is durable inbox/delivery, cross-session recovery and a configured manual
 review walkthrough. Historical intermittent-CI diagnosis stays deferred to final
 integration, without waiving its release gates.
 
-The next bounded phase, `codex/durable-admission-receipts`, adds
+The completed bounded phase, `codex/durable-admission-receipts`, adds
 [durable positive receipt recovery](docs/engineering/durable-admission-receipts.md).
 An attempted admission can be read after re-login or loss of process-local
 reviews using its exact retained task/review/digest IDs. Current authority,
@@ -378,6 +378,13 @@ original principal and stored binding are checked in SQLite. This never admits,
 dispatches, approves or reconciles an effect; unavailable status remains parked.
 No schema/dependency/worker/provider policy changes. Phase qualification and
 commit identities are recorded in its draft PR.
+Core `210b685`, [draft PR #38](https://github.com/dushyant-puro/chronocortex-saga/pull/38),
+passed 1,474 runtime tests with 2 skips and all 39 browser-suite cases from fresh
+GitHub source. Both environment audits passed; runtime was reused and the
+unchanged locked browser profile/Chromium freshly installed. The 21 new receipt
+tests and five new Chromium journeys are included in those totals. Full hosted
+Windows results were pending at the last core observation. No REAL PROVIDER or
+real microphone qualification was run.
 
 Still next: durable proposal inbox/delivery and correction/replacement semantics,
 cross-tab recovery, configured manual review-host walkthrough, real voice and
