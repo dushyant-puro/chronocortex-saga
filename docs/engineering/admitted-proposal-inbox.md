@@ -37,7 +37,7 @@ an unknown admission, or infer that creating another objective is safe.
 ## Bounded pagination and completeness
 
 Each page scans at most 200 checkpoints plus one lookahead row, newest first,
-using SQLite rowid keyset positions. The opaque-to-operators decimal string
+using SQLite rowid keyset positions. The decimal string
 `next_before` is a scan cursor, never a capability or proof of completeness.
 The API validates its type/range and binds it as SQL data. **Older journal
 records** explicitly requests that cursor; no unbounded auto-pagination runs.
@@ -84,3 +84,28 @@ Rollback is a code revert preserving journals, task/events, UNKNOWN effects and
 retained receipt IDs. No schema/dependency/worker/provider policy changes.
 Historical intermittent CI diagnosis remains parked for final integration
 without waiving its release gates. Exact-source results belong to this phase PR.
+
+## Qualification record
+
+Core `c648a29ade73965bbb829e8f03554263fc966bb7`,
+[draft PR #39](https://github.com/dushyant-puro/chronocortex-saga/pull/39),
+qualified on 2026-11-07 from an independent fresh GitHub checkout:
+
+| Check | Observed result |
+| --- | --- |
+| Full Windows runtime suite | 1,503 passed, 2 skipped. |
+| Full browser suite | 49 passed: 47 Chromium journeys plus 2 fixture-readiness cases. |
+| New inbox regressions/adversarial cases | 29 runtime cases and 10 Chromium journeys, included above. |
+| Runtime/browser profiles | Both dependency audits passed against fresh source. |
+
+Existing audited locked runtime/browser environments were reused; this is clean
+source, not a new environment/OS/interpreter installation. Runtime skips remain
+POSIX-only mode and live SDK initialization without an API key. Retained JUnit,
+audits, screenshot artifacts and SHA-256 hashes are captured in
+`results/admitted-inbox-qualification/acceptance.json`. Earlier development runs
+before the final stored-row identity guard are not substituted for these totals.
+
+At the last core CI observation, push/PR Linux runtime/browser and advisory jobs
+passed; Windows jobs remained pending. Final-head CI has its own outcomes. The
+subsequent qualification-record commit changes documentation only. No real
+provider/audio or production readiness claim follows; seven workstreams stay open.
