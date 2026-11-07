@@ -58,10 +58,13 @@ storage. Copy the displayed task ID for independent journal inspection.
 ## Remaining product work
 
 This cache is **not a durable inbox**. Host restart loses process-local reviews;
-new sessions cannot read a review bound to an old session. If status is
+new sessions cannot read a review bound to an old session. The subsequent
+[durable receipt phase](durable-admission-receipts.md) reads positive admission
+evidence without that old review, using retained IDs and current authority.
+If status is
 unavailable, preserve the ID and inspect that exact durable task. An unresolved
 receipt remains parked; the UI does not offer a speculative reset. Server-side
-durable delivery/inbox, cross-session receipt lookup and explicit correction/
+durable delivery/inbox, cross-tab identity recovery and explicit correction/
 replacement UX are the next product phase. Review expiry/correction still
 rejects stale admission, while previously admitted tasks retain their identity.
 

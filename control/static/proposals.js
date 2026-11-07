@@ -99,12 +99,17 @@ export function installProposalReview({ api, session, available, ready }) {
         attempted = true;
         message("Admission sent. Keep this task identity until its outcome is confirmed.", true);
       }
-      const result = await api(`/api/proposals/${kind}`, kind === "review" ? {} : { review_id: ids.review_id, binding_digest: ids.digest });
+      // Attempted admissions recover only from durable positive evidence. The
+      // old session/review may no longer exist; a miss never permits replay.
+      const receipt = kind === "status" && attempted;
+      const payload = kind === "review" ? {} : { review_id: ids.review_id, binding_digest: ids.digest };
+      if (receipt) payload.task_id = ids.task_id;
+      const result = await api(`/api/proposals/${receipt ? "receipt" : kind}`, payload);
       if (session() !== identity || generation !== version) return;
-      if (kind === "admit") {
-        if (result?.state !== "ADMITTED" || result.execution_authorized !== false || result.task_id !== ids.task_id || result.binding_digest !== ids.digest) throw new Error("Admission receipt unavailable.");
+      if (kind === "admit" || receipt) {
+        if (result?.state !== "ADMITTED" || result.execution_authorized !== false || result.task_id !== ids.task_id || result.binding_digest !== ids.digest || (receipt && result.review_id !== ids.review_id)) throw new Error("Admission receipt unavailable.");
         admitted = true;
-        message("Task admitted. Execution requires separate operation authority. You may close this review.");
+        message(receipt ? "Journal confirms this task was admitted. Execution authority remains separate." : "Task admitted. Execution requires separate operation authority. You may close this review.");
       } else {
         view = checked(result, kind === "status" ? ids : null);
         ids = identifiers(view.binding);
@@ -119,7 +124,7 @@ export function installProposalReview({ api, session, available, ready }) {
     } catch (error) {
       if (session() !== identity || generation !== version) return;
       blocked = true;
-      message(attempted ? "Admission outcome is unconfirmed. Keep this task ID and read admission status. No retry was sent." : `Review unavailable. ${error.network ? "No admission was sent." : error.message}`, true);
+      message(attempted ? (kind === "status" ? "Admission remains unconfirmed. Keep this exact task ID for journal inspection. No retry was sent." : "Admission outcome is unconfirmed. Keep this task ID and read admission status. No retry was sent.") : `Review unavailable. ${error.network ? "No admission was sent." : error.message}`, true);
     } finally {
       if (session() === identity && generation === version) { busy = false; render(); }
     }

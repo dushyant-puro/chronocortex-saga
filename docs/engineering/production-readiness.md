@@ -19,6 +19,10 @@ immutable arguments. It creates PENDING work atomically without dispatch or
 operation approval. Its opt-in [protected UI](proposal-review-ui.md) is now
 implemented; configured-host delivery, participant identity and live acceptance
 remain open. Schema 7 requires an explicit offline migration.
+The 2026-11-07 [durable receipt follow-up](durable-admission-receipts.md)
+adds positive journal admission readback after re-login or pending-review loss,
+with current authority and original-reviewer checks. It does not close durable
+inbox/delivery, cross-tab discovery or REAL PROVIDER reconciliation acceptance.
 That phase's initial Windows PR run also exposed a shutdown/drain lock-contention
 failure (`FORWARD_COMMITTED`, renewal `AUTHORIZE`/`SQLITE_BUSY`). Passing local and
 push runs do not close its unconfirmed cause; see the qualification record above.
@@ -70,7 +74,8 @@ integration/release qualification. Retain all findings; do not speculate about
 fixes or waive their release gates. New safety regressions still block their
 affected feature. The current product step is the opt-in
 [proposal-review UI](proposal-review-ui.md), followed by durable inbox/delivery,
-cross-session receipt recovery and a configured local review walkthrough.
+cross-tab recovery and a configured local review walkthrough. Positive receipt
+readback across sessions is implemented in the bounded follow-up above.
 
 ## Seven remaining acceptance areas
 
@@ -78,7 +83,7 @@ cross-session receipt recovery and a configured local review walkthrough.
 | --- | --- | --- |
 | 1. Real provider acceptance | Adapter, approval flow and offline/process faults exist. | Configure a dedicated sandbox and protected restricted credential; pass GET-only preflight, one exact approved mutation and authoritative readback; demonstrate uncertainty handling without replay and retain redacted evidence. Requires real account access. |
 | 2. Real voice acceptance | Pinned SDK hooks and synthetic protocol tests exist. | Choose/configure the STT deployment; test microphone/WebRTC, actual revision/confidence/timing semantics, playback interruption, disconnect/cleanup, participant identity and consent/retention. No fabricated confidence fallback. Requires audio/provider assets. |
-| 3. Authenticated proposal-to-task product flow | The local review/admission API atomically binds exact evidence and authority. The opt-in UI adds explicit human review and tab receipt recovery. | Build durable delivery/inbox, cross-session receipt recovery and manual configured-host integration; establish participant identity, consent/retention and correction/replacement UX; qualify the resulting end-to-end product flow. Speech alone must never become approval or cancellation authority. |
+| 3. Authenticated proposal-to-task product flow | The local review/admission API atomically binds exact evidence and authority. The opt-in UI adds explicit human review, tab receipt retention and positive journal receipt recovery across sessions. | Build durable delivery/inbox, cross-tab discovery and manual configured-host integration; establish participant identity, consent/retention and correction/replacement UX; qualify the resulting end-to-end product flow. Speech alone must never become approval or cancellation authority. |
 | 4. Deployment, identity and operations | Modular local-host supervisor/console protocol exists. | Supply a reviewed Windows Service/systemd/container deployment, external watchdog, secrets/configuration lifecycle and TLS/remote identity if exposed beyond the local host. Validate startup/shutdown/readiness, log/audit retention, capacity/backpressure, failure recovery and measured SLOs. Keep the architecture modular and simple. |
 | 5. Disaster recovery and artifact custody | Encrypted snapshots, memory drills, rotation and wheel verification exist. | Establish retained key/archive inventories and redundant off-host recovery copies; test bootstrap/native deployment assets. Design/test live recovery activation with independent freshness, worker fencing and current provider reconciliation. A valid old snapshot must not revive dispatch authority. |
 | 6. Independent research evaluation and novelty | Small selected synthetic corpora, transparent toy controls and one integration ablation exist. | Add licensed/independently sourced held-out cases, broader cross-task/worker/security scenarios, fair comparator implementations and further ablations. Refresh related work, predeclare metrics/denominators, retain raw evidence and measure real audio/provider latency in a disclosed environment. No universal novelty or deployment-rate claim follows from current scores. |

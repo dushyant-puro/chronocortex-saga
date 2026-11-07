@@ -108,6 +108,47 @@ class ControlStore:
             db.execute("UPDATE operator_sessions SET revoked=1 WHERE session_hash=?", (digest(token),))
             self._event(db, actor, "SESSION_ENDED", now)
 
+    def admission_receipt(self, token, csrf, task_id, review_id, binding_digest):
+        """Positive historical admission evidence, never an admission/retry API.
+
+        No process-local review, old session or voice ingress is needed. Current
+        authority and the original reviewing principal are both required. A miss
+        cannot prove a delayed admission will never arrive and grants no retry.
+        """
+        from runtime.proposal_contract import validate_binding
+
+        self._session_token(token)
+        if type(csrf) is not str or not csrf:
+            raise ControlError(403, "csrf_required", "Refresh the operator session before a receipt lookup.")
+        with self.journal._transaction() as db:
+            actor, _, _ = self._session(db, token, csrf)
+            if (any(type(v) is not str or not v or v.strip() != v or len(v) > 256
+                    for v in (task_id, review_id)) or
+                    type(binding_digest) is not str or re.fullmatch(r"[0-9a-f]{64}", binding_digest) is None):
+                raise ControlError(400, "invalid_request", "Supply one exact retained receipt identity.")
+            unavailable = ControlError(404, "receipt_unavailable", "Admission is unconfirmed. Preserve the exact task identity; do not replay admission.")
+            row = db.execute("SELECT checkpoint FROM task_checkpoints WHERE task_id=?", (task_id,)).fetchone()
+            if row is None:
+                raise unavailable
+            try:
+                cp = json.loads(row[0])
+                if type(cp) is not dict:
+                    raise ValueError("Invalid checkpoint")
+                binding = cp.get("proposal_binding")
+                if binding is None:
+                    raise unavailable
+                validate_binding(binding, cp)
+            except (ValueError, TypeError, KeyError, WorkflowContractError):
+                raise ControlError(503, "invalid_evidence", "Stored admission evidence needs operator review.") from None
+            if (binding["task_id"] != task_id or binding["review_id"] != review_id or
+                    not hmac.compare_digest(binding["digest"], binding_digest) or
+                    binding["reviewer"]["principal_id"] != actor.principal_id or
+                    not set(binding["required_permissions"]) <= actor.granted_permissions or
+                    not self._task_permissions(db, cp) <= actor.granted_permissions):
+                raise unavailable
+            return {"task_id": task_id, "review_id": review_id, "binding_digest": binding_digest,
+                    "state": "ADMITTED", "execution_authorized": False}
+
     @staticmethod
     def _action_scope(record):
         policy = record.get("authorization_policy")
