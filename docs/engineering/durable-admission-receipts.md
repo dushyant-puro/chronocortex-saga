@@ -50,6 +50,9 @@ proposals, deliver notifications, permit a different principal to accept an old
 review, or reconstruct an unadmitted review after restart. Those require the
 remaining durable inbox/delivery and explicit correction/replacement design.
 The default canned walkthrough is unchanged.
+The subsequent [admitted-history inbox](admitted-proposal-inbox.md) discovers
+positive admitted identities in a new tab without the old cache. Pending
+proposal delivery and correction/replacement semantics remain separate work.
 
 ## Reproduce and rollback
 

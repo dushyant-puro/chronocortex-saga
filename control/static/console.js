@@ -1,4 +1,5 @@
 import { installProposalReview } from "/assets/proposals.js";
+import { installAdmissionInbox } from "/assets/inbox.js";
 const $ = (selector) => document.querySelector(selector);
 const state = {
   bootstrapping: true,
@@ -17,6 +18,7 @@ const proposalReview = installProposalReview({
   available: () => state.snapshot?.capabilities?.proposal_review === true && state.session?.permissions.includes("ccs:task:create"),
   ready: () => state.fresh && !state.busy,
 });
+const admissionInbox = installAdmissionInbox({ api, session: () => state.session });
 const titles = {
   overview: ["Operator overview", "Decisions grounded in durable evidence."],
   tasks: [
@@ -149,10 +151,12 @@ function freshness(current) {
       (button.closest("#detail") !== null && state.detail?.stale);
   });
   proposalReview.sync();
+  admissionInbox.sync();
 }
 
 function disconnected() {
   proposalReview.reset();
+  admissionInbox.reset();
   clearTimeout(state.polling);
   $("#decision-dialog").close();
   state.session = null;

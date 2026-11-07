@@ -148,6 +148,17 @@
             decision controls are paused until refresh succeeds.
           </div>
           <div id="notice" class="notice" role="status" hidden></div>
+          <section id="admission-inbox" class="proposal-panel" aria-labelledby="inbox-title" hidden>
+            <p class="eyebrow">DURABLE ADMISSION HISTORY</p>
+            <h2 id="inbox-title">Admitted proposals</h2>
+            <p>Recover your admitted task identities in this tab. This history contains no pending reviews and does not prove execution or external effects.</p>
+            <div class="proposal-actions">
+              <button id="inbox-load" class="subtle" type="button">Load admitted proposals</button>
+              <button id="inbox-older" class="subtle" type="button" disabled>Older journal records</button>
+            </div>
+            <p id="inbox-message" class="notice" role="status">Load a protected journal page to discover admitted tasks.</p>
+            <ul id="inbox-items" class="inbox-items"></ul>
+          </section>
           <button id="proposal-start" class="primary" hidden>Review current proposal</button>
           <section id="proposal-panel" class="proposal-panel" aria-labelledby="proposal-title" hidden>
             <p class="eyebrow">TRANSCRIPT → EXPLICIT TASK ADMISSION</p>

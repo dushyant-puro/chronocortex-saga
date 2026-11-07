@@ -1014,3 +1014,7 @@ dialog select {
 .proposal-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
 #proposal-start { margin-bottom: 16px; }
 .proposal-panel .proposal-warning { background: #fff7e4; border-color: #e7c878; color: #795713; }
+.inbox-items { list-style: none; margin: 0; padding: 0; }
+.inbox-items li { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; border-top: 1px solid var(--line); padding: 14px 0; }
+.inbox-items strong, .inbox-items code { overflow-wrap: anywhere; min-width: 0; max-width: 100%; }
+.inbox-items code { flex: 1 1 220px; }
