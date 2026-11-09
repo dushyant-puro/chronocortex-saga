@@ -111,6 +111,33 @@ flow with screenshots. Both modes remain offline and compatible with the
 original pre-admitted walkthrough. Exact-source results are recorded in the
 phase PR and implementation ledger after qualification.
 
+Published implementation `452783b00e461ff73257ab749a441292808ebcda`
+([draft PR #43](https://github.com/dushyant-puro/chronocortex-saga/pull/43)) was
+qualified on 2026-11-09 from a fresh GitHub clone using the existing audited
+locked runtime/browser environments: **1,632 runtime passed, 2 skipped; 73
+browser passed; both profile audits passed; SIMULATED process drill 5/5 cases,
+122 checks**. The browser total comprises 71 Chromium journeys and two fixture
+readiness checks. Runtime ran first; no watchdog, retry or lease budgets changed.
+The skips are the POSIX directory mode check on Windows and live SDK startup
+without an API key. The unchanged harness SHA-256 is
+`5da8b57656fbf31ebf0d11f0a1fd42e611a4c19694917cd9178247b6bbab8edf`.
+Local evidence is `results/manual-review-qualification/acceptance.json`, with
+redacted JUnit and the review/completed screenshots alongside it.
+
+To reproduce with the separately installed browser profile, run the full browser
+list from `.github/workflows/tests.yml`; run ordinary runtime tests as documented
+in [implementation.md](../../implementation.md#reproduce-on-windows). Targeted
+checks for this phase are:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/test_manual_review.py tests/test_local_acceptance.py tests/test_windows_local_acceptance.py -q -p no:cacheprovider
+.\.venv-browser\Scripts\python.exe -m pytest browser/manual_review_cases.py -q -p no:cacheprovider
+```
+
+These commands create isolated temporary journals. No live credentials are
+needed. CI must finish independently; Linux runtime/browser and advisories had
+passed and Windows jobs remained pending at the last implementation observation.
+
 Live voice, real provider acceptance, recorded-activity replacement/reconciliation,
 operations packaging, independent evaluation and consolidated security/release
 qualification remain. Inherited intermittent CI findings stay open for the
