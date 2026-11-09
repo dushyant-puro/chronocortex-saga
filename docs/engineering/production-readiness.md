@@ -106,6 +106,11 @@ and completed-CI note in PR #41; counterpart passes do not close its gate.
 The next [schema-10 bounded replacement phase](zero-activity-task-replacement.md)
 supports only explicitly cancelled, zero-recorded-activity work. Any step/action
 evidence remains blocked; manual integration and real provider acceptance remain.
+Its core `902f3a8` ([PR #42](https://github.com/dushyant-puro/chronocortex-saga/pull/42))
+passed fresh-source Windows runtime 1,621/2 skipped, browser 70/70, both audits
+and independent SIMULATED process faults 5/5 cases/122 checks. Existing audited
+environments were reused. These offline results do not close inherited failure
+causes or any real-provider, voice, operational or release gate.
 
 ## Seven remaining acceptance areas
 

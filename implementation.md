@@ -449,6 +449,17 @@ or compensated records. This is a journal-local policy, not provider rollback
 or universal semantic deduplication. Existing effectful work remains blocked.
 Exact-source qualification belongs to this phase PR.
 
+Replacement core `902f3a8`,
+[draft PR #42](https://github.com/dushyant-puro/chronocortex-saga/pull/42),
+passed 1,621 runtime tests with 2 skips, all 70 browser cases, both environment
+audits and the independent SIMULATED 5/5-case/122-check process drill from fresh
+GitHub source using existing audited locked profiles. The 47 new runtime cases,
+9 new Chromium journeys and one added backup-schema parameter are included.
+The native full suite ran before browser/drill qualification, without changed
+policies/budgets; prior failures are not declared fixed by this passing run.
+Linux/advisory CI passed and Windows runtime jobs were pending at the last core
+observation. Inherited release gates and all seven workstreams remain open.
+
 Still next: configured manual review-host integration and provider-specific
 replacement/reconciliation acceptance for any recorded activity,
 configured manual review-host walkthrough, real voice and

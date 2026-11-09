@@ -135,3 +135,35 @@ recorded effects needs separate authoritative reconciliation and provider-specif
 acceptance. Real voice/provider, deployment/retention/recovery custody, independent
 research and consolidated security/release qualification remain open across seven
 workstreams. Historical/native/CI findings remain deferred release gates.
+
+## Qualification record
+
+Core `902f3a8d3592fc6b254322b7c9e489558c9e662c`,
+[draft PR #42](https://github.com/dushyant-puro/chronocortex-saga/pull/42),
+qualified on 2026-11-09 from independent fresh GitHub source:
+
+| Check | Observed result |
+| --- | --- |
+| Full Windows runtime | 1,621 passed, 2 skipped. |
+| Full browser suite | 70 passed: 68 Chromium journeys plus 2 fixture-readiness cases. |
+| New replacement regressions | 47 runtime cases and 9 Chromium journeys, included above; one extra backup-schema parameter is also included. |
+| Independent SIMULATED fault drill | 5/5 cases, 122 checks. Harness SHA-256 `5da8b57656fbf31ebf0d11f0a1fd42e611a4c19694917cd9178247b6bbab8edf`. |
+| Runtime/browser profiles | Both audits passed against fresh source. |
+
+Existing audited locked environments were reused, not newly installed. Runtime
+skips remain POSIX mode on Windows and live SDK initialization without a key.
+The native full suite completed before browser/fault-drill qualification; no
+policies/budgets changed, and this scheduling is not a diagnosis of prior failures.
+JUnit (synthetic credential values redacted if present), audits, screenshots,
+drill, hashes and CI snapshot are retained under ignored
+`results/task-replacement-qualification/acceptance.json`. One development fixture
+deleted a chain before its dependent event; its 1-failure/36-pass run is excluded
+from exact-source totals. The corrected fixture and new cases passed above.
+
+Local offline passes do not close the inherited watchdog/native/CI gates or
+establish real provider/voice/production acceptance. `release_qualified` remains
+false. Implementation-head Linux runtime/browser and advisory CI jobs passed at
+the last observation, as did push Windows browser; Windows runtime and PR Windows
+browser jobs were pending. Final-head CI has separate
+outcomes. The record follow-up changes documentation only. No existing user
+journal was migrated or real provider contacted.
