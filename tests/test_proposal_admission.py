@@ -510,6 +510,7 @@ def test_schema6_requires_offline_migration_preserves_records_and_fences_old_han
         payload = canonical(before)
         db.execute("UPDATE task_checkpoints SET checkpoint=?", (payload,))
         db.execute("UPDATE task_events SET checkpoint=?", (payload,))
+        db.execute("DROP TABLE task_replacements")
         db.execute("DROP TABLE proposal_review_fences")
         db.execute("DROP TABLE proposal_deliveries")
         db.execute("PRAGMA user_version=6")
@@ -524,17 +525,19 @@ def test_schema6_requires_offline_migration_preserves_records_and_fences_old_han
     migrated = SQLiteActionJournal(env.journal.path, clock_ms=lambda: env.clock.now, migrate=True)
     assert migrated.load_task(prepared.task_id) == (0, before)
     with closing(sqlite3.connect(migrated.path)) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 10
 
 
-@pytest.mark.parametrize("schema", [6, 7, 8, 9])
+@pytest.mark.parametrize("schema", [6, 7, 8, 9, 10])
 def test_backup_reads_legacy_and_new_evidence_without_authorizing_activation(env, tmp_path, schema):
-    if schema in {7, 8, 9}:
+    if schema in {7, 8, 9, 10}:
         prepared = review(env)
         admit(env, prepared)
-    if schema < 9:
+    if schema < 10:
         with closing(sqlite3.connect(env.journal.path)) as db:
-            db.execute("DROP TABLE proposal_review_fences")
+            db.execute("DROP TABLE task_replacements")
+            if schema < 9:
+                db.execute("DROP TABLE proposal_review_fences")
             if schema < 8:
                 db.execute("DROP TABLE proposal_deliveries")
             db.execute("PRAGMA user_version=" + str(schema))

@@ -92,7 +92,7 @@ class ProposalAdmissionService:
         return self._review(proposal, workflow_id, arguments,
                             lambda db, now: self.authority._authenticate(db, token, now), ttl_ms)
 
-    def _review(self, proposal, workflow_id, arguments, authenticate, ttl_ms, session_scope=None, supersedes=None, task_id=None):
+    def _review(self, proposal, workflow_id, arguments, authenticate, ttl_ms, session_scope=None, supersedes=None, task_id=None, replaces_task=None):
         self._current(proposal)
         if type(ttl_ms) is not int or not 1 <= ttl_ms <= 300000:
             raise ProposalAdmissionError("PROPOSAL_REVIEW_LIFETIME_INVALID")
@@ -109,6 +109,9 @@ class ProposalAdmissionService:
             actor = authenticate(db, now)
             if not set(permissions) <= actor.permissions:
                 raise PermissionDeniedError("Proposal review permissions required")
+            if replaces_task is not None:
+                from runtime.task_replacement import source
+                source(db,actor,replaces_task['task_id'],replaces_task)
         self._pending = {key: value for key, value in self._pending.items() if now < value.expires_ms}
         if len(self._pending) >= self.max_pending:
             raise ProposalAdmissionError("PROPOSAL_REVIEW_CAPACITY")
@@ -123,6 +126,8 @@ class ProposalAdmissionService:
                    "expires_ms": min(now + ttl_ms, actor.expires_ms)}
         if self.retain_reviews:
             binding.update(schema=2, supersedes=supersedes)
+        if replaces_task is not None:
+            binding.update(schema=3,replaces_task=replaces_task)
         binding["digest"] = digest(binding)
         cp["proposal_binding"] = binding
         validate_binding(binding, cp)
@@ -134,6 +139,9 @@ class ProposalAdmissionService:
                     current_actor = authenticate(db, published_ms)
                     if (current_actor.principal_id, current_actor.version, current_actor.credential_id) != (actor.principal_id, actor.version, actor.credential_id):
                         raise PermissionDeniedError("Proposal delivery authority changed")
+                    if replaces_task is not None:
+                        from runtime.task_replacement import source
+                        source(db,current_actor,replaces_task['task_id'],replaces_task)
                     prior = publish(db, cp, proposal, published_ms, current_actor)
                     if prior is not None:
                         self.authority._event(db, 'PROPOSAL_REAUTHORIZED', published_ms,
@@ -220,7 +228,22 @@ class ProposalAdmissionService:
             actor = authenticate(db, now)
             previous = source(db, actor, review_id, binding_digest, now)
         return self._review(self.ingress.latest, workflow_id, arguments, authenticate, ttl_ms,
-                           session_digest(session), {'review_id': review_id, 'binding_digest': binding_digest}, previous['task_id'])
+                           session_digest(session), {'review_id': review_id, 'binding_digest': binding_digest}, previous['task_id'],previous.get('replaces_task'))
+
+    def replacement_session(self, task_id, checkpoint_digest, workflow_id, arguments, *, session, csrf, ttl_ms=60000):
+        """Fresh replacement review only; claim/admission happens on explicit accept."""
+        from runtime.control_store import digest as session_digest
+        from runtime.task_replacement import source,ReplacementDenied
+        self.ingress._owned()
+        if not self.retain_reviews:
+            raise ProposalAdmissionError('PROPOSAL_RETENTION_OPT_IN_REQUIRED')
+        authenticate=self._session_authenticator(session,csrf)
+        with self.journal._transaction() as db:
+            actor=authenticate(db,self.authority._now(db))
+            original,_=source(db,actor,task_id)
+            if original['digest'] != checkpoint_digest:
+                raise ReplacementDenied('EVIDENCE_CHANGED')
+        return self._review(self.ingress.latest,workflow_id,arguments,authenticate,ttl_ms,session_digest(session),replaces_task=original)
 
     def view_session(self, review_id, *, session, csrf):
         """Protected process-local review/readback; unavailable after host restart."""

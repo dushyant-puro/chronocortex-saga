@@ -1,6 +1,7 @@
 import { installProposalReview } from "/assets/proposals.js";
 import { installAdmissionInbox } from "/assets/inbox.js";
 import { installReviewDeliveries } from "/assets/deliveries.js";
+import { installTaskReplacement } from '/assets/replacement.js';
 const $ = (selector) => document.querySelector(selector);
 const state = {
   bootstrapping: true,
@@ -24,6 +25,8 @@ const reviewDeliveries = installReviewDeliveries({ api, session: () => state.ses
   canReauthorize: (source) => proposalReview.canReauthorize(source),
   requestReauthorization: (source) => proposalReview.reauthorize(source),
 });
+const taskReplacement=installTaskReplacement({api,session:()=>state.session,
+  canPrepare:()=>proposalReview.canReplace(),prepare:(source)=>proposalReview.replacement(source)});
 const titles = {
   overview: ["Operator overview", "Decisions grounded in durable evidence."],
   tasks: [
@@ -158,12 +161,14 @@ function freshness(current) {
   proposalReview.sync();
   admissionInbox.sync();
   reviewDeliveries.sync();
+  taskReplacement.sync();
 }
 
 function disconnected() {
   proposalReview.reset();
   admissionInbox.reset();
   reviewDeliveries.reset();
+  taskReplacement.reset();
   clearTimeout(state.polling);
   $("#decision-dialog").close();
   state.session = null;

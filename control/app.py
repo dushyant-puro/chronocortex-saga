@@ -146,12 +146,27 @@ def create_app(journal, config=None, *, proposal_reviews=None):
             raise ControlError(400, "invalid_request", "Supply only a review delivery identity or null.")
         return JSONResponse(await run_in_threadpool(read, journal, request.cookies.get(COOKIE), csrf, data['review_id']))
 
+    async def replacement_status(request):
+        from runtime.task_replacement import inspect
+        csrf=_csrf_header(request);data=await _body(request)
+        if set(data) != {'task_id'} or type(data['task_id']) is not str:
+            raise ControlError(400,'invalid_request','Inspect one exact task identity.')
+        return JSONResponse(await run_in_threadpool(inspect,journal,request.cookies.get(COOKIE),csrf,data['task_id']))
+
+    async def replacement_review(request):
+        csrf=_csrf_header(request);data=await _body(request)
+        if proposal_reviews is None:
+            raise ControlError(404,'not_configured','Proposal review is not configured.')
+        if set(data) != {'task_id','checkpoint_digest'} or any(type(v) is not str for v in data.values()):
+            raise ControlError(400,'invalid_request','Review one exact cancelled checkpoint.')
+        return JSONResponse(proposal_reviews.replacement(request.cookies.get(COOKIE),csrf,data['task_id'],data['checkpoint_digest']))
+
     async def page(request):
         return Response((STATIC / "index.html").read_bytes(), media_type="text/html")
 
     async def asset(request):
         name = request.path_params["name"]
-        types = {"console.js": "text/javascript", "proposals.js": "text/javascript", "inbox.js": "text/javascript", "deliveries.js": "text/javascript", "console.css": "text/css", "mark.svg": "image/svg+xml"}
+        types = {"console.js": "text/javascript", "proposals.js": "text/javascript", "inbox.js": "text/javascript", "deliveries.js": "text/javascript", "replacement.js": "text/javascript", "console.css": "text/css", "mark.svg": "image/svg+xml"}
         if name not in types:
             return Response(status_code=404)
         return Response((STATIC / name).read_bytes(), media_type=types[name])
@@ -206,6 +221,8 @@ def create_app(journal, config=None, *, proposal_reviews=None):
                             Route("/api/proposals/review", proposal_review, methods=["POST"]),
                             Route("/api/proposals/admit", proposal_admit, methods=["POST"]),
                             Route("/api/proposals/reauthorize", proposal_reauthorize, methods=["POST"]),
+                            Route('/api/proposals/replacement-status',replacement_status,methods=['POST']),
+                            Route('/api/proposals/replacement',replacement_review,methods=['POST']),
                             Route("/api/proposals/status", proposal_status, methods=["POST"]),
                             Route("/api/proposals/receipt", admission_receipt, methods=["POST"]),
                             Route("/api/proposals/inbox", admission_inbox, methods=["POST"]),

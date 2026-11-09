@@ -82,18 +82,26 @@ def validate_binding(binding, checkpoint):
     """Validate provenance against the task, not merely its self-declared digest."""
     keys = {"schema", "review_id", "task_id", "task_name", "reviewer", "source", "workflow_digest",
             "arguments", "required_permissions", "reviewed_ms", "expires_ms", "digest"}
-    if type(binding) is not dict or type(binding.get("schema")) is not int or binding["schema"] not in {1, 2}:
+    if type(binding) is not dict or type(binding.get("schema")) is not int or binding["schema"] not in {1, 2, 3}:
         raise ProposalAdmissionError("PROPOSAL_BINDING_SCHEMA")
-    if binding['schema'] == 2:
+    if binding['schema'] >= 2:
         keys.add('supersedes')
+    if binding['schema'] == 3:
+        keys.add('replaces_task')
     if set(binding) != keys:
         raise ProposalAdmissionError("PROPOSAL_BINDING_SCHEMA")
-    if binding['schema'] == 2 and binding['supersedes'] is not None:
+    if binding['schema'] >= 2 and binding['supersedes'] is not None:
         prior = binding['supersedes']
         if (type(prior) is not dict or set(prior) != {'review_id', 'binding_digest'} or
                 type(prior['binding_digest']) is not str or re.fullmatch('[0-9a-f]{64}', prior['binding_digest']) is None or
                 identity(prior['review_id']) == binding['review_id']):
             raise ProposalAdmissionError('PROPOSAL_SUCCESSION_INVALID')
+    if binding['schema'] == 3:
+        original=binding['replaces_task']
+        if (type(original) is not dict or set(original) != {'task_id','version','digest'} or
+                identity(original['task_id']) == binding['task_id'] or type(original['version']) is not int or original['version'] < 0 or
+                type(original['digest']) is not str or re.fullmatch('[0-9a-f]{64}',original['digest']) is None):
+            raise ProposalAdmissionError('PROPOSAL_REPLACEMENT_INVALID')
     for key in ("review_id", "task_id", "task_name"):
         identity(binding[key])
     reviewer, source = binding["reviewer"], binding["source"]

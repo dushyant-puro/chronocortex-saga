@@ -35,6 +35,12 @@ class ProposalReviewController:
                     json.loads(self._arguments), session=session, csrf=csrf)
         return self.service.view_session(review.review_id, session=session, csrf=csrf)
 
+    def replacement(self,session,csrf,task_id,checkpoint_digest):
+        import json
+        review=self.service.replacement_session(task_id,checkpoint_digest,self.workflow_id,
+                    json.loads(self._arguments),session=session,csrf=csrf)
+        return self.service.view_session(review.review_id,session=session,csrf=csrf)
+
     def status(self, session, csrf, review_id, binding_digest):
         view = self.service.view_session(review_id, session=session, csrf=csrf)
         if view['binding']['digest'] != binding_digest:

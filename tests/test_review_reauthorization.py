@@ -213,7 +213,7 @@ def test_schema8_migration_seeds_legacy_retained_fence_and_rolls_back_atomically
         b=payload['checkpoint']['proposal_binding'];b['schema']=1;b.pop('supersedes');b['digest']=digest({k:v for k,v in b.items() if k!='digest'})
         db.execute('UPDATE proposal_deliveries SET payload=?',(canonical(payload),))
     e.journal.release_lease()
-    with closing(sqlite3.connect(e.journal.path)) as db:db.execute('DROP TABLE proposal_review_fences');db.execute('PRAGMA user_version=8');db.commit()
+    with closing(sqlite3.connect(e.journal.path)) as db:db.execute('DROP TABLE task_replacements');db.execute('DROP TABLE proposal_review_fences');db.execute('PRAGMA user_version=8');db.commit()
     with pytest.raises(JournalError):SQLiteActionJournal(e.journal.path,clock_ms=lambda:e.clock.now)
     original=review_fence.create_schema
     def fail(db):original(db);raise RuntimeError('SIMULATED migration interruption')
@@ -256,7 +256,7 @@ def test_legacy_snapshot_malformed_binding_returns_sanitized_failure(browser,mal
         db.execute('UPDATE task_checkpoints SET checkpoint=?',(payload,))
         db.execute('UPDATE task_events SET checkpoint=?',(payload,))
     with closing(sqlite3.connect(e.journal.path)) as db:
-        db.execute('DROP TABLE proposal_review_fences');db.execute('DROP TABLE proposal_deliveries')
+        db.execute('DROP TABLE task_replacements');db.execute('DROP TABLE proposal_review_fences');db.execute('DROP TABLE proposal_deliveries')
         db.execute('PRAGMA user_version=7');db.commit()
     before=e.journal.path.read_bytes()
     report=recovery_preflight.inspect(e.journal.path)

@@ -171,3 +171,17 @@ The record follow-up changes documentation only. This phase implements the
 bounded feature but does not close runtime/CI reliability or release acceptance.
 Preserve these findings for the deferred final-integration diagnosis; seven
 workstreams remain open. No existing user journal or real provider was changed.
+
+Completed final-head CI for `a243b36`: all five PR jobs passed. The push run
+failed only [Windows runtime](https://github.com/dushyant-puro/chronocortex-saga/actions/runs/42580512140/job/129037819200)
+in `test_lease_takeover_after_apply_fences_old_host_and_preserves_get_only_recovery`
+(1 failed, 1,572 passed, 2 skipped): PENDING rather than IN_FLIGHT, with a
+renewal/VALIDATE_DEADLINE/JOURNAL_LEASE observation. Its cause is unconfirmed
+and distinct from the local watchdog exit. Redacted logs are retained under
+ignored `results/reauthorization-windows-129037819200.redacted.log`; the user's
+email notification was verified against this job. These gates remain open.
+
+The subsequent [schema-10 replacement stage](zero-activity-task-replacement.md)
+adds a distinct new task only for explicitly cancelled, zero-activity origins;
+its claim prevents multiple replacement admissions. Current migration/rollback
+is in that newer runbook. The schema-9 source record above remains historical.

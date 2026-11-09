@@ -440,7 +440,28 @@ and Windows browser jobs passed, while Windows runtime CI was pending. These
 failures remain release gates; no retries/budgets were weakened or passing
 counterpart substituted. See the phase runbook for exact source/evidence.
 
-Still next: admitted-task replacement policy and acceptance,
+The bounded `codex/zero-effect-task-replacement` phase adds
+[replacement of cancelled zero-activity tasks](docs/engineering/zero-activity-task-replacement.md).
+Schema 10 admits a new linked task with one permanent claim per original,
+preserving and fencing the original checkpoint. It requires explicit current
+review/acceptance and refuses all step/action/slot evidence, including unknown
+or compensated records. This is a journal-local policy, not provider rollback
+or universal semantic deduplication. Existing effectful work remains blocked.
+Exact-source qualification belongs to this phase PR.
+
+Replacement core `902f3a8`,
+[draft PR #42](https://github.com/dushyant-puro/chronocortex-saga/pull/42),
+passed 1,621 runtime tests with 2 skips, all 70 browser cases, both environment
+audits and the independent SIMULATED 5/5-case/122-check process drill from fresh
+GitHub source using existing audited locked profiles. The 47 new runtime cases,
+9 new Chromium journeys and one added backup-schema parameter are included.
+The native full suite ran before browser/drill qualification, without changed
+policies/budgets; prior failures are not declared fixed by this passing run.
+Linux/advisory CI passed and Windows runtime jobs were pending at the last core
+observation. Inherited release gates and all seven workstreams remain open.
+
+Still next: configured manual review-host integration and provider-specific
+replacement/reconciliation acceptance for any recorded activity,
 configured manual review-host walkthrough, real voice and
 provider acceptance, operations/recovery packaging and independent evaluation,
 then consolidated security/release qualification and the retained CI diagnosis.
@@ -468,12 +489,12 @@ or use live provider calls as a substitute for offline regression tests.
 
 ## Migration, rollback and preservation
 
-The current runtime requires **journal schema 9**. Stop admission/dispatch,
+The current runtime requires **journal schema 10**. Stop admission/dispatch,
 confirm the prior process is stopped, preserve evidence and use the explicit
-[offline migration procedure](docs/engineering/review-reauthorization.md#schema-9-migration-and-rollback).
+[offline migration procedure](docs/engineering/zero-activity-task-replacement.md#schema-10-migration-and-rollback).
 An expired lease alone does not prove the old process stopped.
 
-On regression, retain schema-9 journals, operation claims, approvals, generations,
+On regression, retain schema-10 journals, operation claims, approvals, generations,
 receipts and remote operation IDs. Use a compatible reader/forward fix. Do not
 lower the schema header, overwrite current data with an old snapshot, clear
 UNKNOWN or retry mutations to make a demonstration pass. The new qualification

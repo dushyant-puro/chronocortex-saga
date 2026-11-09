@@ -45,6 +45,7 @@ export function installProposalReview({ api, session, available, ready }) {
         ["Review expires", new Date(view.binding.expires_ms).toLocaleString()],
         ["Review principal", view.binding.reviewer.principal_id], ["Binding digest", view.binding.digest],
         ...(view.binding.supersedes ? [["Previous review", view.binding.supersedes.review_id], ["Previous binding digest", view.binding.supersedes.binding_digest]] : []),
+        ...(view.binding.replaces_task ? [["Replaces cancelled task",view.binding.replaces_task.task_id],["Original checkpoint version",view.binding.replaces_task.version],["Original checkpoint digest",view.binding.replaces_task.digest]] : []),
       ]) {
         const term = document.createElement("dt"), detail = document.createElement("dd");
         term.textContent = label; detail.textContent = String(value);
@@ -88,7 +89,8 @@ export function installProposalReview({ api, session, available, ready }) {
     const identity = session(), version = generation;
     if (!identity || busy || (kind !== "status" && !ready())) return;
     if (kind === "admit" && (attempted || admitted || blocked || !view?.current || view?.expired || !$("proposal-confirmed").checked)) return;
-    if ((kind === "review" || kind === "reauthorize") && (attempted || blocked || !available())) return;
+    if ((kind === "review" || kind === "reauthorize" || kind === 'replacement') && (attempted || blocked || !available())) return;
+    if (kind === 'replacement' && (view || !source || !validId(source.task_id) || !Number.isSafeInteger(source.version) || source.version < 0 || !/^[0-9a-f]{64}$/.test(source.digest))) return;
     if (kind === 'reauthorize' && (!source || !validId(source.review_id) || !validId(source.task_id) || !/^[0-9a-f]{64}$/.test(source.binding_digest))) return;
     if (kind === 'reauthorize' && view && view.binding.review_id !== source.review_id) return;
     if (kind === "status" && !ids) return;
@@ -99,6 +101,10 @@ export function installProposalReview({ api, session, available, ready }) {
         view = null; ids = identifiers({ review_id: source.review_id, task_id: source.task_id, digest: source.binding_digest });
         $('proposal-confirmed').checked = false; render();
         message('Preparing a fresh review of current evidence for this same unadmitted task. Admission still requires explicit acceptance.');
+      }
+      if (kind === 'replacement') {
+        view=null;ids=null;$('proposal-confirmed').checked=false;render();
+        message('Preparing a new replacement review. The original remains cancelled; no new task is admitted yet.');
       }
       if (kind === "admit") {
         try { remember(); } catch {
@@ -112,7 +118,7 @@ export function installProposalReview({ api, session, available, ready }) {
       // Attempted admissions recover only from durable positive evidence. The
       // old session/review may no longer exist; a miss never permits replay.
       const receipt = kind === "status" && attempted;
-      const payload = kind === "review" ? {} : { review_id: ids.review_id, binding_digest: ids.digest };
+      const payload = kind === "review" ? {} : kind === 'replacement' ? { task_id:source.task_id,checkpoint_digest:source.digest } : { review_id: ids.review_id, binding_digest: ids.digest };
       if (receipt) payload.task_id = ids.task_id;
       const result = await api(`/api/proposals/${receipt ? "receipt" : kind}`, payload);
       if (session() !== identity || generation !== version) return;
@@ -122,6 +128,7 @@ export function installProposalReview({ api, session, available, ready }) {
         message(receipt ? "Journal confirms this task was admitted. Execution authority remains separate." : "Task admitted. Execution requires separate operation authority. You may close this review.");
       } else {
         view = checked(result, kind === "status" ? ids : null);
+        if (kind === 'replacement' && (view.binding.task_id === source.task_id || view.binding.replaces_task?.task_id !== source.task_id || view.binding.replaces_task?.version !== source.version || view.binding.replaces_task?.digest !== source.digest)) throw new Error('Replacement identity changed.');
         if (kind === 'reauthorize' && (view.binding.task_id !== source.task_id || view.binding.supersedes?.review_id !== source.review_id || view.binding.supersedes?.binding_digest !== source.binding_digest || view.binding.review_id === source.review_id)) throw new Error('Reauthorization identity changed.');
         ids = identifiers(view.binding);
         admitted = view.admitted;
@@ -135,8 +142,8 @@ export function installProposalReview({ api, session, available, ready }) {
     } catch (error) {
       if (session() !== identity || generation !== version) return;
       blocked = true;
-      if (kind === 'reauthorize') view = null;
-      message(kind === 'reauthorize' ? 'Reauthorization outcome is unconfirmed. Preserve this task ID and reload retained reviews. No admission was sent or retried.' : attempted ? (kind === "status" ? "Admission remains unconfirmed. Keep this exact task ID for journal inspection. No retry was sent." : "Admission outcome is unconfirmed. Keep this task ID and read admission status. No retry was sent.") : `Review unavailable. ${error.network ? "No admission was sent." : error.message}`, true);
+      if (kind === 'reauthorize' || kind === 'replacement') view = null;
+      message(kind === 'replacement' ? `Replacement review outcome is unconfirmed. Preserve original task ${source.task_id} and reload retained reviews. No admission was sent or retried.` : kind === 'reauthorize' ? 'Reauthorization outcome is unconfirmed. Preserve this task ID and reload retained reviews. No admission was sent or retried.' : attempted ? (kind === "status" ? "Admission remains unconfirmed. Keep this exact task ID for journal inspection. No retry was sent." : "Admission outcome is unconfirmed. Keep this task ID and read admission status. No retry was sent.") : `Review unavailable. ${error.network ? "No admission was sent." : error.message}`, true);
     } finally {
       if (session() === identity && generation === version) { busy = false; render(); }
     }
@@ -153,5 +160,7 @@ export function installProposalReview({ api, session, available, ready }) {
   return { sync,
     canReauthorize: (source) => available() && ready() && !busy && !attempted && !blocked && (!source || !view || view.binding.review_id === source.review_id),
     reauthorize: (source) => perform('reauthorize', source),
+    canReplace: () => available() && ready() && !busy && !attempted && !blocked && !view,
+    replacement: (source) => perform('replacement',source),
     reset() { wipe(); owner = key = null; $("proposal-start").hidden = true; } };
 }
