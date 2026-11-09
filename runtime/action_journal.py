@@ -42,7 +42,7 @@ class WorkerLease:
 
 
 _APP_ID = 0x43435341
-_VERSION = 8
+_VERSION = 9
 _IDENTITY = ("action_id", "tool_name", "args", "digest", "idempotency_key",
              "capture_epoch", "session_id", "task_id", "step_index", "generation", "chain_id", "authorization_policy")
 _TRANSITIONS = {
@@ -71,7 +71,7 @@ def _json(value: Any) -> str:
 
 
 class SQLiteActionJournal:
-    """Schema v8; rollback journal + synchronous EXTRA on every connection.
+    """Schema v9; rollback journal + synchronous EXTRA on every connection.
 
     Use a local disk with reliable locking/flush semantics and protect its ACLs.
     The database contains request/result data. Do not place it on a share or
@@ -104,9 +104,11 @@ class SQLiteActionJournal:
                     self._create_control_tables(db)
                     from runtime.proposal_delivery import create_schema
                     create_schema(db)
+                    from runtime.review_fence import create_schema as create_fences
+                    create_fences(db)
                     db.execute(f"PRAGMA application_id={_APP_ID}")
                     db.execute(f"PRAGMA user_version={_VERSION}")
-                elif version in {1, 2, 3, 4, 5, 6, 7} and app_id == _APP_ID and migrate is True:
+                elif version in {1, 2, 3, 4, 5, 6, 7, 8} and app_id == _APP_ID and migrate is True:
                     if version >= 3:
                         lease_row = db.execute("SELECT owner,generation,expires_ms,last_seen_ms FROM worker_lease WHERE singleton=1").fetchone()
                         now = self._now()
@@ -121,8 +123,11 @@ class SQLiteActionJournal:
                         create_security_schema(db)
                     if version < 6:
                         self._create_control_tables(db)
-                    from runtime.proposal_delivery import create_schema
-                    create_schema(db)
+                    if version < 8:
+                        from runtime.proposal_delivery import create_schema
+                        create_schema(db)
+                    from runtime.review_fence import create_schema as create_fences
+                    create_fences(db)
                     db.execute(f"PRAGMA user_version={_VERSION}")
                 elif version != _VERSION or app_id != _APP_ID:
                     raise JournalError("Unsupported or foreign journal schema; explicit migration required")
@@ -131,7 +136,7 @@ class SQLiteActionJournal:
                 required = {"actions", "key_claims", "events", "task_checkpoints", "task_events",
                             "chains", "operation_slots", "chain_events", "worker_lease", "worker_events",
                             "principals", "credentials", "approvals", "security_clock", "security_events",
-                            "operator_sessions", "control_commands", "control_events", "proposal_deliveries"}
+                            "operator_sessions", "control_commands", "control_events", "proposal_deliveries", "proposal_review_fences"}
                 present = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
                 if not required <= present:
                     raise JournalError("Journal schema tables are missing")
@@ -645,6 +650,9 @@ class SQLiteActionJournal:
                 if canonical(json.loads(row[0]).get("proposal_binding")) != canonical(binding):
                     raise JournalConflict("Task identity already has another proposal binding")
                 return
+            from runtime.review_fence import matches
+            if not matches(db, binding):
+                raise PermissionDeniedError('Proposal review was superseded or its fence is unavailable')
             count = len(binding["arguments"])
             if (checkpoint.get("state") != "PENDING" or checkpoint.get("current_step_index") != 0 or
                     checkpoint.get("step_states") != ["PENDING"] * count or

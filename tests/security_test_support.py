@@ -12,7 +12,7 @@ GRANTS = {"test:write", "fleet:write", "ccs:repair", "ccs:reconcile"}
 
 
 def drop_control_tables(db):
-    for table in ("proposal_deliveries", "operator_sessions", "control_commands", "control_events"):
+    for table in ("proposal_review_fences", "proposal_deliveries", "operator_sessions", "control_commands", "control_events"):
         db.execute(f"DROP TABLE {table}")
 
 

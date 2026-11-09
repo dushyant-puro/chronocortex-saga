@@ -253,7 +253,7 @@ def test_schema7_migration_is_offline_explicit_atomic_and_preserves_task_evidenc
     view = prepare(e); admit(e, view)
     before = e.journal.load_task(view['binding']['task_id'])
     with closing(sqlite3.connect(e.journal.path)) as db:
-        db.execute('DROP TABLE proposal_deliveries'); db.execute('PRAGMA user_version=7'); db.commit()
+        db.execute('DROP TABLE proposal_review_fences'); db.execute('DROP TABLE proposal_deliveries'); db.execute('PRAGMA user_version=7'); db.commit()
     with pytest.raises(JournalError): SQLiteActionJournal(e.journal.path, clock_ms=lambda: e.clock.now)
     with pytest.raises(JournalError): SQLiteActionJournal(e.journal.path, clock_ms=lambda: e.clock.now, migrate=True)
     with pytest.raises(JournalError): e.journal.load_task(view['binding']['task_id'])
@@ -270,7 +270,7 @@ def test_schema7_migration_is_offline_explicit_atomic_and_preserves_task_evidenc
     migrated = SQLiteActionJournal(e.journal.path, clock_ms=lambda: e.clock.now, migrate=True)
     assert migrated.load_task(view['binding']['task_id']) == before
     with migrated._transaction() as db:
-        assert db.execute('PRAGMA user_version').fetchone()[0] == 8
+        assert db.execute('PRAGMA user_version').fetchone()[0] == 9
 
 
 def test_default_host_delivers_protected_readonly_evidence_over_exact_http_body(retained):

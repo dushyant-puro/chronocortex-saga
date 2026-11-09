@@ -92,7 +92,7 @@ class ProposalAdmissionService:
         return self._review(proposal, workflow_id, arguments,
                             lambda db, now: self.authority._authenticate(db, token, now), ttl_ms)
 
-    def _review(self, proposal, workflow_id, arguments, authenticate, ttl_ms, session_scope=None):
+    def _review(self, proposal, workflow_id, arguments, authenticate, ttl_ms, session_scope=None, supersedes=None, task_id=None):
         self._current(proposal)
         if type(ttl_ms) is not int or not 1 <= ttl_ms <= 300000:
             raise ProposalAdmissionError("PROPOSAL_REVIEW_LIFETIME_INVALID")
@@ -101,7 +101,7 @@ class ProposalAdmissionService:
         if template is None:
             raise ProposalAdmissionError("PROPOSAL_WORKFLOW_NOT_ALLOWLISTED")
         arguments = bounded_arguments(arguments)
-        task_id, review_id = "task-" + uuid.uuid4().hex, uuid.uuid4().hex
+        task_id, review_id = task_id or "task-" + uuid.uuid4().hex, uuid.uuid4().hex
         cp = self.manager.prepare_checkpoint(task_id, template.name, list(template.steps), workflow=template.workflow)
         permissions = required_permissions(cp["workflow_contract"])
         with self.journal._transaction() as db:
@@ -121,6 +121,8 @@ class ProposalAdmissionService:
                    "workflow_digest": cp["workflow_contract"]["digest"], "arguments": arguments,
                    "required_permissions": permissions, "reviewed_ms": now,
                    "expires_ms": min(now + ttl_ms, actor.expires_ms)}
+        if self.retain_reviews:
+            binding.update(schema=2, supersedes=supersedes)
         binding["digest"] = digest(binding)
         cp["proposal_binding"] = binding
         validate_binding(binding, cp)
@@ -132,7 +134,14 @@ class ProposalAdmissionService:
                     current_actor = authenticate(db, published_ms)
                     if (current_actor.principal_id, current_actor.version, current_actor.credential_id) != (actor.principal_id, actor.version, actor.credential_id):
                         raise PermissionDeniedError("Proposal delivery authority changed")
-                    publish(db, cp, proposal, published_ms)
+                    prior = publish(db, cp, proposal, published_ms, current_actor)
+                    if prior is not None:
+                        self.authority._event(db, 'PROPOSAL_REAUTHORIZED', published_ms,
+                            task_id=task_id, principal_id=current_actor.principal_id,
+                            principal_version=current_actor.version, credential_id=current_actor.credential_id,
+                            previous_reviewer=prior['reviewer'],
+                            previous_review_id=prior['review_id'], previous_binding_digest=prior['digest'],
+                            review_id=review_id, binding_digest=binding['digest'])
             except DeliveryLimitError:
                 raise ProposalAdmissionError("PROPOSAL_DELIVERY_UNAVAILABLE") from None
         self._pending[review_id] = _Pending(canonical(cp), proposal,
@@ -195,6 +204,24 @@ class ProposalAdmissionService:
         return self._admit(review_id, lambda cp: self.journal._admit_task_authenticated(cp, authenticate),
                            session_digest(session), binding_digest)
 
+    def reauthorize_session(self, review_id, binding_digest, workflow_id, arguments, *, session, csrf, ttl_ms=60000):
+        """Fresh evidence/review, SAME unadmitted task. Never restores old authority."""
+        from runtime.control_store import digest as session_digest
+        from runtime.review_fence import source
+        self.ingress._owned()
+        if not self.retain_reviews:
+            raise ProposalAdmissionError('PROPOSAL_RETENTION_OPT_IN_REQUIRED')
+        identity(review_id)
+        if type(binding_digest) is not str or len(binding_digest) != 64:
+            raise ProposalAdmissionError('PROPOSAL_REVIEW_DIGEST_INVALID')
+        authenticate = self._session_authenticator(session, csrf)
+        with self.journal._transaction() as db:
+            now = self.authority._now(db)
+            actor = authenticate(db, now)
+            previous = source(db, actor, review_id, binding_digest, now)
+        return self._review(self.ingress.latest, workflow_id, arguments, authenticate, ttl_ms,
+                           session_digest(session), {'review_id': review_id, 'binding_digest': binding_digest}, previous['task_id'])
+
     def view_session(self, review_id, *, session, csrf):
         """Protected process-local review/readback; unavailable after host restart."""
         from runtime.control_store import digest as session_digest
@@ -214,7 +241,9 @@ class ProposalAdmissionService:
                 raise PermissionDeniedError("Proposal review authority changed")
             row = db.execute("SELECT checkpoint FROM task_checkpoints WHERE task_id=?", (binding["task_id"],)).fetchone()
             admitted = row is not None and json.loads(row[0]).get("proposal_binding") == binding
+            from runtime.review_fence import matches
+            current_review = matches(db, binding)
         return {"binding": binding, "transcript": pending.proposal.text,
-                "current": pending.proposal is self.ingress.latest and pending.proposal.grounded,
+                "current": current_review and pending.proposal is self.ingress.latest and pending.proposal.grounded,
                 "expired": now >= pending.expires_ms, "admitted": admitted,
                 "execution_authorized": False}

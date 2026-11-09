@@ -20,7 +20,10 @@ const proposalReview = installProposalReview({
   ready: () => state.fresh && !state.busy,
 });
 const admissionInbox = installAdmissionInbox({ api, session: () => state.session });
-const reviewDeliveries = installReviewDeliveries({ api, session: () => state.session });
+const reviewDeliveries = installReviewDeliveries({ api, session: () => state.session,
+  canReauthorize: (source) => proposalReview.canReauthorize(source),
+  requestReauthorization: (source) => proposalReview.reauthorize(source),
+});
 const titles = {
   overview: ["Operator overview", "Decisions grounded in durable evidence."],
   tasks: [

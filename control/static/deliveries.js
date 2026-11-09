@@ -1,14 +1,16 @@
 // Durable evidence inspection only. This module has no admission callback.
-export function installReviewDeliveries({ api, session }) {
+export function installReviewDeliveries({ api, session, canReauthorize, requestReauthorization }) {
   const $ = (id) => document.getElementById(id);
   const id = (v) => typeof v === 'string' && v.length > 0 && v.length <= 256;
   let owner = null, generation = 0, busy = false;
+  let selected = null;
   function message(text, warning = false) {
     $('delivery-message').textContent = text;
     $('delivery-message').setAttribute('role', warning ? 'alert' : 'status');
     $('delivery-message').className = warning ? 'notice proposal-warning' : 'notice';
   }
   function clear() {
+    selected = null;
     $('delivery-items').replaceChildren();
     $('delivery-detail').hidden = true;
     $('delivery-transcript').textContent = $('delivery-arguments').textContent = $('delivery-identity').textContent = '';
@@ -17,6 +19,8 @@ export function installReviewDeliveries({ api, session }) {
     $('review-deliveries').hidden = !session();
     $('delivery-load').disabled = busy || !session();
     for (const button of $('delivery-items').querySelectorAll('button')) button.disabled = busy || !session();
+    $('delivery-reauthorize').hidden = !selected;
+    $('delivery-reauthorize').disabled = busy || !selected || !canReauthorize(selected);
   }
   function reset() {
     owner = null; generation += 1; busy = false; clear();
@@ -32,6 +36,7 @@ export function installReviewDeliveries({ api, session }) {
     if (!identity || busy) return;
     busy = true; render();
     $('delivery-detail').hidden = true;
+    selected = null;
     message('Reading protected review evidence…');
     try {
       const value = await api('/api/proposals/deliveries', { review_id: reviewId });
@@ -58,6 +63,7 @@ export function installReviewDeliveries({ api, session }) {
         $('delivery-transcript').textContent = value.transcript;
         $('delivery-arguments').textContent = JSON.stringify(b.arguments, null, 2);
         $('delivery-detail').hidden = false;
+        selected = value.admitted ? null : { review_id: b.review_id, task_id: b.task_id, binding_digest: b.digest };
         message(value.admitted ? 'This exact task has admission evidence. Inspect its durable receipt separately; no execution authority was granted.' : 'Inspection only. Stored evidence cannot establish the current voice proposal. This view cannot admit or replay a task.');
       }
     } catch {
@@ -68,5 +74,8 @@ export function installReviewDeliveries({ api, session }) {
     }
   }
   $('delivery-load').addEventListener('click', () => read());
+  $('delivery-reauthorize').addEventListener('click', () => {
+    if (!busy && selected && canReauthorize(selected)) requestReauthorization(selected);
+  });
   return { sync, reset };
 }

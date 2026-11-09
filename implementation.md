@@ -420,7 +420,27 @@ parameter are included in those totals. At the last core observation Linux/
 advisory CI passed and Windows jobs were pending. No existing user journal or
 REAL PROVIDER was modified, and no microphone acceptance was run.
 
-Still next: correction/replacement and explicit reauthorization semantics,
+The bounded `codex/unadmitted-review-reauthorization` phase adds
+[fresh review succession for unadmitted retained tasks](docs/engineering/review-reauthorization.md).
+Schema 9 fences old review identities atomically while preserving the task ID.
+Current evidence and authority are required again, followed by explicit human
+acceptance. Existing tasks in any state are refused; admitted-task replacement
+and remote reconciliation are not inferred from cancellation. Retained raw
+evidence is replaced explicitly, with predecessor IDs/digests in the new binding
+and security audit. Exact-source qualification belongs to this phase PR.
+Implementation `38be355`, following core `e0343c0`,
+[draft PR #41](https://github.com/dushyant-puro/chronocortex-saga/pull/41), has
+**partial qualification**: fresh-source Windows runtime recorded 1,572 passed,
+1 failed, 2 skipped; all 37 new cases passed. The existing watchdog child's
+unexpected exit `3221225477` remains unconfirmed. Local browser qualification
+passed all 61 cases, both audits passed and the independent SIMULATED process
+drill passed 5/5 cases and 122 checks. Hosted Linux push browser recorded an
+existing delayed-receipt/login failure with `SQLITE_BUSY`; its PR counterpart
+and Windows browser jobs passed, while Windows runtime CI was pending. These
+failures remain release gates; no retries/budgets were weakened or passing
+counterpart substituted. See the phase runbook for exact source/evidence.
+
+Still next: admitted-task replacement policy and acceptance,
 configured manual review-host walkthrough, real voice and
 provider acceptance, operations/recovery packaging and independent evaluation,
 then consolidated security/release qualification and the retained CI diagnosis.
@@ -448,12 +468,12 @@ or use live provider calls as a substitute for offline regression tests.
 
 ## Migration, rollback and preservation
 
-The current runtime requires **journal schema 8**. Stop admission/dispatch,
+The current runtime requires **journal schema 9**. Stop admission/dispatch,
 confirm the prior process is stopped, preserve evidence and use the explicit
-[offline migration procedure](docs/engineering/persistent-review-delivery.md#schema-8-migration-and-rollback).
+[offline migration procedure](docs/engineering/review-reauthorization.md#schema-9-migration-and-rollback).
 An expired lease alone does not prove the old process stopped.
 
-On regression, retain schema-8 journals, operation claims, approvals, generations,
+On regression, retain schema-9 journals, operation claims, approvals, generations,
 receipts and remote operation IDs. Use a compatible reader/forward fix. Do not
 lower the schema header, overwrite current data with an old snapshot, clear
 UNKNOWN or retry mutations to make a demonstration pass. The new qualification

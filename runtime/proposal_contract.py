@@ -82,8 +82,18 @@ def validate_binding(binding, checkpoint):
     """Validate provenance against the task, not merely its self-declared digest."""
     keys = {"schema", "review_id", "task_id", "task_name", "reviewer", "source", "workflow_digest",
             "arguments", "required_permissions", "reviewed_ms", "expires_ms", "digest"}
-    if type(binding) is not dict or set(binding) != keys or type(binding["schema"]) is not int or binding["schema"] != 1:
+    if type(binding) is not dict or type(binding.get("schema")) is not int or binding["schema"] not in {1, 2}:
         raise ProposalAdmissionError("PROPOSAL_BINDING_SCHEMA")
+    if binding['schema'] == 2:
+        keys.add('supersedes')
+    if set(binding) != keys:
+        raise ProposalAdmissionError("PROPOSAL_BINDING_SCHEMA")
+    if binding['schema'] == 2 and binding['supersedes'] is not None:
+        prior = binding['supersedes']
+        if (type(prior) is not dict or set(prior) != {'review_id', 'binding_digest'} or
+                type(prior['binding_digest']) is not str or re.fullmatch('[0-9a-f]{64}', prior['binding_digest']) is None or
+                identity(prior['review_id']) == binding['review_id']):
+            raise ProposalAdmissionError('PROPOSAL_SUCCESSION_INVALID')
     for key in ("review_id", "task_id", "task_name"):
         identity(binding[key])
     reviewer, source = binding["reviewer"], binding["source"]

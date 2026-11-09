@@ -59,11 +59,12 @@ def inspect(path):
             db.execute('BEGIN')
             require(db.execute('PRAGMA application_id').fetchone()[0] == 0x43435341)
             journal_schema = db.execute('PRAGMA user_version').fetchone()[0]
-            require(journal_schema in {6, 7, 8})  # Read-only legacy evidence, never runtime adoption.
+            require(journal_schema in {6, 7, 8, 9})  # Read-only legacy evidence, never runtime adoption.
             require(db.execute('PRAGMA journal_mode').fetchone()[0] == 'delete')
             present = {r[0] for r in db.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
-            require(journal_schema == 8 or 'proposal_deliveries' not in present)
-            tables = TABLES | ({'proposal_deliveries'} if journal_schema == 8 else set())
+            require(journal_schema >= 8 or 'proposal_deliveries' not in present)
+            require(journal_schema == 9 or 'proposal_review_fences' not in present)
+            tables = TABLES | ({'proposal_deliveries'} if journal_schema >= 8 else set()) | ({'proposal_review_fences'} if journal_schema == 9 else set())
             require(tables <= present)
             require(db.execute('PRAGMA integrity_check(1)').fetchall() == [('ok',)])
             require(db.execute('PRAGMA foreign_key_check').fetchone() is None)
@@ -72,13 +73,17 @@ def inspect(path):
             for table in sorted(tables):
                 counts[table] = db.execute('SELECT count(*) FROM ' + table).fetchone()[0]
                 require(counts[table] <= 100_000)
-            if journal_schema == 8:
+            if journal_schema >= 8:
                 from runtime.proposal_delivery import CAPACITY, MAX_BYTES, validate
                 require(counts['proposal_deliveries'] <= CAPACITY)
                 require(db.execute('SELECT 1 FROM proposal_deliveries WHERE length(cast(payload AS BLOB))>? LIMIT 1', (MAX_BYTES,)).fetchone() is None)
                 for row in db.execute('SELECT review_id,task_id,principal_id,expires_ms,payload FROM proposal_deliveries'):
                     require(time.monotonic() < deadline)
-                    validate(*row)
+                    binding, _ = validate(*row)
+                    require(journal_schema == 9 or binding['schema'] == 1)
+            if journal_schema == 9:
+                from runtime.review_fence import validate_snapshot
+                validate_snapshot(db)
             for table, column in [('actions', 'record'), ('task_checkpoints', 'checkpoint')]:
                 require(db.execute(f'SELECT 1 FROM {table} WHERE length(cast({column} AS BLOB))>1048576 LIMIT 1').fetchone() is None)
             for table, history, identity, payload in [('actions', 'events', 'action_id', 'record'),
@@ -97,6 +102,9 @@ def inspect(path):
                 require(time.monotonic() < deadline)
                 checkpoint = json.loads(payload, object_pairs_hook=pairs, parse_constant=reject_constant)
                 require(type(checkpoint) is dict and checkpoint['task_id'] == task_id)
+                if journal_schema < 9 and checkpoint.get('proposal_binding') is not None:
+                    binding = checkpoint['proposal_binding']
+                    require(type(binding) is dict and binding.get('schema') == 1)
             for action_id, payload in db.execute('SELECT action_id,record FROM actions'):
                 require(time.monotonic() < deadline)
                 record = json.loads(payload, object_pairs_hook=pairs, parse_constant=reject_constant)

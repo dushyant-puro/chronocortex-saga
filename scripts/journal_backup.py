@@ -53,7 +53,7 @@ def copy_database(source, target):
         reader.execute('PRAGMA trusted_schema=OFF')
         reader.execute('BEGIN')
         require(reader.execute('PRAGMA application_id').fetchone()[0] == 0x43435341)
-        require(reader.execute('PRAGMA user_version').fetchone()[0] in {6, 7, 8})
+        require(reader.execute('PRAGMA user_version').fetchone()[0] in {6, 7, 8, 9})
         require(reader.execute('PRAGMA journal_mode').fetchone()[0] == 'delete')
         require(reader.execute('PRAGMA page_count').fetchone()[0] *
                 reader.execute('PRAGMA page_size').fetchone()[0] <= MAX_BYTES)
@@ -140,7 +140,7 @@ def read_bundle(path):
                               parse_constant=reject_constant)
         require(type(manifest) is dict and set(manifest) == {'schema', 'journal_schema', 'sha256', 'bytes', 'captured_at'})
         require(type(manifest['schema']) is int and manifest['schema'] == 1)
-        require(type(manifest['journal_schema']) is int and manifest['journal_schema'] in {6, 7, 8})
+        require(type(manifest['journal_schema']) is int and manifest['journal_schema'] in {6, 7, 8, 9})
         require(type(manifest['bytes']) is int and 0 < manifest['bytes'] <= MAX_BYTES)
         require(type(manifest['sha256']) is str and len(manifest['sha256']) == 64)
         require(type(manifest['captured_at']) is str and len(manifest['captured_at']) <= 64)
