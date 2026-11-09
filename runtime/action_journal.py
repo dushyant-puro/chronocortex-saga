@@ -42,7 +42,7 @@ class WorkerLease:
 
 
 _APP_ID = 0x43435341
-_VERSION = 9
+_VERSION = 10
 _IDENTITY = ("action_id", "tool_name", "args", "digest", "idempotency_key",
              "capture_epoch", "session_id", "task_id", "step_index", "generation", "chain_id", "authorization_policy")
 _TRANSITIONS = {
@@ -71,7 +71,7 @@ def _json(value: Any) -> str:
 
 
 class SQLiteActionJournal:
-    """Schema v9; rollback journal + synchronous EXTRA on every connection.
+    """Schema v10; rollback journal + synchronous EXTRA on every connection.
 
     Use a local disk with reliable locking/flush semantics and protect its ACLs.
     The database contains request/result data. Do not place it on a share or
@@ -106,9 +106,11 @@ class SQLiteActionJournal:
                     create_schema(db)
                     from runtime.review_fence import create_schema as create_fences
                     create_fences(db)
+                    from runtime.task_replacement import create_schema as create_replacements
+                    create_replacements(db)
                     db.execute(f"PRAGMA application_id={_APP_ID}")
                     db.execute(f"PRAGMA user_version={_VERSION}")
-                elif version in {1, 2, 3, 4, 5, 6, 7, 8} and app_id == _APP_ID and migrate is True:
+                elif version in {1, 2, 3, 4, 5, 6, 7, 8, 9} and app_id == _APP_ID and migrate is True:
                     if version >= 3:
                         lease_row = db.execute("SELECT owner,generation,expires_ms,last_seen_ms FROM worker_lease WHERE singleton=1").fetchone()
                         now = self._now()
@@ -126,8 +128,11 @@ class SQLiteActionJournal:
                     if version < 8:
                         from runtime.proposal_delivery import create_schema
                         create_schema(db)
-                    from runtime.review_fence import create_schema as create_fences
-                    create_fences(db)
+                    if version < 9:
+                        from runtime.review_fence import create_schema as create_fences
+                        create_fences(db)
+                    from runtime.task_replacement import create_schema as create_replacements
+                    create_replacements(db)
                     db.execute(f"PRAGMA user_version={_VERSION}")
                 elif version != _VERSION or app_id != _APP_ID:
                     raise JournalError("Unsupported or foreign journal schema; explicit migration required")
@@ -136,7 +141,7 @@ class SQLiteActionJournal:
                 required = {"actions", "key_claims", "events", "task_checkpoints", "task_events",
                             "chains", "operation_slots", "chain_events", "worker_lease", "worker_events",
                             "principals", "credentials", "approvals", "security_clock", "security_events",
-                            "operator_sessions", "control_commands", "control_events", "proposal_deliveries", "proposal_review_fences"}
+                            "operator_sessions", "control_commands", "control_events", "proposal_deliveries", "proposal_review_fences", "task_replacements"}
                 present = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
                 if not required <= present:
                     raise JournalError("Journal schema tables are missing")
@@ -603,6 +608,8 @@ class SQLiteActionJournal:
         if (row[0] if row else None) != expected_version:
             raise JournalConflict("Task checkpoint version changed")
         if row is not None:
+            if db.execute('SELECT 1 FROM task_replacements WHERE original_task_id=?',(task_id,)).fetchone():
+                raise JournalConflict('Replaced original checkpoint is permanently closed')
             previous = json.loads(row[1])
             if canonical(previous.get("workflow_contract")) != canonical(contract):
                 raise JournalError("Task workflow contract is immutable; legacy records cannot be adopted implicitly")
@@ -649,10 +656,15 @@ class SQLiteActionJournal:
             if row is not None:
                 if canonical(json.loads(row[0]).get("proposal_binding")) != canonical(binding):
                     raise JournalConflict("Task identity already has another proposal binding")
+                from runtime.task_replacement import check_claim
+                check_claim(db,binding)
                 return
             from runtime.review_fence import matches
             if not matches(db, binding):
                 raise PermissionDeniedError('Proposal review was superseded or its fence is unavailable')
+            if binding.get('replaces_task') is not None:
+                from runtime.task_replacement import source
+                source(db,actor,binding['replaces_task']['task_id'],binding['replaces_task'])
             count = len(binding["arguments"])
             if (checkpoint.get("state") != "PENDING" or checkpoint.get("current_step_index") != 0 or
                     checkpoint.get("step_states") != ["PENDING"] * count or
@@ -661,6 +673,13 @@ class SQLiteActionJournal:
                     checkpoint.get("step_generations") != [0] * count or checkpoint.get("replan_from") is not None):
                 raise JournalError("Admission requires an unexecuted initial checkpoint")
             self._save_task(db, task_id, checkpoint, None, authenticated_admission=True)
+            from runtime.task_replacement import claim
+            claim(db,binding)
+            if binding.get('replaces_task') is not None:
+                authority._event(db,'TASK_REPLACEMENT_ADMITTED',now,
+                    original=binding['replaces_task'],replacement_task_id=task_id,
+                    principal_id=actor.principal_id,principal_version=actor.version,
+                    credential_id=actor.credential_id,binding_digest=binding['digest'])
             authority._event(db, "TASK_ADMITTED", now, task_id=task_id, review_id=binding["review_id"],
                              principal_id=actor.principal_id, principal_version=actor.version,
                              credential_id=actor.credential_id, binding_digest=binding["digest"])

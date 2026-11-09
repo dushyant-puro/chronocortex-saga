@@ -175,6 +175,18 @@
             <p id="inbox-message" class="notice" role="status">Load a protected journal page to discover admitted tasks.</p>
             <ul id="inbox-items" class="inbox-items"></ul>
           </section>
+          <details id="task-replacement" class="proposal-panel" hidden>
+            <summary>Replace a cancelled task with no recorded activity</summary>
+            <p>Inspect the original first. Any step activity or action blocks this flow. Cancellation alone does not prove a remote effect was undone.</p>
+            <form id="replacement-form">
+              <label for="replacement-origin">Original cancelled task identity</label>
+              <input id="replacement-origin" maxlength="256" required />
+              <button id="replacement-inspect" class="subtle" type="submit">Inspect replacement eligibility</button>
+            </form>
+            <p id="replacement-message" class="notice" role="status"></p>
+            <p class="fine">Close another open review first. Uncertain admissions remain parked. A fresh replacement review still requires explicit acceptance and separate operation authority.</p>
+            <button id="replacement-prepare" class="subtle" type="button" disabled>Review current replacement</button>
+          </details>
           <button id="proposal-start" class="primary" hidden>Review current proposal</button>
           <section id="proposal-panel" class="proposal-panel" aria-labelledby="proposal-title" hidden>
             <p class="eyebrow">TRANSCRIPT → EXPLICIT TASK ADMISSION</p>
