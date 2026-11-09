@@ -156,6 +156,12 @@
             </p>
             <dl id="worker-details" class="details-list"></dl>
           </details>
+          <section id="host-status-panel" class="proposal-panel" aria-labelledby="host-status-title" hidden>
+            <p class="eyebrow">LOCAL OPERATIONS / RECOVERY ONLY</p>
+            <h2 id="host-status-title">Current recovery host</h2>
+            <p id="host-status-message" role="status"></p>
+            <button id="host-status-check" class="subtle" type="button">Check recovery host</button>
+          </section>
           <div id="stale-banner" class="stale-banner" role="alert" hidden>
             Journal read unavailable. Displayed evidence may be stale. All
             decision controls are paused until refresh succeeds.

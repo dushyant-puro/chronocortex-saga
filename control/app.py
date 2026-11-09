@@ -75,10 +75,14 @@ async def _body(request):
         raise ControlError(408, "request_timeout", "The control request body timed out.") from None
 
 
-def create_app(journal, config=None, *, proposal_reviews=None):
+def create_app(journal, config=None, *, proposal_reviews=None, host_status=None):
     config = config or ControlConfig()
     store = ControlStore(journal)
     login_failures = []
+    if host_status is not None:
+        from control.host_status import HostStatusController
+        if type(host_status) is not HostStatusController or host_status.host.journal is not journal:
+            raise ValueError('Host status requires the same supervised journal')
     if proposal_reviews is not None:
         from control.proposal_reviews import ProposalReviewController
         if type(proposal_reviews) is not ProposalReviewController or proposal_reviews.service.journal is not journal:
@@ -166,7 +170,7 @@ def create_app(journal, config=None, *, proposal_reviews=None):
 
     async def asset(request):
         name = request.path_params.get("name", request.url.path.lstrip("/"))
-        types = {"file-entry.js": "text/javascript", "file-entry.css": "text/css", "console.js": "text/javascript", "proposals.js": "text/javascript", "inbox.js": "text/javascript", "deliveries.js": "text/javascript", "replacement.js": "text/javascript", "console.css": "text/css", "mark.svg": "image/svg+xml"}
+        types = {"host.js": "text/javascript", "file-entry.js": "text/javascript", "file-entry.css": "text/css", "console.js": "text/javascript", "proposals.js": "text/javascript", "inbox.js": "text/javascript", "deliveries.js": "text/javascript", "replacement.js": "text/javascript", "console.css": "text/css", "mark.svg": "image/svg+xml"}
         if name not in types:
             return Response(status_code=404)
         return Response((STATIC / name).read_bytes(), media_type=types[name])
@@ -203,7 +207,16 @@ def create_app(journal, config=None, *, proposal_reviews=None):
     async def snapshot(request):
         data = await run_in_threadpool(store.snapshot, request.cookies.get(COOKIE))
         data["capabilities"] = {"proposal_review": proposal_reviews is not None}
+        if host_status is not None:
+            data['capabilities']['host_status'] = True
         return JSONResponse(data)
+
+    async def current_host_status(request):
+        await run_in_threadpool(store.session, request.cookies.get(COOKIE))
+        if host_status is None:
+            raise ControlError(404, 'not_configured', 'Current host status is not configured.')
+        data = await host_status.inspect()
+        return JSONResponse(data, status_code=200 if data['ready'] else 503)
 
     async def detail(request):
         return JSONResponse(await run_in_threadpool(store.detail, request.cookies.get(COOKIE), request.path_params["kind"], request.path_params["record_id"]))
@@ -218,6 +231,7 @@ def create_app(journal, config=None, *, proposal_reviews=None):
     app = Starlette(routes=[Route("/", page), Route("/file-entry.js", asset), Route("/file-entry.css", asset), Route("/assets/{name}", asset),
                             Route("/api/login", login, methods=["POST"]), Route("/api/session", session),
                             Route("/api/logout", logout, methods=["POST"]), Route("/api/snapshot", snapshot),
+                            Route('/api/host-status', current_host_status),
                             Route("/api/proposals/review", proposal_review, methods=["POST"]),
                             Route("/api/proposals/admit", proposal_admit, methods=["POST"]),
                             Route("/api/proposals/reauthorize", proposal_reauthorize, methods=["POST"]),

@@ -485,7 +485,43 @@ Linux runtime/browser and advisories passed; Windows jobs were pending.
 No real microphone/provider or existing user journal was used. The inherited
 CI findings and all seven readiness workstreams remain open.
 
-Still next: provider-specific replacement/reconciliation acceptance for any
+The `codex/configured-recovery-host` phase adds a
+[single-process local recovery host](docs/engineering/configured-recovery-host.md)
+with strict bounded configuration, existing protected credential/journal paths,
+authenticated lifecycle/lease/current-authority checks and a console status
+panel. Worker stopping closes the HTTP host; failed probes produce unsuccessful
+exit even after clean lease release. Recovery has no executors or automatic
+replay. No schema, retry policy, provider or voice activation changes. Exact-source
+qualification belongs to this phase PR.
+
+Recovery implementation `6d575a0`,
+[draft PR #44](https://github.com/dushyant-puro/chronocortex-saga/pull/44), has
+**partial qualification** from fresh GitHub source: Windows runtime **1,677
+passed, 1 failed, 2 skipped**; all **68 focused compatibility cases** and all
+**79 local browser cases** passed. Both environment audits and the independent
+SIMULATED **5/5-case/122-check** drill passed using existing audited locked
+environments. All 42 new recovery runtime/process cases, four deterministic
+cancellation/authority schedules and six new Chromium journeys are included.
+The runtime failure is the retained watchdog child exit `3221225477`; runtime
+CI/watchdog policy is unchanged. Hosted PR Linux browser recorded **78 passed,
+1 failed** in an existing replacement eligibility journey with `SQLITE_BUSY`;
+push Linux and PR Windows browser counterparts passed, Linux runtime/advisories
+passed and Windows runtime was pending at the last core observation. No passing
+counterpart replaces a failure or closes the inherited release gates.
+
+The initial recovery run at `4bee1cf` had 1,671 passed/1 failed/2 skipped and
+exposed a manual-host cancellation/approval-read race. Barriers reproduced it
+before the fix; `6d575a0` narrowly accepts durable cancellation during that
+read-only lookup only while current host authority remains valid. Earlier
+effects remain, revoked workers stop, and no mutation retry/rollback is inferred.
+Storage follow-up `df55191` rejects unsupported paths before filesystem probes.
+Exact evidence, negative controls and redacted reports are retained under
+`results/recovery-host-qualification/` and the separate initial-run directory.
+No schema migration, real provider/audio, native service installation, release
+or deployment is qualified. All seven readiness workstreams remain open.
+
+Still next: native service/watchdog packaging and measured operations acceptance,
+provider-specific replacement/reconciliation acceptance for any
 recorded activity, real voice and
 provider acceptance, operations/recovery packaging and independent evaluation,
 then consolidated security/release qualification and the retained CI diagnosis.

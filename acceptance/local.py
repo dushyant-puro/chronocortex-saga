@@ -22,7 +22,7 @@ from runtime.action_journal import SQLiteActionJournal
 from runtime.credential_input import read_credential_file
 from runtime.failure_diagnostics import classify_failure
 from runtime.grounding_guard import TokenEvidence
-from runtime.policy_engine import AuthorizationContext, ConfirmationRequiredError
+from runtime.policy_engine import AuthorizationContext, ConfirmationRequiredError, PermissionDeniedError
 from runtime.proposal_admission import AdmissionTemplate, ProposalAdmissionService
 from runtime.speculative_saga import SpeculativeSagaManager, TurnEpochClock
 from runtime.task_engine import TaskManager, TaskState, TaskStep
@@ -138,7 +138,19 @@ async def drive(host, manager, task, credential, stopped):
                 found = await asyncio.to_thread(host.journal.load_task, task.task_id)
                 if found is None or found[1]["state"] == "CANCELLED":
                     return
-                selected = await asyncio.to_thread(host.journal.security.find_forward_approval, credential, action_id)
+                try:
+                    selected = await asyncio.to_thread(host.journal.security.find_forward_approval, credential, action_id)
+                except PermissionDeniedError:
+                    # Cancellation can win after the checkpoint read above but
+                    # before this read-only approval lookup. No executor is
+                    # awaiting here. Preserve earlier effects and finish only
+                    # if durable cancellation AND current host authority hold.
+                    found = await asyncio.to_thread(host.journal.load_task, task.task_id)
+                    if found is None or found[1]['state'] != 'CANCELLED':
+                        raise
+                    await asyncio.to_thread(host._authorize_host)
+                    host.runtime  # local monotonic/lifecycle fence still applies
+                    return
                 if selected is not None:
                     break
                 try:
