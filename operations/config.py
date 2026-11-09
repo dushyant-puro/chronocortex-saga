@@ -27,8 +27,8 @@ class RecoveryConfig:
 
     def validate_paths(self):
         for path in (self.journal, self.worker_credential_file):
-            if (not isinstance(path, Path) or not path.is_absolute() or not path.is_file() or
-                    path.is_symlink() or path.anchor.startswith('\\\\')):
+            if (not isinstance(path, Path) or not path.is_absolute() or path.anchor.startswith('\\\\') or
+                    not path.is_file() or path.is_symlink()):
                 raise ConfigurationError('Existing absolute regular-file paths are required')
         if self.journal.resolve() == self.worker_credential_file.resolve():
             raise ConfigurationError('Journal and worker credential must be separate files')

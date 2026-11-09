@@ -243,6 +243,15 @@ def test_config_hardlink_and_directory_are_refused(tmp_path):
         with pytest.raises(ConfigurationError): load(target)
 
 
+@pytest.mark.parametrize('path', ['relative.db', '\\\\unreachable.invalid\\share\\journal.db'])
+def test_unsupported_storage_paths_are_rejected_before_any_file_probe(tmp_path, monkeypatch, path):
+    def probe(_):
+        pytest.fail('Unsupported storage must be rejected before filesystem/network probing')
+    monkeypatch.setattr(Path, 'is_file', probe)
+    with pytest.raises(ConfigurationError):
+        RecoveryConfig(Path(path), tmp_path / 'worker.secret')
+
+
 def test_status_controller_must_match_the_actual_supervised_journal(tmp_path):
     config = setup(tmp_path)
     app = recovery.create_app(config)

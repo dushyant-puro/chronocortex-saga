@@ -55,6 +55,8 @@ inherits its protected parent's ACL; the Python reader does not certify Windows
 ACL custody. Administrators must prevent parent-path replacement and use durable
 local storage suitable for SQLite locking/fsync. UNC paths and symlinks are
 rejected; mapped/network mounts are not certified by a pathname check.
+Unsupported relative/UNC paths are rejected before any file probe, so a rejected
+UNC configuration cannot initiate a network filesystem lookup during validation.
 
 `--check` is an **active ownership check**, not read-only preflight: it binds
 the port, authenticates, acquires a lease, hydrates recovery evidence, drains and
