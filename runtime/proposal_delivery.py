@@ -58,7 +58,7 @@ def validate(review_id, task_id, principal_id, expires_ms, payload):
     return binding, evidence['text']
 
 
-def publish(db, checkpoint, proposal, now):
+def publish(db, checkpoint, proposal, now, actor=None):
     binding = checkpoint['proposal_binding']
     payload = canonical({'schema': 1, 'checkpoint': checkpoint, 'evidence': asdict(proposal)})
     if len(payload.encode('utf-8')) > MAX_BYTES:
@@ -67,10 +67,29 @@ def publish(db, checkpoint, proposal, now):
     validate(*row)
     if now >= binding['expires_ms']:
         raise DeliveryLimitError('Delivery already expired')
+    from runtime import review_fence
+    prior = binding.get('supersedes')
+    if prior is not None:
+        if actor is None:
+            raise DeliveryLimitError('Fresh reauthorization required')
+        old = review_fence.source(db, actor, prior['review_id'], prior['binding_digest'], now)
+        if old['task_id'] != binding['task_id']:
+            raise DeliveryLimitError('Task identity changed')
+        db.execute('UPDATE proposal_deliveries SET review_id=?,task_id=?,principal_id=?,expires_ms=?,payload=? WHERE review_id=?', (*row, prior['review_id']))
+        changed = db.execute('UPDATE proposal_review_fences SET review_id=?,binding_digest=?,retire_after_ms=max(retire_after_ms,?) WHERE task_id=? AND review_id=? AND binding_digest=?',
+                   (binding['review_id'], binding['digest'], binding['expires_ms'], binding['task_id'], prior['review_id'], prior['binding_digest']))
+        if changed.rowcount != 1:
+            raise DeliveryLimitError('Review fence changed')
+        return old
     db.execute('DELETE FROM proposal_deliveries WHERE expires_ms<=?', (now,))
+    review_fence.cleanup(db, now)
     if db.execute('SELECT count(*) FROM proposal_deliveries').fetchone()[0] >= CAPACITY:
         raise DeliveryLimitError('Delivery capacity exhausted')
+    if db.execute('SELECT count(*) FROM proposal_review_fences').fetchone()[0] >= review_fence.CAPACITY:
+        raise DeliveryLimitError('Review fence capacity exhausted')
     db.execute('INSERT INTO proposal_deliveries VALUES (?,?,?,?,?)', row)
+    db.execute('INSERT INTO proposal_review_fences VALUES (?,?,?,?)',
+               (binding['task_id'], binding['review_id'], binding['digest'], binding['expires_ms']))
 
 
 def read(journal, token, csrf, review_id=None):

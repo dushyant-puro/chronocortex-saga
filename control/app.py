@@ -111,6 +111,16 @@ def create_app(journal, config=None, *, proposal_reviews=None):
     async def proposal_status(request):
         return await proposal_admit(request, read_only=True)
 
+    async def proposal_reauthorize(request):
+        csrf = _csrf_header(request)
+        data = await _body(request)
+        if proposal_reviews is None:
+            raise ControlError(404, 'not_configured', 'Proposal review is not configured.')
+        if set(data) != {'review_id', 'binding_digest'} or any(type(v) is not str for v in data.values()):
+            raise ControlError(400, 'invalid_request', 'Review one exact retained task identity.')
+        return JSONResponse(proposal_reviews.reauthorize(request.cookies.get(COOKIE), csrf,
+                            data['review_id'], data['binding_digest']))
+
     async def admission_receipt(request):
         csrf = _csrf_header(request)
         data = await _body(request)
@@ -195,6 +205,7 @@ def create_app(journal, config=None, *, proposal_reviews=None):
                             Route("/api/logout", logout, methods=["POST"]), Route("/api/snapshot", snapshot),
                             Route("/api/proposals/review", proposal_review, methods=["POST"]),
                             Route("/api/proposals/admit", proposal_admit, methods=["POST"]),
+                            Route("/api/proposals/reauthorize", proposal_reauthorize, methods=["POST"]),
                             Route("/api/proposals/status", proposal_status, methods=["POST"]),
                             Route("/api/proposals/receipt", admission_receipt, methods=["POST"]),
                             Route("/api/proposals/inbox", admission_inbox, methods=["POST"]),

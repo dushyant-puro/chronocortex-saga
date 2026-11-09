@@ -44,11 +44,14 @@ export function installProposalReview({ api, session, available, ready }) {
         ["Turn / revision", `${view.binding.source.turn} / ${view.binding.source.revision}`],
         ["Review expires", new Date(view.binding.expires_ms).toLocaleString()],
         ["Review principal", view.binding.reviewer.principal_id], ["Binding digest", view.binding.digest],
+        ...(view.binding.supersedes ? [["Previous review", view.binding.supersedes.review_id], ["Previous binding digest", view.binding.supersedes.binding_digest]] : []),
       ]) {
         const term = document.createElement("dt"), detail = document.createElement("dd");
         term.textContent = label; detail.textContent = String(value);
         $("proposal-metadata").append(term, detail);
       }
+    } else {
+      for (const id of ['proposal-transcript', 'proposal-arguments', 'proposal-metadata']) $(id).replaceChildren();
     }
     $("proposal-confirmed").disabled = busy || attempted || admitted || blocked || !view;
     $("proposal-admit").disabled = !ready() || busy || attempted || admitted || blocked || !view?.current || view?.expired || !$("proposal-confirmed").checked;
@@ -81,15 +84,22 @@ export function installProposalReview({ api, session, available, ready }) {
     sessionStorage.setItem(key, encoded);
     if (sessionStorage.getItem(key) !== encoded) throw new Error("Receipt identity could not be retained.");
   }
-  async function perform(kind) {
+  async function perform(kind, source = null) {
     const identity = session(), version = generation;
     if (!identity || busy || (kind !== "status" && !ready())) return;
     if (kind === "admit" && (attempted || admitted || blocked || !view?.current || view?.expired || !$("proposal-confirmed").checked)) return;
-    if (kind === "review" && (attempted || blocked)) return;
+    if ((kind === "review" || kind === "reauthorize") && (attempted || blocked || !available())) return;
+    if (kind === 'reauthorize' && (!source || !validId(source.review_id) || !validId(source.task_id) || !/^[0-9a-f]{64}$/.test(source.binding_digest))) return;
+    if (kind === 'reauthorize' && view && view.binding.review_id !== source.review_id) return;
     if (kind === "status" && !ids) return;
     busy = true; render();
     $("proposal-panel").hidden = false;
     try {
+      if (kind === 'reauthorize') {
+        view = null; ids = identifiers({ review_id: source.review_id, task_id: source.task_id, digest: source.binding_digest });
+        $('proposal-confirmed').checked = false; render();
+        message('Preparing a fresh review of current evidence for this same unadmitted task. Admission still requires explicit acceptance.');
+      }
       if (kind === "admit") {
         try { remember(); } catch {
           blocked = true;
@@ -112,6 +122,7 @@ export function installProposalReview({ api, session, available, ready }) {
         message(receipt ? "Journal confirms this task was admitted. Execution authority remains separate." : "Task admitted. Execution requires separate operation authority. You may close this review.");
       } else {
         view = checked(result, kind === "status" ? ids : null);
+        if (kind === 'reauthorize' && (view.binding.task_id !== source.task_id || view.binding.supersedes?.review_id !== source.review_id || view.binding.supersedes?.binding_digest !== source.binding_digest || view.binding.review_id === source.review_id)) throw new Error('Reauthorization identity changed.');
         ids = identifiers(view.binding);
         admitted = view.admitted;
         $("proposal-confirmed").checked = false;
@@ -124,7 +135,8 @@ export function installProposalReview({ api, session, available, ready }) {
     } catch (error) {
       if (session() !== identity || generation !== version) return;
       blocked = true;
-      message(attempted ? (kind === "status" ? "Admission remains unconfirmed. Keep this exact task ID for journal inspection. No retry was sent." : "Admission outcome is unconfirmed. Keep this task ID and read admission status. No retry was sent.") : `Review unavailable. ${error.network ? "No admission was sent." : error.message}`, true);
+      if (kind === 'reauthorize') view = null;
+      message(kind === 'reauthorize' ? 'Reauthorization outcome is unconfirmed. Preserve this task ID and reload retained reviews. No admission was sent or retried.' : attempted ? (kind === "status" ? "Admission remains unconfirmed. Keep this exact task ID for journal inspection. No retry was sent." : "Admission outcome is unconfirmed. Keep this task ID and read admission status. No retry was sent.") : `Review unavailable. ${error.network ? "No admission was sent." : error.message}`, true);
     } finally {
       if (session() === identity && generation === version) { busy = false; render(); }
     }
@@ -138,5 +150,8 @@ export function installProposalReview({ api, session, available, ready }) {
     try { if (key) sessionStorage.removeItem(key); } catch { message("Receipt storage could not be cleared. Preserve the task ID.", true); return; }
     wipe(); render();
   });
-  return { sync, reset() { wipe(); owner = key = null; $("proposal-start").hidden = true; } };
+  return { sync,
+    canReauthorize: (source) => available() && ready() && !busy && !attempted && !blocked && (!source || !view || view.binding.review_id === source.review_id),
+    reauthorize: (source) => perform('reauthorize', source),
+    reset() { wipe(); owner = key = null; $("proposal-start").hidden = true; } };
 }

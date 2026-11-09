@@ -87,6 +87,10 @@ remain open; schema-8 migration and rollback require the new runbook.
 Its core `391c33d` passed 1,535 runtime tests (2 skipped), 55 browser cases,
 both environment audits and the independent 5/5 SIMULATED process-fault drill
 from fresh GitHub source. This does not close any of the seven workstreams.
+The [schema-9 reauthorization follow-up](review-reauthorization.md) adds explicit
+fresh review succession for unadmitted retained tasks, with stable task identity
+and atomic stale-review fences. Admitted-task replacement/reconciliation remains
+blocked and needs separate policy/acceptance; manual host and live assets remain.
 
 ## Seven remaining acceptance areas
 

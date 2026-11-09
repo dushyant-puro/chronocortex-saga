@@ -29,6 +29,12 @@ class ProposalReviewController:
         return {"task_id": receipt.task_id, "binding_digest": receipt.binding_digest,
                 "state": "ADMITTED", "execution_authorized": False}
 
+    def reauthorize(self, session, csrf, review_id, binding_digest):
+        import json
+        review = self.service.reauthorize_session(review_id, binding_digest, self.workflow_id,
+                    json.loads(self._arguments), session=session, csrf=csrf)
+        return self.service.view_session(review.review_id, session=session, csrf=csrf)
+
     def status(self, session, csrf, review_id, binding_digest):
         view = self.service.view_session(review_id, session=session, csrf=csrf)
         if view['binding']['digest'] != binding_digest:

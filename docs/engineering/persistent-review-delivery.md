@@ -6,6 +6,11 @@ microphone, production deployment or existing user-journal migration was run.
 
 ## Delivery is inspection, not restored authority
 
+The subsequent [schema-9 reauthorization stage](review-reauthorization.md) can
+explicitly prepare a new current review for an unadmitted retained task. It does
+not restore this archived view's authority. Current migration/rollback guidance
+is in the newer runbook; this phase's schema-8 qualification remains historical.
+
 A trusted owning-loop host can explicitly construct `ProposalAdmissionService`
 with `retain_reviews=True`. The default is `False`: existing hosts do not start
 persisting speech just because they upgrade. Publication reauthenticates inside
