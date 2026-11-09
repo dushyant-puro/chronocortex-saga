@@ -410,6 +410,15 @@ separate. Backups include retained speech when enabled. Schema 8 requires an
 explicit offline migration, with compatible readers/forward fixes for rollback.
 Default retention stays off; real voice consent and operational erasure/custody
 remain unqualified. Exact-source results belong to its phase PR.
+Core `391c33d`, [draft PR #40](https://github.com/dushyant-puro/chronocortex-saga/pull/40),
+passed 1,535 runtime tests with 2 skips and all 55 browser cases from fresh
+GitHub source using existing audited locked environments. Both profile audits
+passed. The independent SIMULATED process-fault drill passed 5/5 cases and
+122 checks with unchanged harness hash `5da8b57656fbf31ebf0d11f0a1fd42e611a4c19694917cd9178247b6bbab8edf`.
+The 31 new delivery tests, six new Chromium journeys and one extra backup-schema
+parameter are included in those totals. At the last core observation Linux/
+advisory CI passed and Windows jobs were pending. No existing user journal or
+REAL PROVIDER was modified, and no microphone acceptance was run.
 
 Still next: correction/replacement and explicit reauthorization semantics,
 configured manual review-host walkthrough, real voice and

@@ -120,3 +120,30 @@ manual review-host integration, live voice/provider acceptance, operational
 retention/custody and independent research/release qualification. Seven major
 readiness workstreams remain open. Historical intermittent CI investigation stays
 parked for final integration; its release gates are not waived.
+
+## Qualification record
+
+Core `391c33d56ab60a696ecba910118253f427f4ffa7`,
+[draft PR #40](https://github.com/dushyant-puro/chronocortex-saga/pull/40),
+qualified on 2026-11-09 from independent fresh GitHub source:
+
+| Check | Observed result |
+| --- | --- |
+| Full Windows runtime suite | 1,535 passed, 2 skipped. |
+| Browser suite | 55 passed: 53 Chromium journeys plus 2 fixture-readiness cases. |
+| New delivery regressions | 31 runtime cases and 6 Chromium journeys, included above. One added backup schema parameter is also included. |
+| Independent SIMULATED process-fault drill | 5/5 cases; 122 checks passed. Harness SHA-256 `5da8b57656fbf31ebf0d11f0a1fd42e611a4c19694917cd9178247b6bbab8edf`. |
+| Runtime/browser profiles | Both dependency audits passed against fresh source. |
+
+Existing audited locked environments were reused; this is clean source, not a
+fresh environment/OS/interpreter installation. Runtime skips remain POSIX mode
+and live SDK initialization without an API key. JUnit, audits, drill scorecard,
+screenshots and artifact hashes are retained under ignored
+`results/review-delivery-qualification/acceptance.json`. Earlier capacity error
+classification and test-exception expectation failures were corrected and are
+excluded from these exact-source totals. No existing user journal was migrated.
+
+At the last core CI observation, push/PR Linux runtime/browser and advisory jobs
+passed; Windows jobs were pending. Final-head CI must be observed separately.
+The qualification follow-up changes documentation only. These results establish
+offline behavior at this source, not real-provider/audio or production acceptance.
