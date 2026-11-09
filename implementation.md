@@ -485,7 +485,17 @@ Linux runtime/browser and advisories passed; Windows jobs were pending.
 No real microphone/provider or existing user journal was used. The inherited
 CI findings and all seven readiness workstreams remain open.
 
-Still next: provider-specific replacement/reconciliation acceptance for any
+The `codex/configured-recovery-host` phase adds a
+[single-process local recovery host](docs/engineering/configured-recovery-host.md)
+with strict bounded configuration, existing protected credential/journal paths,
+authenticated lifecycle/lease/current-authority checks and a console status
+panel. Worker stopping closes the HTTP host; failed probes produce unsuccessful
+exit even after clean lease release. Recovery has no executors or automatic
+replay. No schema, retry policy, provider or voice activation changes. Exact-source
+qualification belongs to this phase PR.
+
+Still next: native service/watchdog packaging and measured operations acceptance,
+provider-specific replacement/reconciliation acceptance for any
 recorded activity, real voice and
 provider acceptance, operations/recovery packaging and independent evaluation,
 then consolidated security/release qualification and the retained CI diagnosis.

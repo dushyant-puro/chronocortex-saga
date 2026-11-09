@@ -1,6 +1,6 @@
 # Production-readiness ledger
 
-Evidence review date: **2026-11-02**. This ledger separates implemented offline
+Evidence review date: **2026-11-10**. This ledger separates implemented offline
 foundations from outstanding acceptance. It is not a production-readiness
 certificate or a completion percentage.
 
@@ -72,7 +72,7 @@ Per the user's direction, continue the product/integration surfaces around the
 passing runtime and defer historical intermittent-CI diagnosis to final
 integration/release qualification. Retain all findings; do not speculate about
 fixes or waive their release gates. New safety regressions still block their
-affected feature. The current product step is the opt-in
+affected feature. The product integration includes the opt-in
 [proposal-review UI](proposal-review-ui.md), followed by durable inbox/delivery,
 cross-tab recovery and a configured local review walkthrough. Positive receipt
 readback across sessions is implemented in the bounded follow-up above.
@@ -113,6 +113,24 @@ environments were reused. These offline results do not close inherited failure
 causes or any real-provider, voice, operational or release gate.
 
 ## Seven remaining acceptance areas
+
+The [manual review walkthrough](manual-review-walkthrough.md) now connects
+synthetic trusted evidence to explicit review/admission and two supervised
+approvals. Core `452783b` ([PR #43](https://github.com/dushyant-puro/chronocortex-saga/pull/43))
+passed fresh-source runtime 1,632/2 skipped, all 73 browser cases, both audits
+and the independent SIMULATED drill 5/5 cases/122 checks using existing audited
+locked environments. Participant identity, real audio/provider assets and
+recorded-effect replacement acceptance remain open; the local walkthrough is
+no longer an outstanding implementation item.
+
+The current offline operations phase is the
+[configured recovery host](configured-recovery-host.md): a single-process,
+loopback console/recovery worker with strict configuration and authenticated
+readiness observations. It does not install a native service, dispatch work,
+verify snapshot freshness or close operational acceptance. Native watchdog,
+service identity/custody and measured deployment tests remain subsequent work.
+External provider acceptance remains blocked on real sandbox assets; no extension
+to effectful replacement is authorized by simulated evidence alone.
 
 | Area | Current boundary | Work and exit evidence still required |
 | --- | --- | --- |

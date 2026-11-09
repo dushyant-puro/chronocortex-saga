@@ -13,6 +13,10 @@ is also available.
 No sandbox key or microphone is needed; this is separate from live-provider,
 live-voice and production-release acceptance.
 
+To inspect an existing stopped journal with the console and recovery worker in
+one process, use the [configured recovery host](docs/engineering/configured-recovery-host.md).
+It has authenticated readiness checks and no executors or automatic replay.
+
 **Voice turn ≠ task.** Conversational interruption and correction must not erase
 durable work or make uncertain remote effects safe to retry.
 
