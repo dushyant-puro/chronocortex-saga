@@ -4,11 +4,24 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>ChronoCortex · Operator console</title>
+    <link rel="stylesheet" href="./file-entry.css" />
+    <script defer src="./file-entry.js"></script>
     <link rel="icon" href="/assets/mark.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/assets/console.css" />
     <script type="module" src="/assets/console.js"></script>
   </head>
   <body>
+    <section id="file-entry" aria-labelledby="file-entry-title">
+      <p>CHRONOCORTEX SAGA / LOCAL CONSOLE</p>
+      <h1 id="file-entry-title">Start the console server</h1>
+      <p>This console uses an authenticated local journal. Opening this HTML file directly cannot load its controls or connect to that journal.</p>
+      <p>From PowerShell in the repository folder, run:</p>
+      <pre><code>.\scripts\start_review_walkthrough.ps1</code></pre>
+      <p>The launcher creates a new private run directory and prints the server address and credential-file location. Use that address after the server reports ready.</p>
+      <a href="http://127.0.0.1:8877">Open the local console on the default port →</a>
+      <p>SIMULATED walkthrough · No real payments or live microphone · Two separate step approvals</p>
+      <p>Do not enter credentials into this file page. See docs/engineering/manual-review-walkthrough.md for setup and the walkthrough.</p>
+    </section>
     <a class="skip-link" href="#main">Skip to journal evidence</a>
     <section id="connect" class="connect" aria-labelledby="connect-title">
       <div class="connect-intro">

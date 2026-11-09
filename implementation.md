@@ -460,9 +460,33 @@ policies/budgets; prior failures are not declared fixed by this passing run.
 Linux/advisory CI passed and Windows runtime jobs were pending at the last core
 observation. Inherited release gates and all seven workstreams remain open.
 
-Still next: configured manual review-host integration and provider-specific
-replacement/reconciliation acceptance for any recorded activity,
-configured manual review-host walkthrough, real voice and
+The `codex/manual-review-walkthrough` phase connects the styled console to a
+[manual review host](docs/engineering/manual-review-walkthrough.md): no seeded
+admission, host-generated SIMULATED evidence, explicit review/admission and two
+separate supervised step approvals. A direct-file entry guide prevents the
+unstyled inactive page and disables credential submission there. One admitted
+task executes per fresh protected run; additional admissions remain parked.
+No schema, provider retry, lease or reconciliation policy changes.
+
+Manual walkthrough core `452783b`,
+[draft PR #43](https://github.com/dushyant-puro/chronocortex-saga/pull/43), passed
+**1,632 runtime tests with 2 skips**, all **73 browser cases**, both profile
+audits and the independent **SIMULATED 5/5-case/122-check** process drill from
+fresh GitHub source using existing audited locked environments. The 10 new
+manual-host runtime cases, one native launcher mode parameter and three Chromium
+journeys are included in those totals. The full runtime suite completed before
+browser/drill qualification. Harness hash remains
+`5da8b57656fbf31ebf0d11f0a1fd42e611a4c19694917cd9178247b6bbab8edf`.
+The skips cover the POSIX permission-mode check on Windows and live SDK
+initialization without a key. Evidence, redacted JUnit, screenshots, hashes and
+audits are preserved under `results/manual-review-qualification/` locally;
+CI publishes its normal artifacts. At the last implementation-head observation,
+Linux runtime/browser and advisories passed; Windows jobs were pending.
+No real microphone/provider or existing user journal was used. The inherited
+CI findings and all seven readiness workstreams remain open.
+
+Still next: provider-specific replacement/reconciliation acceptance for any
+recorded activity, real voice and
 provider acceptance, operations/recovery packaging and independent evaluation,
 then consolidated security/release qualification and the retained CI diagnosis.
 All seven major workstreams remain open. No merge/deployment is authorized or

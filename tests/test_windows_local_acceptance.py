@@ -15,7 +15,8 @@ def quote(value):
     return "'" + str(value).replace("'", "''") + "'"
 
 
-def test_launch_directory_is_unique_protected_and_outside_checkout_before_python(tmp_path):
+@pytest.mark.parametrize('review', [False, True])
+def test_launch_directory_is_unique_protected_and_outside_checkout_before_python(tmp_path, review):
     stub = tmp_path / "python-stub.ps1"
     stub.write_text("""
 $i = [Array]::IndexOf($args, '--directory')
@@ -23,7 +24,7 @@ if ($i -lt 0) { exit 3 }
 $folder = $args[$i + 1]
 $acl = Get-Acl -LiteralPath $folder
 $rules = $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
-@{ protected = $acl.AreAccessRulesProtected;
+@{ module = $args[1]; protected = $acl.AreAccessRulesProtected;
    inherited = @($rules | Where-Object { $_.IsInherited }).Count;
    sids = @($rules | ForEach-Object { $_.IdentityReference.Value });
    owner = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
@@ -31,7 +32,8 @@ $rules = $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityId
 exit 0
 """, encoding="ascii")
     for _ in range(2):
-        result = run_shell(f"& {quote(SCRIPT)} -Diagnostics -Python {quote(stub)} -StorageParent {quote(tmp_path)}; exit $LASTEXITCODE")
+        entry = SCRIPT.parent / 'start_review_walkthrough.ps1' if review else SCRIPT
+        result = run_shell(f"& {quote(entry)} -Diagnostics -Python {quote(stub)} -StorageParent {quote(tmp_path)}; exit $LASTEXITCODE")
         assert result.returncode == 0, result.stderr
         assert setup_stages(result.stderr) == ["PROCESS_STARTED", "VALIDATE_PATH", "CREATE_DIRECTORY",
             "APPLY_ACL", "VERIFY_ACL", "LAUNCH_RUNTIME", "RUNTIME_EXIT"]
@@ -40,6 +42,7 @@ exit 0
     for folder in folders:
         proof = json.loads((folder / "proof.json").read_text(encoding="utf-8-sig"))
         assert proof["protected"] and proof["inherited"] == 0
+        assert proof['module'] == ('acceptance.review' if review else 'acceptance.local')
         assert set(proof["sids"]) == {proof["owner"], "S-1-5-18"}
 
 

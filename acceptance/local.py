@@ -54,7 +54,7 @@ class Files:
         return self.root / "simulated-effects.db"
 
 
-def prepare(directory):
+def prepare(directory, *, interactive_review=False):
     """New empty protected directory only; preserve partial/existing runs."""
     root = private_directory(directory)
     if any(root.iterdir()):
@@ -62,7 +62,10 @@ def prepare(directory):
     files = Files(root)
     journal = SQLiteActionJournal(files.journal)
     provision(journal, WORKER, {"ccs:work", PERMISSION}, root / "worker.secret", console_access=False)
-    provision(journal, "SIMULATED-local-operator", {PERMISSION, "ccs:approve", "ccs:cancel", "ccs:reconcile"},
+    grants = {PERMISSION, "ccs:approve", "ccs:cancel", "ccs:reconcile"}
+    if interactive_review:
+        grants.add("ccs:task:create")
+    provision(journal, "SIMULATED-local-operator", grants,
               root / "operator.secret")
     with closing(sqlite3.connect(files.ledger, isolation_level=None)) as db:
         db.execute("PRAGMA synchronous=EXTRA")
@@ -213,7 +216,7 @@ def stopped_cleanly(app):
         return False
 
 
-def main():
+def main(*, app_factory=None):
     parser = SafeParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--directory", required=True, help="New empty protected directory outside Git")
     parser.add_argument("--port", type=int, default=8877)
@@ -223,7 +226,7 @@ def main():
     try:
         with socket.socket() as listener:
             listener.bind(("127.0.0.1", args.port))
-            app = create_app(args.directory, f"http://127.0.0.1:{args.port}")
+            app = (app_factory or create_app)(args.directory, f"http://127.0.0.1:{args.port}")
             server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=args.port, proxy_headers=False,
                 access_log=False, log_level="warning", limit_concurrency=32, timeout_keep_alive=5))
             try:

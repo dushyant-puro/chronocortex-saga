@@ -165,8 +165,8 @@ def create_app(journal, config=None, *, proposal_reviews=None):
         return Response((STATIC / "index.html").read_bytes(), media_type="text/html")
 
     async def asset(request):
-        name = request.path_params["name"]
-        types = {"console.js": "text/javascript", "proposals.js": "text/javascript", "inbox.js": "text/javascript", "deliveries.js": "text/javascript", "replacement.js": "text/javascript", "console.css": "text/css", "mark.svg": "image/svg+xml"}
+        name = request.path_params.get("name", request.url.path.lstrip("/"))
+        types = {"file-entry.js": "text/javascript", "file-entry.css": "text/css", "console.js": "text/javascript", "proposals.js": "text/javascript", "inbox.js": "text/javascript", "deliveries.js": "text/javascript", "replacement.js": "text/javascript", "console.css": "text/css", "mark.svg": "image/svg+xml"}
         if name not in types:
             return Response(status_code=404)
         return Response((STATIC / name).read_bytes(), media_type=types[name])
@@ -215,7 +215,7 @@ def create_app(journal, config=None, *, proposal_reviews=None):
                                         request.path_params["command"].upper(), request.path_params["target"], data)
         return JSONResponse(result, status_code=202 if result["state"] == "REQUESTED" else 200)
 
-    app = Starlette(routes=[Route("/", page), Route("/assets/{name}", asset),
+    app = Starlette(routes=[Route("/", page), Route("/file-entry.js", asset), Route("/file-entry.css", asset), Route("/assets/{name}", asset),
                             Route("/api/login", login, methods=["POST"]), Route("/api/session", session),
                             Route("/api/logout", logout, methods=["POST"]), Route("/api/snapshot", snapshot),
                             Route("/api/proposals/review", proposal_review, methods=["POST"]),
