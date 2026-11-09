@@ -152,3 +152,23 @@ late replies across logout/login. Exact-source results belong to the phase PR.
 Inherited intermittent CI findings remain deferred release gates. Passing
 offline checks do not establish their causes fixed or close any of the seven
 readiness workstreams.
+
+### Cancellation race found during compatibility qualification
+
+The first fresh-source run at `4bee1cf` recorded **1,671 passed, 1 failed,
+2 skipped** in the existing manual-host test for cancellation followed by a
+parked admission. Retained evidence showed PENDING -> WAITING_FOR_AUTHORIZATION
+-> CANCELLED, one PENDING action and no dispatched effect. Cancellation closed
+the chain between checkpoint inspection and the read-only approval lookup;
+the driver treated its PermissionDenied result as a host failure, released the
+lease, and the later admission correctly failed closed. This was not evidence
+of a remote mutation, rollback, or the older watchdog/lease-takeover failures.
+
+New barriers reproduced the lookup race both before any effect and after the
+first known effect. Both normal-cancellation cases failed before the correction;
+both worker-revocation negative controls already stopped safely. The correction
+finishes only this read-only lookup when a fresh durable CANCELLED checkpoint
+and current worker/lifecycle authority hold. Earlier effects remain; no mutation
+is resumed, repeated or compensated. Revocation still stops the host. All 68
+focused manual/legacy/recovery-host cases then passed. Final fresh-source full
+qualification follows this correction and is recorded separately below.

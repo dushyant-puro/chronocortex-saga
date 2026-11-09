@@ -1,10 +1,12 @@
 """Manual host integration: real authority/journal, SIMULATED effects only."""
 import asyncio
+import threading
 import pytest
 from starlette.testclient import TestClient
 
 from acceptance import local, review
 from runtime.action_journal import SQLiteActionJournal
+from runtime.security_authority import SecurityAuthority
 from tests.test_local_acceptance import ORIGIN, approve, command, connect, effects, pending, wait_for
 
 
@@ -103,6 +105,48 @@ def test_lost_apply_response_parks_without_retry_or_descendant(tmp_path, monkeyp
         assert [r['state'] for _, r in journal.records()] == ['IN_FLIGHT_UNKNOWN']
         assert effects(app) == [(1,)]
     assert not local.stopped_cleanly(app)
+
+
+@pytest.mark.parametrize('after_first', [False, True])
+@pytest.mark.parametrize('revoke_worker', [False, True])
+def test_cancel_during_approval_lookup_preserves_effects_and_current_host_authority(tmp_path, monkeypatch, after_first, revoke_worker):
+    entered, release = threading.Event(), threading.Event()
+    original = SecurityAuthority.find_forward_approval
+    target = local.TOOLS[1 if after_first else 0]
+    def blocked(self, credential, action_id):
+        record = next(r for _, r in self.journal.records() if r['action_id'] == action_id)
+        if record['tool_name'] == target:
+            entered.set()
+            assert release.wait(10), 'Approval lookup barrier was not released'
+        return original(self, credential, action_id)
+    monkeypatch.setattr(SecurityAuthority, 'find_forward_approval', blocked)
+    app = review.create_app(tmp_path)
+    try:
+        with TestClient(app, base_url=ORIGIN) as client:
+            csrf = connect(app, client)
+            task = admit(client, csrf)
+            if after_first:
+                approve(client, csrf, wait_for(lambda: pending(app)))
+            wait_for(entered.is_set)
+            command(client, csrf, 'cancel', task)
+            if revoke_worker:
+                SQLiteActionJournal(app.state.acceptance_files.journal).security.update_principal(local.WORKER, active=False)
+            release.set()
+            wait_for(lambda: app.state.acceptance_operation.done())
+            assert effects(app) == ([(1,)] if after_first else [])
+            journal = SQLiteActionJournal(app.state.acceptance_files.journal)
+            assert journal.load_task(task)[1]['state'] == 'CANCELLED'
+            if revoke_worker:
+                assert app.state.acceptance_operation.result() == 'STOPPED_ON_ERROR'
+            else:
+                assert app.state.acceptance_operation.result() is None
+                assert app.state.acceptance_host.state == 'READY'
+                second = admit(client, csrf)
+                assert journal.load_task(second)[1]['state'] == 'PENDING'
+                assert app.state.acceptance_task_id == task
+    finally:
+        release.set()
+    assert local.stopped_cleanly(app) is (not revoke_worker)
 
 
 def test_requests_without_lifespan_fail_closed(tmp_path):
