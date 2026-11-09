@@ -132,6 +132,20 @@ service identity/custody and measured deployment tests remain subsequent work.
 External provider acceptance remains blocked on real sandbox assets; no extension
 to effectful replacement is authorized by simulated evidence alone.
 
+Corrected operations implementation `6d575a0`
+([PR #44](https://github.com/dushyant-puro/chronocortex-saga/pull/44)) has partial
+fresh-source qualification: runtime 1,677 passed/1 failed/2 skipped, all 68 focused
+compatibility cases and all 79 local browser cases passed, both audits passed,
+and independent SIMULATED process faults passed 5/5 cases/122 checks. The retained
+watchdog child exit remains a failure. Hosted PR Linux browser also failed an
+existing replacement eligibility journey with `SQLITE_BUSY` (78 passed/1 failed),
+while its push Linux and PR Windows counterparts passed. Causes remain gated;
+no budgets/retries were changed. A separately reproduced manual cancellation/
+approval-read race found in the first operations run was corrected with current
+authority and earlier-effect preservation checks; see the operations runbook
+for both exact-source runs and negative controls. These results close no release
+workstream and do not install or qualify a native service.
+
 | Area | Current boundary | Work and exit evidence still required |
 | --- | --- | --- |
 | 1. Real provider acceptance | Adapter, approval flow and offline/process faults exist. | Configure a dedicated sandbox and protected restricted credential; pass GET-only preflight, one exact approved mutation and authoritative readback; demonstrate uncertainty handling without replay and retain redacted evidence. Requires real account access. |

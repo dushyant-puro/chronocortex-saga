@@ -172,3 +172,44 @@ and current worker/lifecycle authority hold. Earlier effects remain; no mutation
 is resumed, repeated or compensated. Revocation still stops the host. All 68
 focused manual/legacy/recovery-host cases then passed. Final fresh-source full
 qualification follows this correction and is recorded separately below.
+
+### Corrected-source qualification: partial
+
+Implementation `6d575a01b7b1810bffb2d40f4d277a4e663e62e6`,
+[draft PR #44](https://github.com/dushyant-puro/chronocortex-saga/pull/44), was
+tested from independent fresh GitHub source on 2026-11-10 using the existing
+audited locked runtime/browser environments, not fresh environment installations.
+
+| Check | Observed result |
+| --- | --- |
+| Full Windows runtime | **1,677 passed, 1 failed, 2 skipped**. |
+| Focused compatibility group within that run | All **68 passed**: manual review, legacy walkthrough and recovery host. Includes all 46 new runtime/process/race cases. |
+| Full local browser | **79 passed**: 77 Chromium journeys and 2 fixture-readiness checks, including all 6 new journeys. |
+| Runtime/browser profile audits | Both passed against unchanged locks. |
+| Independent SIMULATED process drill | **5/5 cases, 122 checks**; unchanged harness SHA-256 `5da8b57656fbf31ebf0d11f0a1fd42e611a4c19694917cd9178247b6bbab8edf`. |
+
+The runtime failure is the retained
+`test_watchdog_dump_does_not_cancel_work_or_replace_final_test_status[False]`:
+child exit `3221225477`, expected 0. Its test and runtime CI/watchdog policy are
+unchanged. The skips cover the POSIX mode check on Windows and live SDK
+initialization without a key. Runtime finished before browser/drill qualification;
+no retry, watchdog, lease or time budget was weakened.
+
+Hosted corrected-source PR Linux browser also recorded **78 passed, 1 failed**
+in `test_original_change_after_review_blocks_admission_at_sql_boundary`, expecting
+`Eligible checkpoint`. Its log observed `SQLITE_BUSY` at CONFIGURE with another
+tracked GENERAL writer at COMMIT. This is an unresolved contention observation,
+not a confirmed root cause. Its push Linux and PR Windows browser counterparts
+passed; Linux runtime and advisories passed; Windows runtime was pending at the
+last observation. See [the failed job](https://github.com/dushyant-puro/chronocortex-saga/actions/runs/42676390426/job/129358773617).
+No passing counterpart replaces either failed result or closes inherited gates.
+
+Redacted JUnit, audits, screenshots, negative controls and hashes are retained
+locally under `results/recovery-host-qualification/acceptance.json`. The earlier
+failed implementation has separate evidence under
+`results/recovery-host-initial-qualification/`; the hosted log is
+`results/recovery-host-linux-browser-129358773617.redacted.log`. CI independently
+publishes its configured artifacts. **Qualification remains partial and
+`release_qualified=false`**. No existing user journal, provider or microphone was
+activated or migrated. Documentation-only follow-up commits retain these
+implementation-specific results; final-head CI has independent outcomes.
