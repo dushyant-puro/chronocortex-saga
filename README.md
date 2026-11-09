@@ -126,8 +126,10 @@ and speech endpoints never authorize mutations or complete durable tasks.
 The [reviewed task admission API](docs/engineering/reviewed-task-admission.md)
 adds explicit local-credential acceptance of a current proposal and exact
 versioned arguments into a durable PENDING task. Admission does not execute or
-approve a tool. Its schema-7 fence requires offline migration; the protected
-browser review flow and live participant identity remain open.
+approve a tool. The current schema-8 runtime requires
+[explicit offline migration](docs/engineering/persistent-review-delivery.md#schema-8-migration-and-rollback);
+opt-in retained speech is inspection-only and does not restore admission authority.
+Configured manual review-host integration and live participant identity remain open.
 The old `python -m agent` entrypoint is disabled; its fleet harness remains
 explicitly SIMULATED. No new voice provider or microphone is enabled.
 Run `python -m eval.voice_replay` for the credential-free, deterministic voice

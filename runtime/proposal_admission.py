@@ -53,17 +53,20 @@ class _Pending:
 
 
 class ProposalAdmissionService:
-    def __init__(self, manager, ingress, templates, *, source_id, max_pending=128):
+    def __init__(self, manager, ingress, templates, *, source_id, max_pending=128, retain_reviews=False):
         if type(ingress) is not VoiceIngress or manager._saga.journal is None:
             raise ProposalAdmissionError("PROPOSAL_DURABLE_HOST_REQUIRED")
         if type(max_pending) is not int or not 1 <= max_pending <= 128:
             raise ProposalAdmissionError("PROPOSAL_REVIEW_CAPACITY_INVALID")
+        if type(retain_reviews) is not bool:
+            raise ProposalAdmissionError("PROPOSAL_RETENTION_OPT_IN_REQUIRED")
         self.manager, self.ingress = manager, ingress
         self.journal = manager._saga.journal
         self.authority = SecurityAuthority(self.journal)
         self.source_id = identity(source_id)  # Trusted adapter label, NOT verified speaker identity.
         self._templates, self._pending = {}, {}
         self.max_pending = max_pending
+        self.retain_reviews = retain_reviews
         for template in templates:
             if type(template) is not AdmissionTemplate or type(template.steps) is not tuple or not 1 <= len(template.steps) <= 32:
                 raise ProposalAdmissionError("PROPOSAL_TEMPLATE_INVALID")
@@ -121,6 +124,17 @@ class ProposalAdmissionService:
         binding["digest"] = digest(binding)
         cp["proposal_binding"] = binding
         validate_binding(binding, cp)
+        if self.retain_reviews:
+            from runtime.proposal_delivery import publish, DeliveryLimitError
+            try:
+                with self.journal._transaction() as db:
+                    published_ms = self.authority._now(db)
+                    current_actor = authenticate(db, published_ms)
+                    if (current_actor.principal_id, current_actor.version, current_actor.credential_id) != (actor.principal_id, actor.version, actor.credential_id):
+                        raise PermissionDeniedError("Proposal delivery authority changed")
+                    publish(db, cp, proposal, published_ms)
+            except DeliveryLimitError:
+                raise ProposalAdmissionError("PROPOSAL_DELIVERY_UNAVAILABLE") from None
         self._pending[review_id] = _Pending(canonical(cp), proposal,
                                           binding_refs(list(template.steps), self.manager._saga.registry),
                                           workflow_id, binding["expires_ms"], session_scope)

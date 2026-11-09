@@ -148,6 +148,19 @@
             decision controls are paused until refresh succeeds.
           </div>
           <div id="notice" class="notice" role="status" hidden></div>
+          <section id="review-deliveries" class="proposal-panel" aria-labelledby="delivery-title" hidden>
+            <p class="eyebrow">RETAINED REVIEW EVIDENCE · INSPECTION ONLY</p>
+            <h2 id="delivery-title">Retained proposal reviews</h2>
+            <p>Reopen exact evidence after reconnecting. Stored speech cannot prove it is still current and cannot grant admission or execution authority.</p>
+            <button id="delivery-load" type="button" class="subtle">Load retained reviews</button>
+            <p id="delivery-message" class="notice" role="status"></p>
+            <ul id="delivery-items" class="inbox-items"></ul>
+            <div id="delivery-detail" hidden>
+              <p id="delivery-identity" class="evidence"></p>
+              <h3>Retained transcript</h3><pre id="delivery-transcript" class="evidence"></pre>
+              <h3>Exact reviewed arguments</h3><pre id="delivery-arguments" class="evidence"></pre>
+            </div>
+          </section>
           <section id="admission-inbox" class="proposal-panel" aria-labelledby="inbox-title" hidden>
             <p class="eyebrow">DURABLE ADMISSION HISTORY</p>
             <h2 id="inbox-title">Admitted proposals</h2>

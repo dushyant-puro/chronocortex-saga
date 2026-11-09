@@ -401,7 +401,26 @@ audits passed. At the last core observation Linux/advisory CI jobs passed and
 Windows jobs were pending. Voice/tools remain SIMULATED; pending-review delivery,
 real provider/audio and production readiness are not claimed.
 
-Still next: persistent pending-proposal delivery and correction/replacement semantics,
+The bounded `codex/persistent-review-delivery` phase adds
+[opt-in persistent inspection evidence](docs/engineering/persistent-review-delivery.md).
+Schema 8 stores exact review/voice evidence with capacity and expiry bounds;
+current-authority cross-session reads never restore current voice, admission or
+execution authority. The original live/session-bound admission path remains
+separate. Backups include retained speech when enabled. Schema 8 requires an
+explicit offline migration, with compatible readers/forward fixes for rollback.
+Default retention stays off; real voice consent and operational erasure/custody
+remain unqualified. Exact-source results belong to its phase PR.
+Core `391c33d`, [draft PR #40](https://github.com/dushyant-puro/chronocortex-saga/pull/40),
+passed 1,535 runtime tests with 2 skips and all 55 browser cases from fresh
+GitHub source using existing audited locked environments. Both profile audits
+passed. The independent SIMULATED process-fault drill passed 5/5 cases and
+122 checks with unchanged harness hash `5da8b57656fbf31ebf0d11f0a1fd42e611a4c19694917cd9178247b6bbab8edf`.
+The 31 new delivery tests, six new Chromium journeys and one extra backup-schema
+parameter are included in those totals. At the last core observation Linux/
+advisory CI passed and Windows jobs were pending. No existing user journal or
+REAL PROVIDER was modified, and no microphone acceptance was run.
+
+Still next: correction/replacement and explicit reauthorization semantics,
 configured manual review-host walkthrough, real voice and
 provider acceptance, operations/recovery packaging and independent evaluation,
 then consolidated security/release qualification and the retained CI diagnosis.
@@ -429,12 +448,12 @@ or use live provider calls as a substitute for offline regression tests.
 
 ## Migration, rollback and preservation
 
-The current runtime requires **journal schema 7**. Stop admission/dispatch,
+The current runtime requires **journal schema 8**. Stop admission/dispatch,
 confirm the prior process is stopped, preserve evidence and use the explicit
-[offline migration procedure](docs/engineering/reviewed-task-admission.md#schema-7-migration-and-rollback).
+[offline migration procedure](docs/engineering/persistent-review-delivery.md#schema-8-migration-and-rollback).
 An expired lease alone does not prove the old process stopped.
 
-On regression, retain schema-7 journals, operation claims, approvals, generations,
+On regression, retain schema-8 journals, operation claims, approvals, generations,
 receipts and remote operation IDs. Use a compatible reader/forward fix. Do not
 lower the schema header, overwrite current data with an old snapshot, clear
 UNKNOWN or retry mutations to make a demonstration pass. The new qualification

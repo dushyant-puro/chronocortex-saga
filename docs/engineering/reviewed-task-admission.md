@@ -107,6 +107,11 @@ undo an effect. Review expiry governs admission, not the lifetime of the task.
 
 ## Privacy and persistence
 
+The subsequent [schema-8 delivery phase](persistent-review-delivery.md) adds
+explicit opt-in persistence of raw review evidence for protected inspection.
+The default remains ephemeral. The historical schema-7 boundary below describes
+this admission phase; current migration/rollback is in the newer runbook.
+
 Pending review data remains in memory. Durable provenance omits raw transcript,
 word timings and confidence; it keeps an unsalted SHA-256 evidence digest, local
 source identifiers, reviewer identity and exact reviewed arguments. A digest
