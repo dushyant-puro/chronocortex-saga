@@ -103,7 +103,8 @@ def inspect(path):
                 checkpoint = json.loads(payload, object_pairs_hook=pairs, parse_constant=reject_constant)
                 require(type(checkpoint) is dict and checkpoint['task_id'] == task_id)
                 if journal_schema < 9 and checkpoint.get('proposal_binding') is not None:
-                    require(checkpoint['proposal_binding'].get('schema') == 1)
+                    binding = checkpoint['proposal_binding']
+                    require(type(binding) is dict and binding.get('schema') == 1)
             for action_id, payload in db.execute('SELECT action_id,record FROM actions'):
                 require(time.monotonic() < deadline)
                 record = json.loads(payload, object_pairs_hook=pairs, parse_constant=reject_constant)

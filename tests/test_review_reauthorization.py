@@ -244,3 +244,22 @@ def test_http_current_correction_accepts_only_original_identity_and_protects_bou
             assert result.status_code==200 and result.headers['cache-control']=='no-store'
             assert result.json()['binding']['task_id']==old['binding']['task_id'] and not result.json()['admitted']
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('malformed',[[],42,'invalid',True])
+def test_legacy_snapshot_malformed_binding_returns_sanitized_failure(browser,malformed):
+    e=browser;old=prepare(e);receipt=admit(e,old)
+    cp=e.journal.load_task(receipt.task_id)[1]
+    with e.journal._transaction() as db:
+        cp['proposal_binding']=malformed
+        payload=canonical(cp)
+        db.execute('UPDATE task_checkpoints SET checkpoint=?',(payload,))
+        db.execute('UPDATE task_events SET checkpoint=?',(payload,))
+    with closing(sqlite3.connect(e.journal.path)) as db:
+        db.execute('DROP TABLE proposal_review_fences');db.execute('DROP TABLE proposal_deliveries')
+        db.execute('PRAGMA user_version=7');db.commit()
+    before=e.journal.path.read_bytes()
+    report=recovery_preflight.inspect(e.journal.path)
+    assert not report['passed'] and report['failure']=='JOURNAL_EVIDENCE_UNVERIFIED'
+    assert e.proposal.text not in json.dumps(report)
+    assert e.journal.path.read_bytes()==before
