@@ -1,0 +1,8 @@
+html[data-ccs-file-entry] { color-scheme: dark; background: #101416; color: #ecede8; font: 17px/1.65 system-ui, sans-serif; }
+html[data-ccs-file-entry] body { margin: 0; padding: 7vh 6vw; }
+html[data-ccs-file-entry] body > :not(#file-entry) { display: none !important; }
+html[data-ccs-file-entry] #file-entry { max-width: 800px; margin: auto; padding: 35px; border: 1px solid #47615c; border-radius: 18px; background: #182120; }
+html[data-ccs-file-entry] h1 { font-size: clamp(30px, 5vw, 48px); line-height: 1.15; }
+html[data-ccs-file-entry] pre { padding: 18px; background: #0e1615; overflow: auto; border-radius: 8px; }
+html[data-ccs-file-entry] a { color: #9be5c6; }
+html[data-ccs-file-entry] p:last-child { font-size: 14px; color: #b5c5bf; }

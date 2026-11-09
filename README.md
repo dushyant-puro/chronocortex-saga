@@ -3,8 +3,13 @@
 See [implementation.md](implementation.md) for the consolidated implementation
 history, exact-source test evidence, unresolved findings and remaining acceptance gates.
 
-To try the console and a real two-approval task path with **SIMULATED local
-effects**, use the [local acceptance walkthrough](docs/engineering/local-acceptance.md).
+To use the styled console, review a proposal and approve a task's two steps
+with **SIMULATED local effects**, run `.\scripts\start_review_walkthrough.ps1`
+from PowerShell and follow the
+[manual review walkthrough](docs/engineering/manual-review-walkthrough.md).
+Open the printed HTTP address; opening the HTML file directly shows startup
+instructions. The original [pre-admitted walkthrough](docs/engineering/local-acceptance.md)
+is also available.
 No sandbox key or microphone is needed; this is separate from live-provider,
 live-voice and production-release acceptance.
 

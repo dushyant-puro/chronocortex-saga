@@ -460,9 +460,17 @@ policies/budgets; prior failures are not declared fixed by this passing run.
 Linux/advisory CI passed and Windows runtime jobs were pending at the last core
 observation. Inherited release gates and all seven workstreams remain open.
 
-Still next: configured manual review-host integration and provider-specific
-replacement/reconciliation acceptance for any recorded activity,
-configured manual review-host walkthrough, real voice and
+The `codex/manual-review-walkthrough` phase connects the styled console to a
+[manual review host](docs/engineering/manual-review-walkthrough.md): no seeded
+admission, host-generated SIMULATED evidence, explicit review/admission and two
+separate supervised step approvals. A direct-file entry guide prevents the
+unstyled inactive page and disables credential submission there. One admitted
+task executes per fresh protected run; additional admissions remain parked.
+No schema, provider retry, lease or reconciliation policy changes. Qualification
+results will be recorded against its published implementation commit.
+
+Still next: provider-specific replacement/reconciliation acceptance for any
+recorded activity, real voice and
 provider acceptance, operations/recovery packaging and independent evaluation,
 then consolidated security/release qualification and the retained CI diagnosis.
 All seven major workstreams remain open. No merge/deployment is authorized or

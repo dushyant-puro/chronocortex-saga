@@ -2,7 +2,8 @@ param(
     [ValidateRange(1024, 65535)][int]$Port = 8877,
     [string]$Python = (Join-Path (Split-Path -Parent $PSScriptRoot) '.venv\Scripts\python.exe'),
     [string]$StorageParent = $env:LOCALAPPDATA,
-    [switch]$Diagnostics
+    [switch]$Diagnostics,
+    [switch]$Review
 )
 function Write-CcsAcceptanceStage {
     param([ValidateSet('VALIDATE_PATH', 'CREATE_DIRECTORY', 'APPLY_ACL', 'VERIFY_ACL',
@@ -58,7 +59,8 @@ Write-Host 'Use operator.secret in that directory to connect. Ctrl+C stops the w
 Push-Location -LiteralPath (Split-Path -Parent $PSScriptRoot)
 try {
     Write-CcsAcceptanceStage 'LAUNCH_RUNTIME'
-    & $acceptancePython -m acceptance.local --directory $acceptanceRoot --port $Port
+    $acceptanceModule = if ($Review) { 'acceptance.review' } else { 'acceptance.local' }
+    & $acceptancePython -m $acceptanceModule --directory $acceptanceRoot --port $Port
     $acceptanceExit = $LASTEXITCODE
     Write-CcsAcceptanceStage 'RUNTIME_EXIT'
 } finally {
