@@ -79,6 +79,11 @@ readback across sessions is implemented in the bounded follow-up above.
 The subsequent [admitted-history inbox](admitted-proposal-inbox.md) adds protected
 cross-tab identity discovery. Persistent delivery of pending proposals and its
 retention/correction semantics remain open; this history does not close them.
+The [persistent review delivery](persistent-review-delivery.md) follow-up adds
+opt-in, capacity/expiry-bounded inspection evidence in schema 8. It can be read
+after restart with current authority but cannot restore admission/current voice
+authority. Correction/replacement, consent and operational erasure/backup custody
+remain open; schema-8 migration and rollback require the new runbook.
 
 ## Seven remaining acceptance areas
 

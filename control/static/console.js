@@ -1,5 +1,6 @@
 import { installProposalReview } from "/assets/proposals.js";
 import { installAdmissionInbox } from "/assets/inbox.js";
+import { installReviewDeliveries } from "/assets/deliveries.js";
 const $ = (selector) => document.querySelector(selector);
 const state = {
   bootstrapping: true,
@@ -19,6 +20,7 @@ const proposalReview = installProposalReview({
   ready: () => state.fresh && !state.busy,
 });
 const admissionInbox = installAdmissionInbox({ api, session: () => state.session });
+const reviewDeliveries = installReviewDeliveries({ api, session: () => state.session });
 const titles = {
   overview: ["Operator overview", "Decisions grounded in durable evidence."],
   tasks: [
@@ -152,11 +154,13 @@ function freshness(current) {
   });
   proposalReview.sync();
   admissionInbox.sync();
+  reviewDeliveries.sync();
 }
 
 function disconnected() {
   proposalReview.reset();
   admissionInbox.reset();
+  reviewDeliveries.reset();
   clearTimeout(state.polling);
   $("#decision-dialog").close();
   state.session = null;
