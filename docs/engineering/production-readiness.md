@@ -91,6 +91,13 @@ The [schema-9 reauthorization follow-up](review-reauthorization.md) adds explici
 fresh review succession for unadmitted retained tasks, with stable task identity
 and atomic stale-review fences. Admitted-task replacement/reconciliation remains
 blocked and needs separate policy/acceptance; manual host and live assets remain.
+At implementation `38be355` ([PR #41](https://github.com/dushyant-puro/chronocortex-saga/pull/41)),
+all 37 new cases, 61 local browser cases, both audits and the 5/5 SIMULATED
+process drill passed, but the full Windows suite has 1 failure/1,572 passes/2
+skips in the existing watchdog subprocess. A Linux push browser job also failed
+in an existing receipt/logout journey with `SQLITE_BUSY`. Causes remain
+unconfirmed, counterpart passes do not close the gates, and final-integration
+diagnosis remains deferred under the current user priority.
 
 ## Seven remaining acceptance areas
 

@@ -128,3 +128,46 @@ integration, real voice/provider acceptance, operational retention/recovery
 custody, independent evaluation and consolidated security/release qualification.
 Seven workstreams remain open. Historical intermittent CI investigation remains
 deferred to final integration; its release gates are not waived.
+
+## Qualification record — partial, release gates open
+
+Implementation `38be355e06c00bd500b1449345536d6872fb4ca3`, following core
+`e0343c0`, [draft PR #41](https://github.com/dushyant-puro/chronocortex-saga/pull/41).
+Independent fresh GitHub source observed on 2026-11-09:
+
+| Check | Observed result |
+| --- | --- |
+| Full Windows runtime | 1,572 passed, 1 failed, 2 skipped. **Not a full-suite pass.** |
+| New reauthorization/recovery cases | All 37 passed; included in the runtime total. One extra schema-backup parameter is also included. |
+| Local browser suite | 61 passed: 59 Chromium journeys plus 2 fixture-readiness cases. Six new journeys are included. |
+| Independent SIMULATED process-fault drill | 5/5 cases, 122 checks; unchanged harness SHA-256 `5da8b57656fbf31ebf0d11f0a1fd42e611a4c19694917cd9178247b6bbab8edf`. |
+| Runtime/browser profiles | Both audits passed; existing audited locked environments reused, not newly installed. |
+
+The runtime failure is the existing
+`test_watchdog_dump_does_not_cancel_work_or_replace_final_test_status[False]`:
+its synthetic child returned `3221225477`, expected `0`. Root cause is unconfirmed.
+No watchdog policy, timeout, native acceptance check or retry was weakened.
+The two skips remain POSIX mode on Windows and live SDK initialization without
+a key. The earlier `e0343c0` full run passed 1,569 tests with 2 skips; that result
+is not substituted for the updated implementation's failed full-run verdict.
+
+Exact-source hosted CI also retained a
+[Linux push browser failure](https://github.com/dushyant-puro/chronocortex-saga/actions/runs/42579533155/job/129034724529):
+the existing delayed durable-receipt test timed out filling a hidden login field,
+with a `SQLITE_BUSY` console observation (60 passed, 1 failed). Its cause is
+unconfirmed. The corresponding PR Linux browser and both Windows browser jobs
+passed; Linux runtime/advisory jobs passed. Windows runtime jobs were pending
+at the last observation. Passing counterparts do not erase failed evidence.
+
+JUnit, audits, screenshots, drill scorecard and hashes are retained in ignored
+`results/reauthorization-qualification/acceptance.json`, with redacted Linux
+failure logs/CI snapshot alongside it. Development failures (incorrect test-hook
+instance, hidden old evidence after rejection, malformed legacy-binding parser
+and an initial nested test transaction) were corrected and retained separately.
+The parser defect was reproduced with four cases before the fix; those cases
+now return sanitized failure verdicts without changing database bytes.
+
+The record follow-up changes documentation only. This phase implements the
+bounded feature but does not close runtime/CI reliability or release acceptance.
+Preserve these findings for the deferred final-integration diagnosis; seven
+workstreams remain open. No existing user journal or real provider was changed.

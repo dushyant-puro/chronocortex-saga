@@ -428,6 +428,17 @@ acceptance. Existing tasks in any state are refused; admitted-task replacement
 and remote reconciliation are not inferred from cancellation. Retained raw
 evidence is replaced explicitly, with predecessor IDs/digests in the new binding
 and security audit. Exact-source qualification belongs to this phase PR.
+Implementation `38be355`, following core `e0343c0`,
+[draft PR #41](https://github.com/dushyant-puro/chronocortex-saga/pull/41), has
+**partial qualification**: fresh-source Windows runtime recorded 1,572 passed,
+1 failed, 2 skipped; all 37 new cases passed. The existing watchdog child's
+unexpected exit `3221225477` remains unconfirmed. Local browser qualification
+passed all 61 cases, both audits passed and the independent SIMULATED process
+drill passed 5/5 cases and 122 checks. Hosted Linux push browser recorded an
+existing delayed-receipt/login failure with `SQLITE_BUSY`; its PR counterpart
+and Windows browser jobs passed, while Windows runtime CI was pending. These
+failures remain release gates; no retries/budgets were weakened or passing
+counterpart substituted. See the phase runbook for exact source/evidence.
 
 Still next: admitted-task replacement policy and acceptance,
 configured manual review-host walkthrough, real voice and
