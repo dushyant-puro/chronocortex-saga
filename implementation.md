@@ -520,7 +520,35 @@ Exact evidence, negative controls and redacted reports are retained under
 No schema migration, real provider/audio, native service installation, release
 or deployment is qualified. All seven readiness workstreams remain open.
 
-Still next: native service/watchdog packaging and measured operations acceptance,
+The `codex/ci-correctness-recovery` follow-up
+([draft PR #45](https://github.com/dushyant-puro/chronocortex-saga/pull/45))
+investigates workflow failure notifications before further service work.
+[The investigation](docs/engineering/ci-local-contention.md) preserves failed
+jobs and distinguishes bounded local SQL serialization from immediate replacement
+control synchronization. No transaction/provider mutation is retried or durability
+weakened. The initial quarter-second queue policy was insufficient on Windows;
+the revised local queue defaults to five seconds, with SQL busy handling still
+at 0.25 seconds. Self-nesting refuses immediately. The process test uses the
+existing console ten-second request boundary, not a one-second test-only SLO.
+
+Clean backend policy source `4cb3b42` passed 1,686 runtime cases with 2 skips,
+79 browser cases, both locked-profile audits and the SIMULATED drill (5/5 cases,
+122 checks). Its hosted Windows push browser exposed a distinct stale-control
+defect; local passes do not replace that failure. A held-snapshot regression
+failed before UI fix `7367f40`; all 16 targeted replacement/reauthorization
+journeys then passed. Final full-browser and hosted results belong to PR #45.
+Earlier native watchdog/other release findings remain recorded; these fixes do
+not qualify production or any live provider/audio assets.
+
+The resumed native SCM bridge passed 42 focused Windows cases in the isolated
+service worktree (lifecycle models, native non-SCM error 1063 and ctypes exception
+containment). It remains uncommitted and unqualified as an installed service;
+unfinished watchdog/deployment code and its stash backup are preserved.
+Activation must first resolve actual interpreter Job membership, request/queue
+budget alignment, strict clean-stop validation and real service-account/SCM
+acceptance. No service was installed or started.
+
+Still next: finish CI qualification, then native service/watchdog packaging and measured operations acceptance,
 provider-specific replacement/reconciliation acceptance for any
 recorded activity, real voice and
 provider acceptance, operations/recovery packaging and independent evaluation,

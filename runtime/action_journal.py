@@ -78,12 +78,15 @@ class SQLiteActionJournal:
     delete its sidecars. Connections/transactions never span provider awaits.
     """
 
-    def __init__(self, path: str | Path, *, timeout: float = 0.25, migrate: bool = False,
+    def __init__(self, path: str | Path, *, timeout: float = 0.25, local_timeout: float = 5.0, migrate: bool = False,
                  clock_ms=None):
         if not str(path) or str(path) == ":memory:" or str(path).startswith("file:"):
             raise JournalError("A file-backed journal path is required")
         self.path = Path(path).resolve()
         self.timeout = timeout
+        self.local_timeout = local_timeout
+        from runtime.journal_gate import for_path
+        self._local_gate = for_path(self.path)
         self._clock_ms = clock_ms if clock_ms is not None else lambda: time.time_ns() // 1_000_000
         self._lease = None
         self._lifecycle = None
@@ -352,7 +355,16 @@ class SQLiteActionJournal:
         db = None
         failure_observation = None
         observation = journal_observation.begin(self.path, writer_kind if writer_kind is not None else operation)
+        acquired = False
         try:
+            # A local COMMIT can briefly require SQLite's exclusive lock even
+            # while another connection is only configuring its PRAGMAs. Queue
+            # before opening that connection, not by retrying a transaction.
+            journal_observation.stage(observation, 'WAIT_LOCAL')
+            acquired = self._local_gate.acquire(self.local_timeout)
+            if not acquired:
+                failure_observation = journal_observation.capture(observation, self.path, None, local_wait=True)
+                raise JournalError('Local journal queue timed out; no transaction started')
             db = sqlite3.connect(self.path, timeout=self.timeout, isolation_level=None)
             journal_observation.stage(observation, "CONFIGURE")
             db.execute("PRAGMA foreign_keys=ON")
@@ -428,6 +440,8 @@ class SQLiteActionJournal:
                         journal_observation.stage(observation, "CLOSE")
                         db.close()
             finally:
+                if acquired:
+                    self._local_gate.release()
                 journal_observation.finish(observation)
                 journal_observation.emit(failure_observation)
 
