@@ -57,3 +57,18 @@ def test_unrelated_journals_do_not_share_a_queue(tmp_path):
     assert a._local_gate is not b._local_gate
     with a._transaction(), b._transaction():
         pass
+
+
+def test_negative_sqlite_timeout_cannot_become_an_unbounded_local_wait(tmp_path):
+    a = SQLiteActionJournal(tmp_path / 'journal.db', timeout=-1)
+    with a._transaction():
+        with pytest.raises(JournalError, match='queue timed out'):
+            a.records()
+
+
+@pytest.mark.parametrize('timeout', [float('nan'), float('inf'), 10**500])
+def test_invalid_queue_timeout_cannot_open_or_create_a_journal(tmp_path, timeout):
+    path = tmp_path / 'journal.db'
+    with pytest.raises(JournalError):
+        SQLiteActionJournal(path, timeout=timeout)
+    assert not path.exists()

@@ -360,7 +360,7 @@ class SQLiteActionJournal:
             # while another connection is only configuring its PRAGMAs. Queue
             # before opening that connection, not by retrying a transaction.
             journal_observation.stage(observation, 'WAIT_LOCAL')
-            acquired = self._local_gate.lock.acquire(timeout=self.timeout)
+            acquired = self._local_gate.acquire(self.timeout)
             if not acquired:
                 failure_observation = journal_observation.capture(observation, self.path, None, local_wait=True)
                 raise JournalError('Local journal queue timed out; no transaction started')
