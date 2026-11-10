@@ -79,3 +79,28 @@ receiving another snapshot. It failed before the correction. Proposal rendering
 now notifies replacement/retained-review controls immediately; no polling or
 assertion timeout changed. All 16 replacement/reauthorization journeys passed
 afterward. Server authority and single replacement-claim checks are unchanged.
+
+## Qualification and rollback
+
+Clean policy implementation `4cb3b42` passed **1,686 runtime tests, 2 skipped**,
+all **79 then-existing browser cases**, both profile audits and SIMULATED process
+faults **5/5 cases, 122 checks**. Existing audited locked environments were reused.
+Its Windows push browser failure above remains a failure, not a pass substituted
+from local or PR results. The later UI-only correction adds one held-snapshot
+journey; its full browser and hosted outcomes belong to PR #45. Python runtime,
+worker, provider, acceptance, security and operational backends are unchanged by
+that UI-only correction. The process-drill fingerprint is now
+`c104faaf5aefc14ab87be584c4aa5b485fe57d3e2818bffe6bda22620935d756` because
+the harness includes journal-observation source, which this change extends.
+The evaluator itself and its 122 checks were not relaxed.
+
+Keep earlier failed jobs, local qualification and current hosted outcomes
+separate. Final results and redacted JUnit are retained in ignored `results/`
+and CI artifacts; release qualification and all seven readiness areas remain
+open. No real provider or microphone is used in these checks.
+
+There is no schema migration. On regression stop affected admission/dispatch,
+preserve the journal/claims/receipts and use a compatible reader or forward fix.
+Reverting the queue/control code can reintroduce contention/stale affordances;
+it does not undo remote effects. Never clear UNKNOWN, remove claims or retry
+a mutation to obtain a passing run.
