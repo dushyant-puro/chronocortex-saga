@@ -16,10 +16,12 @@ const state = {
   polling: null,
   failures: 0,
 };
+let syncReviewDependents = () => {};
 const proposalReview = installProposalReview({
   api, session: () => state.session,
   available: () => state.snapshot?.capabilities?.proposal_review === true && state.session?.permissions.includes("ccs:task:create"),
   ready: () => state.fresh && !state.busy,
+  changed: () => syncReviewDependents(),
 });
 const admissionInbox = installAdmissionInbox({ api, session: () => state.session });
 const reviewDeliveries = installReviewDeliveries({ api, session: () => state.session,
@@ -28,6 +30,7 @@ const reviewDeliveries = installReviewDeliveries({ api, session: () => state.ses
 });
 const taskReplacement=installTaskReplacement({api,session:()=>state.session,
   canPrepare:()=>proposalReview.canReplace(),prepare:(source)=>proposalReview.replacement(source)});
+syncReviewDependents = () => { reviewDeliveries.sync(); taskReplacement.sync(); };
 const hostStatus = installHostStatus({ api, session: () => state.session,
   available: () => state.snapshot?.capabilities?.host_status === true });
 const titles = {

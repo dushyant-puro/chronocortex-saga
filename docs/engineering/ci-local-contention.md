@@ -63,3 +63,19 @@ message `Preserve unfinished managed-service work before CI investigation` on
 branch `codex/managed-recovery-service`. Do not drop it or overwrite its files.
 It must be integrated and tested after this correctness fix; no native service
 has been installed, started or qualified.
+
+## Separate replacement-control synchronization defect
+
+Revised-policy Windows push browser job 129846095061 recorded 78 passed/1 failed
+in `test_explicit_cancel_inspect_review_accept_creates_one_linked_task`, with the
+replacement-prepare button unexpectedly enabled. This log had no queue/SQLite
+contention observation. The review controller's state already rejected another
+preparation, but its dependent DOM controls were refreshed only by the next
+five-second journal poll. The test's five-second assertion exposed that gap.
+
+A new regression holds the next snapshot response, opens the review, checks that
+preparation disables, then closes the review and checks it re-enables without
+receiving another snapshot. It failed before the correction. Proposal rendering
+now notifies replacement/retained-review controls immediately; no polling or
+assertion timeout changed. All 16 replacement/reauthorization journeys passed
+afterward. Server authority and single replacement-claim checks are unchanged.
