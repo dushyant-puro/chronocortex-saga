@@ -32,11 +32,12 @@ def test_same_thread_nested_transaction_identifies_local_peer_and_never_retries(
         with pytest.raises(JournalError) as caught:
             journal.records()
         evidence = report(caplog)
-        assert caught.value.__cause__.sqlite_errorcode & 255 == sqlite3.SQLITE_BUSY
-        assert evidence['phase'] == 'BEGIN' and evidence['tracked_peer_count'] == 1
+        assert caught.value.__cause__ is None
+        assert evidence['category'] == 'LOCAL_QUEUE_TIMEOUT'
+        assert evidence['phase'] == 'WAIT_LOCAL' and evidence['tracked_peer_count'] == 1
         assert evidence['kind'] == 'READ_ACTIONS'
         assert evidence['peers'] == [{'kind': 'GENERAL', 'phase': 'BODY', 'thread': 'SAME_THREAD'}]
-        assert attempts == [.25]
+        assert attempts == []  # Queue refusal opens no connection and retries no SQL.
         assert 'PRIVATE' not in caplog.text and str(tmp_path) not in caplog.text
     assert not observation._entries
 
@@ -118,7 +119,7 @@ def test_broken_logging_sink_cannot_replace_original_busy_or_keep_an_observation
     with journal._transaction():
         with pytest.raises(JournalError) as caught:
             journal.records()
-        assert caught.value.__cause__.sqlite_errorcode & 255 == sqlite3.SQLITE_BUSY
+        assert caught.value.__cause__ is None
     assert not observation._entries
 
 

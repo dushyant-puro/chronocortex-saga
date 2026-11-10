@@ -12,7 +12,7 @@ import threading
 
 
 logger = logging.getLogger('ccs.journal')
-PHASES = frozenset({'CONNECT', 'CONFIGURE', 'BEGIN', 'SCHEMA', 'LEASE', 'BODY', 'COMMIT',
+PHASES = frozenset({'CONNECT', 'WAIT_LOCAL', 'CONFIGURE', 'BEGIN', 'SCHEMA', 'LEASE', 'BODY', 'COMMIT',
                     'CLOCK_ROLLBACK', 'CLOCK_BEGIN', 'CLOCK_COMMIT', 'ROLLBACK', 'CLOSE'})
 KINDS = frozenset({'GENERAL', 'BOUND', 'ACQUIRED', 'RENEWED', 'RELEASED', 'STAGED', 'TASK_CHECKPOINT',
                    'CHAIN_CLOSED', 'DISPATCH_INTENT', 'FORWARD_COMMITTED', 'FORWARD_COMMITTED_STALE',
@@ -78,13 +78,13 @@ def finish(ticket):
         pass
 
 
-def capture(ticket, path, error):
+def capture(ticket, path, error, *, local_wait=False):
     """Capture before cleanup; no logging or SQLite calls while taking a snapshot."""
     try:
         if getattr(_reporting, 'active', False):
             return
         code = getattr(error, 'sqlite_errorcode', None)
-        if (not isinstance(error, sqlite3.Error) or type(code) is not int or not 0 <= code <= 2**31 - 1 or
+        if not local_wait and (not isinstance(error, sqlite3.Error) or type(code) is not int or not 0 <= code <= 2**31 - 1 or
                 code & 255 not in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}):
             return
         with _lock:
@@ -93,7 +93,7 @@ def capture(ticket, path, error):
                      if key is not ticket and entry.path == os.path.normcase(str(path))]
             evidence = {'schema': 1, 'scope': 'PROCESS_LOCAL_ONLY',
                         'coverage': 'UNAVAILABLE' if own is None else 'PARTIAL' if _overflow else 'TRACKED_LOCAL',
-                        'category': 'SQLITE_BUSY' if code & 255 == sqlite3.SQLITE_BUSY else 'SQLITE_LOCKED',
+                        'category': 'LOCAL_QUEUE_TIMEOUT' if local_wait else 'SQLITE_BUSY' if code & 255 == sqlite3.SQLITE_BUSY else 'SQLITE_LOCKED',
                         'phase': own.phase if own else 'UNAVAILABLE', 'kind': own.kind if own else 'UNAVAILABLE',
                         'tracked_peer_count': len(peers), 'peers_truncated': len(peers) > PEER_LIMIT,
                         'peers': [{'phase': entry.phase, 'kind': entry.kind,
