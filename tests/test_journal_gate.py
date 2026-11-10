@@ -8,8 +8,8 @@ from runtime.action_journal import SQLiteActionJournal, JournalError
 
 
 def test_connections_share_gate_before_sql_setup_and_preserve_both_writes(tmp_path):
-    a = SQLiteActionJournal(tmp_path / 'journal.db', timeout=2)
-    b = SQLiteActionJournal(a.path, timeout=2)
+    a = SQLiteActionJournal(tmp_path / 'journal.db', local_timeout=2)
+    b = SQLiteActionJournal(a.path, local_timeout=2)
     assert a._local_gate is b._local_gate
     entered, release, queued = threading.Event(), threading.Event(), threading.Event()
     def first():
@@ -35,8 +35,8 @@ def test_connections_share_gate_before_sql_setup_and_preserve_both_writes(tmp_pa
 
 
 def test_queue_timeout_runs_no_body_and_gate_recovers_after_failure(tmp_path):
-    a = SQLiteActionJournal(tmp_path / 'journal.db', timeout=.01)
-    b = SQLiteActionJournal(a.path, timeout=.01)
+    a = SQLiteActionJournal(tmp_path / 'journal.db', local_timeout=.01)
+    b = SQLiteActionJournal(a.path, local_timeout=.01)
     called = False
     with a._transaction():
         with pytest.raises(JournalError, match='queue timed out'):
@@ -59,8 +59,8 @@ def test_unrelated_journals_do_not_share_a_queue(tmp_path):
         pass
 
 
-def test_negative_sqlite_timeout_cannot_become_an_unbounded_local_wait(tmp_path):
-    a = SQLiteActionJournal(tmp_path / 'journal.db', timeout=-1)
+def test_negative_local_timeout_cannot_become_an_unbounded_wait(tmp_path):
+    a = SQLiteActionJournal(tmp_path / 'journal.db', local_timeout=-1)
     with a._transaction():
         with pytest.raises(JournalError, match='queue timed out'):
             a.records()
@@ -70,5 +70,13 @@ def test_negative_sqlite_timeout_cannot_become_an_unbounded_local_wait(tmp_path)
 def test_invalid_queue_timeout_cannot_open_or_create_a_journal(tmp_path, timeout):
     path = tmp_path / 'journal.db'
     with pytest.raises(JournalError):
-        SQLiteActionJournal(path, timeout=timeout)
+        SQLiteActionJournal(path, local_timeout=timeout)
     assert not path.exists()
+
+
+def test_sql_busy_and_local_wait_defaults_are_independent(tmp_path):
+    journal = SQLiteActionJournal(tmp_path / 'journal.db')
+    assert journal.timeout == .25
+    assert journal.local_timeout == 5
+    explicit = SQLiteActionJournal(journal.path, timeout=.01, local_timeout=.02)
+    assert explicit.timeout == .01 and explicit.local_timeout == .02

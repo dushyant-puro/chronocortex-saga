@@ -21,7 +21,7 @@ def report(caplog):
 
 
 def test_same_thread_nested_transaction_identifies_local_peer_and_never_retries(tmp_path, caplog, monkeypatch):
-    journal = SQLiteActionJournal(tmp_path / 'PRIVATE-journal.db')
+    journal = SQLiteActionJournal(tmp_path / 'PRIVATE-journal.db', local_timeout=.25)
     original = sqlite3.connect
     attempts = []
     with journal._transaction():
@@ -43,7 +43,7 @@ def test_same_thread_nested_transaction_identifies_local_peer_and_never_retries(
 
 
 def test_other_thread_writer_is_observed_without_serializing_away_real_contention(tmp_path, caplog):
-    journal = SQLiteActionJournal(tmp_path / 'journal.db')
+    journal = SQLiteActionJournal(tmp_path / 'journal.db', local_timeout=.25)
     entered, release = threading.Event(), threading.Event()
     def hold():
         with journal._transaction():
@@ -63,7 +63,7 @@ def test_other_thread_writer_is_observed_without_serializing_away_real_contentio
 
 
 def test_external_process_writer_cannot_be_misrepresented_as_a_tracked_owner(tmp_path, caplog):
-    journal = SQLiteActionJournal(tmp_path / 'journal.db')
+    journal = SQLiteActionJournal(tmp_path / 'journal.db', local_timeout=.25)
     source = ("import sqlite3,sys; db=sqlite3.connect(sys.argv[1]); db.execute('BEGIN IMMEDIATE'); "
               "print('READY',flush=True); sys.stdin.readline(); db.rollback(); db.close()")
     child = subprocess.Popen([sys.executable, '-c', source, str(journal.path)],
@@ -96,7 +96,7 @@ def test_external_process_writer_cannot_be_misrepresented_as_a_tracked_owner(tmp
 
 
 def test_busy_commit_observes_commit_phase_and_preserves_rollback(tmp_path, caplog):
-    journal = SQLiteActionJournal(tmp_path / 'journal.db')
+    journal = SQLiteActionJournal(tmp_path / 'journal.db', local_timeout=.25)
     with closing(sqlite3.connect(journal.path, isolation_level=None)) as reader:
         reader.execute('BEGIN')
         before = reader.execute('SELECT count(*) FROM security_events').fetchone()[0]
@@ -110,7 +110,7 @@ def test_busy_commit_observes_commit_phase_and_preserves_rollback(tmp_path, capl
 
 
 def test_broken_logging_sink_cannot_replace_original_busy_or_keep_an_observation(tmp_path, monkeypatch):
-    journal = SQLiteActionJournal(tmp_path / 'journal.db')
+    journal = SQLiteActionJournal(tmp_path / 'journal.db', local_timeout=.25)
     def broken(*args, **kwargs):
         assert not observation._lock.locked()
         assert len(observation._entries) == 1  # Only the outer transaction remains.
@@ -124,7 +124,7 @@ def test_broken_logging_sink_cannot_replace_original_busy_or_keep_an_observation
 
 
 def test_commit_contention_is_logged_only_after_rollback_and_connection_close(tmp_path, monkeypatch):
-    journal = SQLiteActionJournal(tmp_path / 'journal.db')
+    journal = SQLiteActionJournal(tmp_path / 'journal.db', local_timeout=.25)
     captured = []
     def sink(*args):
         assert not observation._entries
@@ -173,7 +173,7 @@ def test_observation_capacity_is_bounded_and_partial_not_complete(caplog):
 
 
 def test_success_nonbusy_and_non_sql_errors_do_not_emit_contention(tmp_path, caplog):
-    journal = SQLiteActionJournal(tmp_path / 'journal.db')
+    journal = SQLiteActionJournal(tmp_path / 'journal.db', local_timeout=.25)
     journal.records()
     for error in (ValueError('PRIVATE'), sqlite3.OperationalError('PRIVATE')):
         observation.contention(None, journal.path, error)
@@ -184,7 +184,7 @@ def test_success_nonbusy_and_non_sql_errors_do_not_emit_contention(tmp_path, cap
 
 
 def test_reentrant_logging_sink_does_not_recursively_report_contention(tmp_path, monkeypatch):
-    journal = SQLiteActionJournal(tmp_path / 'journal.db')
+    journal = SQLiteActionJournal(tmp_path / 'journal.db', local_timeout=.25)
     calls = []
     def reentrant(*args):
         calls.append(1)
@@ -214,13 +214,13 @@ def test_observer_mutex_never_spans_a_sqlite_call(tmp_path, monkeypatch):
         assert not observation._lock.locked()
         return Probe(original(*args, **kwargs))
     monkeypatch.setattr(sqlite3, 'connect', connect)
-    journal = SQLiteActionJournal(tmp_path / 'journal.db')
+    journal = SQLiteActionJournal(tmp_path / 'journal.db', local_timeout=.25)
     assert journal.records() == [] and not observation._entries
 
 
 def test_clock_preservation_failure_is_observed_without_changing_error_semantics(tmp_path, monkeypatch, caplog):
     from runtime.policy_engine import PermissionDeniedError
-    journal = SQLiteActionJournal(tmp_path / 'journal.db')
+    journal = SQLiteActionJournal(tmp_path / 'journal.db', local_timeout=.25)
     original = sqlite3.connect
     error = sqlite3.OperationalError('PRIVATE clock commit failure')
     error.sqlite_errorcode = sqlite3.SQLITE_BUSY

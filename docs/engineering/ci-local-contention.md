@@ -30,13 +30,26 @@ a second connection. It is not a distributed lock: SQLite leases, SQL CAS,
 ownership checks, security clocks and provider uncertainty rules remain decisive.
 External processes and raw SQLite clients remain subject to SQLite contention.
 
-Gate acquisition uses the journal's existing timeout; SQL busy handling retains
-its existing timeout too. These are separate bounded stages, not a new total
-request deadline. No existing timeout was raised, transaction retried, provider
-mutation replayed or durability mode weakened. A timed-out waiter opens no
+Gate acquisition now has an independent `local_timeout` (default **5 seconds**),
+while SQLite's `timeout` remains **0.25 seconds**. The first version reused the
+quarter-second value for both; Windows CI showed LOCAL_QUEUE_TIMEOUT even after
+SQL connection setup was serialized. That first correction was insufficient.
+These are separate bounded stages, not a new total request deadline or a latency
+SLO. The queue policy was explicitly revised; SQL/lease/watchdog timeouts were
+not increased. No transaction was retried, provider mutation replayed or durability
+mode weakened. Self-nested requests refuse immediately because their owner cannot
+make progress while waiting. A timed-out waiter opens no
 connection and runs no transaction body. `LOCAL_QUEUE_TIMEOUT` / `WAIT_LOCAL`
 observations distinguish this from real SQLITE_BUSY; logs still omit paths,
 payloads and bearer values. A weak registry avoids retaining abandoned paths.
+
+Follow-up job evidence includes 129838187003, 129838187020, 129838505915,
+129839371683 and 129839401287: Windows runtime/browser queue timeouts at the old
+quarter-second bound, plus a test-only HTTP ReadTimeout. The process test now
+uses the console's existing ten-second request boundary instead of an unsupported
+one-second test-only SLO. No test assertions, authority controls or unknown-effect
+checks are skipped. Original failures remain recorded; counterpart passes are
+not substitutions for failed jobs.
 
 Regression tests cover shared-path serialization, independent journals, bounded
 refusal, rollback/release after body failure, nested refusal and diagnostics.

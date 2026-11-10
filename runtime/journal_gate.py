@@ -8,6 +8,7 @@ import weakref
 class Gate:
     def __init__(self):
         self.lock = threading.Lock()
+        self.owner = None
 
     def acquire(self, timeout):
         try:
@@ -18,7 +19,16 @@ class Gate:
             raise ValueError('Invalid local queue timeout')
         # SQLite treats a negative timeout as no wait; threading uses -1 for
         # an unlimited wait. Never inherit that incompatible interpretation.
-        return self.lock.acquire(timeout=max(0, value))
+        if self.owner == threading.get_ident():
+            return False  # A nested caller cannot release its own outer lock.
+        acquired = self.lock.acquire(timeout=max(0, value))
+        if acquired:
+            self.owner = threading.get_ident()
+        return acquired
+
+    def release(self):
+        self.owner = None
+        self.lock.release()
 
 
 _guard = threading.Lock()

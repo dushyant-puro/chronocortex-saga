@@ -302,7 +302,9 @@ def test_serving_process_exits_unsuccessfully_after_current_worker_revocation(tm
         process = subprocess.Popen([sys.executable, '-m', 'operations.recovery', '--config',
                                    str(write_config(tmp_path, data))], stdout=log, stderr=log)
         try:
-            with httpx.Client(base_url=origin, timeout=1, trust_env=False) as client:
+            # Match the console's existing ten-second request boundary. A
+            # one-second test-only limit was never a recovery-host SLO.
+            with httpx.Client(base_url=origin, timeout=10, trust_env=False) as client:
                 deadline = time.monotonic() + 10
                 while True:
                     assert process.poll() is None and time.monotonic() < deadline
