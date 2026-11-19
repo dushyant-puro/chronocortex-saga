@@ -24,6 +24,23 @@ override or finding suppression is used. See the official
 [LiveKit release](https://github.com/livekit/agents/releases/tag/livekit-agents%401.8.8)
 and [OpenTelemetry release](https://github.com/open-telemetry/opentelemetry-python/releases/tag/v1.45.1).
 
+The complete online scan on source `9222417` (2026-11-19) then found
+`CVE-2026-126360` / `GHSA-mf5v-w3w3-f6cg` in `opentelemetry-api==1.45.1` in
+both the runtime and browser graphs. The security-tool graph had no findings.
+The [reviewed advisory](https://github.com/advisories/GHSA-mf5v-w3w3-f6cg)
+identifies quadratic regex backtracking in trace-context parsing and lists
+`1.45.2` as patched. The OpenTelemetry API `1.45.2` release was published on
+2026-10-29 ([PyPI release metadata](https://pypi.org/project/opentelemetry-api/1.45.2/)).
+
+The follow-up lock bundle pins the API to `1.45.2` and advances the resolver
+cutoff to `2026-10-30T00:00:00Z`, the first day after that release. The pinned
+resolver also updates `opentelemetry-sdk` to `1.45.2` and
+`opentelemetry-semantic-conventions` to `0.66b2`; the security-tool lock and
+other application pins are unchanged. The exact archive hashes are generated
+by the repository resolver, not copied into the requirements files by hand.
+Qualification for this remediation belongs to the new exact commit and its
+fresh CI run; the failure on `9222417` remains recorded evidence.
+
 The voice observer retains its version guard, now qualified against `1.8.8`.
 Older or arbitrary newer SDK versions cannot connect. Real SDK-object tests
 retain proposal-only behavior, absent LLM/TTS/tools/recording, and no durable
