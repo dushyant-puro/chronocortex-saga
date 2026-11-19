@@ -10,13 +10,13 @@ that can outlive the conversation that started it.
 
 The code baseline on the default `main` branch is Phase 0 at
 [`4162ec1`](https://github.com/dushyant-puro/chronocortex-saga/commit/4162ec17f4bda15c13de3fa1f0e1e33e3fe35591).
-The current `main` HEAD, `532d98f`, adds this README only. The accumulated
-safety implementation is being developed in stacked pull requests and is
-**not merged into `main`**.
+Only README documentation has been added on top of that baseline. The
+accumulated safety implementation is being developed in stacked pull requests
+and is **not merged into `main`**.
 
 | Evidence label | Status |
 | --- | --- |
-| **PUBLIC MAIN VERIFIED** | `main` is at `532d98f`, a README-only commit on the Phase 0 baseline above. It does not contain the current safety stack. |
+| **PUBLIC MAIN VERIFIED** | Main's code remains at the Phase 0 baseline above; only README documentation has been added since. It does not contain the current safety stack. |
 | **LOCAL BRANCH VERIFIED** | The current implementation is on [`codex/ci-correctness-recovery`](https://github.com/dushyant-puro/chronocortex-saga/tree/codex/ci-correctness-recovery), at `85fd4cfc19e93d5d16e92768168d614db64b2096`. Its latest phase is draft [PR #45](https://github.com/dushyant-puro/chronocortex-saga/pull/45), based on the preceding recovery-host phase. |
 | **SIMULATED** | Provider fixtures, synthetic voice evidence, and process-fault drills. They do not prove live provider or live audio behavior. |
 | **REAL PROVIDER** | No real provider acceptance has been completed. |
