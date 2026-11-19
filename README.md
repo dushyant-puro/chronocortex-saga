@@ -25,12 +25,15 @@ The safety stack is developed in a series of unmerged pull requests; public
 | **SIMULATED** | Offline provider fixtures, synthetic voice evidence, and independent process-fault drills. These do not establish real provider or live audio behavior. |
 | **REAL PROVIDER** | A real provider account, authorized operation, and authoritative status readback. This acceptance has not been run. |
 
-At source commit `11e9e1cf56738559d30a7f93f0f28aec5a64f38f`, the hosted push
-and pull-request runs passed all ten Linux/Windows runtime, browser, and
-advisory jobs combined (five jobs per run). Earlier failures and their
-corrections remain recorded in the
-[CI contention investigation](docs/engineering/ci-local-contention.md); this
-result applies to that exact source, not automatically to a later commit.
+At source commit `ba6197e11bfa9522c47dc840343a2f9f432eaf59`, the hosted push and
+pull-request runs passed all ten Linux/Windows runtime, browser, and advisory
+jobs combined (five jobs per run): [push run](https://github.com/dushyant-puro/chronocortex-saga/actions/runs/44519906710)
+and [pull-request run](https://github.com/dushyant-puro/chronocortex-saga/actions/runs/44519899353).
+The prior scan at `9222417` found the newly published OpenTelemetry advisory;
+the current lock update pins its patched release. Earlier CI failures and
+corrections remain in the [CI contention investigation](docs/engineering/ci-local-contention.md)
+and [advisory record](docs/engineering/dependency-advisories.md). Results apply
+to the exact recorded source, not automatically to later commits.
 
 ## What is implemented
 
