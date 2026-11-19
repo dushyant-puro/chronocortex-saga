@@ -17,14 +17,14 @@ and is **not merged into `main`**.
 | Evidence label | Status |
 | --- | --- |
 | **PUBLIC MAIN VERIFIED** | Main's code remains at the Phase 0 baseline above; only README documentation has been added since. It does not contain the current safety stack. |
-| **LOCAL BRANCH VERIFIED** | The current implementation is on [`codex/ci-correctness-recovery`](https://github.com/dushyant-puro/chronocortex-saga/tree/codex/ci-correctness-recovery), at `85fd4cfc19e93d5d16e92768168d614db64b2096`. Its latest phase is draft [PR #45](https://github.com/dushyant-puro/chronocortex-saga/pull/45), based on the preceding recovery-host phase. |
+| **LOCAL BRANCH VERIFIED** | The current implementation is on [`codex/ci-correctness-recovery`](https://github.com/dushyant-puro/chronocortex-saga/tree/codex/ci-correctness-recovery), at `d53285698a2908d10bded76d2af9e7290481baed`. Its latest phase is draft [PR #45](https://github.com/dushyant-puro/chronocortex-saga/pull/45), based on the preceding recovery-host phase. |
 | **SIMULATED** | Provider fixtures, synthetic voice evidence, and process-fault drills. They do not prove live provider or live audio behavior. |
 | **REAL PROVIDER** | No real provider acceptance has been completed. |
 
-GitHub's branch page compares each branch to `main`. The 128-commit “ahead” count
-for the current branch includes the preceding stacked phases; PR #45 itself is
-based on `codex/configured-recovery-host`. The stack is intentionally kept
-separate from the Phase 0 default branch while its phases are reviewed.
+GitHub's branch page compares each branch to `main`, so the current branch's
+“ahead” count includes the preceding stacked phases. PR #45 itself is based on
+`codex/configured-recovery-host`. The stack is intentionally kept separate
+from the Phase 0 default branch while its phases are reviewed.
 
 ## Current implementation
 
@@ -41,9 +41,9 @@ Unknown mutations are not blindly retried. Automated provider tests and voice
 replays are **SIMULATED**; no production-readiness, live voice, or real provider
 acceptance is claimed.
 
-The latest branch head, `85fd4cfc19e93d5d16e92768168d614db64b2096`, passed all
+The latest branch head, `d53285698a2908d10bded76d2af9e7290481baed`, passed all
 five hosted runtime, browser, and advisory jobs in
-[GitHub Actions run 44522394832](https://github.com/dushyant-puro/chronocortex-saga/actions/runs/44522394832).
+[GitHub Actions run 44557121015](https://github.com/dushyant-puro/chronocortex-saga/actions/runs/44557121015).
 Earlier CI failures and the exact source they apply to remain in the branch's
 [implementation ledger](https://github.com/dushyant-puro/chronocortex-saga/blob/codex/ci-correctness-recovery/implementation.md)
 and [production-readiness ledger](https://github.com/dushyant-puro/chronocortex-saga/blob/codex/ci-correctness-recovery/docs/engineering/production-readiness.md).
