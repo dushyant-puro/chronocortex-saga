@@ -1,54 +1,122 @@
-# ChronoCortex-Saga
+# ChronoCortex-Saga (CCS-Agent)
 
-See [implementation.md](implementation.md) for the consolidated implementation
-history, exact-source test evidence, unresolved findings and remaining acceptance gates.
+ChronoCortex-Saga is a research system for safe, recoverable, multi-step work
+that can outlive the conversation that started it.
 
-To use the styled console, review a proposal and approve a task's two steps
-with **SIMULATED local effects**, run `.\scripts\start_review_walkthrough.ps1`
-from PowerShell and follow the
+> **VOICE TURN ≠ TASK.** A voice turn is revisable evidence. A task is durable
+> work with explicit authority, history, and a recoverable outcome.
+
+The project studies how interruption, correction, worker failure, and uncertain
+remote responses affect long-running tasks. Its web console is an operator
+control and observability surface. The durable journal and server-side authority
+checks remain the source of truth.
+
+## Project status
+
+This is an active research implementation, **not a production-readiness claim**.
+The code baseline on public `main` is Phase 0 at
+`4162ec17f4bda15c13de3fa1f0e1e33e3fe35591`; main has received README-only
+project-status documentation since. The safety stack is developed in a series
+of unmerged pull requests.
+
+| Evidence label | Current meaning |
+| --- | --- |
+| **PUBLIC MAIN VERIFIED** | Public `main` still has the Phase 0 code baseline above, with README-only documentation added since. It does not contain the current safety stack. |
+| **LOCAL BRANCH VERIFIED** | The active implementation is on `codex/ci-correctness-recovery` and tracked in draft PR [#45](https://github.com/dushyant-puro/chronocortex-saga/pull/45), stacked on earlier safety phases. Check the exact commit before relying on a result. |
+| **SIMULATED** | Offline provider fixtures, synthetic voice evidence, and independent process-fault drills. These do not establish real provider or live audio behavior. |
+| **REAL PROVIDER** | A real provider account, authorized operation, and authoritative status readback. This acceptance has not been run. |
+
+At source commit `ba6197e11bfa9522c47dc840343a2f9f432eaf59`, the hosted push and
+pull-request runs passed all ten Linux/Windows runtime, browser, and advisory
+jobs combined (five jobs per run): [push run](https://github.com/dushyant-puro/chronocortex-saga/actions/runs/44519906710)
+and [pull-request run](https://github.com/dushyant-puro/chronocortex-saga/actions/runs/44519899353).
+The prior scan at `9222417` found the newly published OpenTelemetry advisory;
+the current lock update pins its patched release. Earlier CI failures and
+corrections remain in the [CI contention investigation](docs/engineering/ci-local-contention.md)
+and [advisory record](docs/engineering/dependency-advisories.md). Results apply
+to the exact recorded source, not automatically to later commits.
+
+## What is implemented
+
+- A durable SQLite journal for tasks, actions, claims, approvals, events, and
+  provider-operation evidence, with workflow version checks and worker lease
+  fencing.
+- Conservative handling of stale and uncertain outcomes. Coroutine cancellation
+  is not treated as remote rollback, and unknown mutations are not blindly
+  retried.
+- An authenticated local operator console for evidence review and scoped
+  decisions. The browser does not own task state or bypass server authority.
+- Reviewed proposal-to-task admission, durable review evidence, and a manual
+  local walkthrough with separate approvals for each simulated task step.
+- A restricted Stripe test-mode adapter and supervised one-resource drill,
+  plus GET-only preflight and reconciliation commands. Automated provider
+  fixtures are **SIMULATED**; no **REAL PROVIDER** acceptance is claimed.
+- Revision-aware, proposal-only voice evidence and a deterministic synthetic
+  replay scorecard. There is no live microphone/STT acceptance, and speech does
+  not authorize mutations or complete tasks.
+- Locked Python dependency graphs, dependency advisory checks, journal
+  preflight, encrypted backup and restore drills, key rotation, and offline
+  wheel verification.
+- Deterministic mutation, durable-task, voice, and independent process-fault
+  evaluations. Existing research corpora are small and synthetic; they do not
+  establish universal novelty or production performance.
+
+The full milestone history, architecture, exact-source qualifications, safety
+invariants, and limitations are in [implementation.md](implementation.md).
+The seven open release-acceptance areas are tracked in the
+[production-readiness ledger](docs/engineering/production-readiness.md).
+
+## Architecture at a glance
+
+```mermaid
+flowchart LR
+    V[Revisable voice evidence] --> R[Explicit authenticated review]
+    R --> J[(Durable SQLite journal)]
+    O[Operator console] <--> J
+    J --> A[Exact approved action]
+    A --> W[Supervised worker]
+    W --> P[Provider adapter]
+    P --> X[Remote effect and authoritative status]
+    X --> Q[Reconciliation evidence]
+    Q --> J
+```
+
+The implementation is modular and local-first: one journal, explicit worker
+ownership, and narrow provider boundaries. Local fencing protects local state;
+it cannot undo or fence a request already accepted by an external provider.
+The configured recovery host can inspect an existing stopped journal, but it
+has no executor and does not automatically replay work.
+
+## Try the local walkthrough on Windows
+
+This path runs the styled console and a two-approval task against a **SIMULATED
+local effect ledger**. It needs no provider key or microphone.
+
+From PowerShell in the repository root:
+
+```powershell
+.\scripts\start_review_walkthrough.ps1
+```
+
+Open the loopback HTTP address printed by the script and follow the
 [manual review walkthrough](docs/engineering/manual-review-walkthrough.md).
-Open the printed HTTP address; opening the HTML file directly shows startup
-instructions. The original [pre-admitted walkthrough](docs/engineering/local-acceptance.md)
-is also available.
-No sandbox key or microphone is needed; this is separate from live-provider,
-live-voice and production-release acceptance.
+Opening `control/static/index.html` directly displays startup instructions;
+the live console must be served by the local host. The older
+[pre-admitted walkthrough](docs/engineering/local-acceptance.md) is also
+available. Neither walkthrough sends a real provider mutation.
 
-To inspect an existing stopped journal with the console and recovery worker in
-one process, use the [configured recovery host](docs/engineering/configured-recovery-host.md).
-It has authenticated readiness checks and no executors or automatic replay.
+To inspect an existing stopped journal, use the
+[configured recovery host](docs/engineering/configured-recovery-host.md).
+It reports authenticated readiness and recovery observations without dispatch
+or automatic replay.
 
-**Voice turn ≠ task.** Conversational interruption and correction must not erase
-durable work or make uncertain remote effects safe to retry.
+## Reproduce checks
 
-This branch contains a stacked research safety implementation and an
-authenticated local operator console. **PUBLIC MAIN VERIFIED** is still Phase 0
-at `4162ec17f4bda15c13de3fa1f0e1e33e3fe35591`; the safety PRs are unmerged.
-Provider-effect tests are **SIMULATED**. **REAL PROVIDER** acceptance has not been
-run, and the live voice test remains a skipped placeholder. This is not a production-readiness
-claim.
-The [production-readiness ledger](docs/engineering/production-readiness.md) tracks
-the seven remaining acceptance areas, required evidence and external-access gates.
-
-The console reads the SQLite journal, reviews exact operation evidence, issues
-scoped approvals, records cancellation intent, and records investigation requests.
-The [recovery preflight](docs/engineering/recovery-preflight.md) independently
-inspects local journal consistency through a bounded read-only connection. It
-reports uncertainty without authorizing restore, dispatch or mutation replay.
-The [backup and restore-drill runbook](docs/engineering/journal-backup-drills.md)
-captures verified snapshot bundles and drills restoration into memory. Backup
-freshness and live recovery activation remain independent gates.
-Use the [encrypted backup commands](docs/engineering/encrypted-backups.md) for new
-operational captures, with keys held outside backup storage. Ciphertext is
-authenticated before plaintext extraction; authentication does not prove freshness.
-The [offline key-rotation runbook](docs/engineering/backup-key-rotation.md) migrates
-one validated encrypted bundle to a new key without overwriting the original or
-renewing the snapshot's age. Key retirement requires a separate inventory review.
-It does not dispatch or retry provider mutations. Cancellation cannot roll back
-a remote effect; UNKNOWN evidence remains unresolved until authoritative
-reconciliation.
-An explicitly started supervised worker can act on a recorded exact approval.
-
-Python 3.13 / PowerShell:
+The runtime suite needs no live credentials. Use Python 3.13 and the hash-locked
+setup and platform guidance in
+[locked environments](docs/engineering/locked-environments.md). From the
+repository root in PowerShell, a fresh runtime environment can be prepared and
+checked with:
 
 ```powershell
 py -3.13 -m venv .venv
@@ -57,100 +125,43 @@ New-Item -ItemType Directory -Path results -Force | Out-Null
 .\.venv\Scripts\python.exe -m pip check
 .\.venv\Scripts\python.exe -m scripts.dependency_audit --profile runtime --output results/environment-runtime.json
 .\.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider
+.\.venv\Scripts\python.exe -m eval.provider_faults --output results/provider-process-scorecard.json
 ```
 
-Both runtime and browser requirements now lock the transitive graph and archive
-hashes. CI installs them into fresh environments and rejects metadata drift.
-Read the [locked environment runbook](docs/engineering/locked-environments.md)
-for supported targets, browser setup, reviewed updates, evidence and limits.
-The [offline-wheel guide](docs/engineering/offline-wheels.md) captures and verifies
-exact host-compatible archives for recovery without relying on a live index.
+For the browser suite, install the separately locked browser profile and follow
+the same runbook. CI runs runtime and browser matrices on Windows and Linux,
+plus dependency advisory checks. Qualification numbers, skips, source commits,
+and failed predecessors are recorded per phase in
+[implementation.md](implementation.md); test counts from one commit must not
+be carried forward to another.
 
-The [dependency advisory gate](docs/engineering/dependency-advisories.md) checks
-all supported runtime, browser and isolated security-tool graphs against public
-PyPI advisory data. Missing or inconsistent evidence fails the gate. Its first
-online scan found a telemetry parsing advisory; the application locks now carry
-the compatible dependency fix. A complete scan with no known findings is not
-package-security certification or real provider/audio acceptance.
+## Safety boundaries
 
-For journal setup, protected offline credentials, running the console, browser
-tests, architecture, limitations, migration and rollback, read the
-[operator console runbook](docs/engineering/operator-control-console.md).
-The [read-recovery contract](docs/engineering/console-read-recovery.md) separates
-transient read errors from command uncertainty and preserves unresolved operation IDs.
-The [failure-diagnostics runbook](docs/engineering/failure-diagnostics.md) covers
-bounded failure categories, deterministic SQLite contention and retained uncertainty.
-The [Windows setup qualification](docs/engineering/windows-setup-qualification.md)
-adds opt-in secret-free checkpoints and retains timeout evidence without relaxing security checks.
-Production startup generates no demo data, credentials, provider adapter or
-background worker.
+- Speech and conversational correction can revise a proposal; they cannot
+  silently cancel, replace, authorize, or complete durable work.
+- Dispatch requires exact durable intent and current approval. A local epoch,
+  lease, UI response, or cancelled coroutine is not evidence that a remote
+  effect was undone.
+- An uncertain remote outcome stays uncertain until authoritative provider
+  evidence resolves it. Never blindly retry an unknown mutation.
+- Backups, restores, and recovery checks do not renew old authority or prove
+  remote state. Preserve journal and provider evidence during rollback.
 
-Earlier invariants and validation are documented in the
-[security authority](docs/engineering/durable-security-authority.md),
-[workflow contract](docs/engineering/workflow-contract-versioning.md),
-[worker ownership](docs/engineering/worker-lease-fencing.md), and
-[durable action intent](docs/engineering/durable-action-intent.md) reports.
-The [worker supervision runbook](docs/engineering/worker-supervision.md) covers
-owned operation lifetimes, drain/timeout behavior, a recovery-only host command,
-and observed heartbeat health. Real provider, voice, identity, deployment and
-independent evaluation gates remain.
+## What remains
 
-The [provider reconciliation contract](docs/engineering/provider-reconciliation.md)
-selects a restricted Stripe test-mode adapter for terminal cancellation of an
-existing, known PaymentIntent. It requires durable intent and exact approval;
-the voice boundary and default worker do not dispatch it. Automated HTTP fixtures remain **SIMULATED**;
-real sandbox acceptance is a separate gate. Unknown mutations are never retried.
-`python -m providers.reconcile_stripe --help` describes the supervised,
-GET-only command for one previously recorded compatible operation; it cannot
-create or replay a cancellation.
+The production-readiness ledger identifies seven acceptance areas still open:
+real provider behavior, live voice and identity, durable proposal delivery and
+end-to-end review, managed deployment and operations, disaster-recovery custody,
+broader independent evaluation, and consolidated release qualification. Real
+sandbox credentials, live audio, native service installation, operational SLOs,
+and independent held-out evaluation must be qualified separately. Passing
+offline tests does not close those gates.
 
-`python -m providers.preflight_stripe --help` describes a separate GET-only
-setup check. It needs a protected restricted test-key file and the expected
-sandbox account ID; an existing PaymentIntent ID is optional. It never opens a
-journal or creates, cancels or reconciles an operation. Read access does not
-prove write permission, and preflight success is not the real cancellation
-acceptance gate.
-Follow the [Windows Stripe sandbox setup guide](docs/engineering/stripe-sandbox-setup.md)
-to create a dedicated sandbox, save its restricted key through a masked prompt
-outside the checkout, and run account-only preflight. The key helper makes no
-provider calls; the preflight command contacts the real API only when explicitly run.
+Useful starting documents:
 
-The [supervised sandbox drill](docs/engineering/supervised-stripe-drill.md) adds
-an explicitly enabled, one-known-resource cancellation host. It stages a fresh
-action, waits for an exact console approval, makes at most one cancel POST, and
-verifies readback without replay or compensation. The console records authority;
-the worker owns execution. This host is separate from the default recovery-only
-worker and has not passed real-provider acceptance.
-
-Run `python -m eval.provider_faults` for independent worker/service/proxy process
-drills over real loopback TCP. The **SIMULATED** service has its own durable
-effect ledger; lost responses, process death and hidden status visibility must
-recover with GET only. The [process fault runbook](docs/engineering/provider-process-faults.md)
-documents reproduction, evidence and remaining real-provider gates.
-
-The [voice evidence boundary](docs/engineering/voice-evidence.md) replaces the
-unsafe live demo path with a proposal-only LiveKit word-evidence hook. Missing
-confidence/timing stays unavailable, revisions replace previous hypotheses,
-and speech endpoints never authorize mutations or complete durable tasks.
-The [reviewed task admission API](docs/engineering/reviewed-task-admission.md)
-adds explicit local-credential acceptance of a current proposal and exact
-versioned arguments into a durable PENDING task. Admission does not execute or
-approve a tool. The current schema-10 runtime requires
-[explicit offline migration](docs/engineering/zero-activity-task-replacement.md#schema-10-migration-and-rollback);
-opt-in retained speech is inspection-only and does not restore admission authority.
-Configured manual review-host integration and live participant identity remain open.
-The old `python -m agent` entrypoint is disabled; its fleet harness remains
-explicitly SIMULATED. No new voice provider or microphone is enabled.
-Run `python -m eval.voice_replay` for the credential-free, deterministic voice
-protocol scorecard. Its bundled synthetic cases are separate from ASR quality
-and live audio acceptance.
-
-The [mutation comparison](docs/engineering/mutation-comparison.md) runs five
-deterministic schedules against two explicit toy policies, a production CCS
-epoch-signal ablation and the full mutation boundary. Independent simulated
-effect ledgers expose duplicates and false outcomes. Safe parking is reported
-separately from task completion; this is a small mechanism experiment.
-The [durable-task evaluation](docs/engineering/durable-task-evaluation.md) extends
-this to real three-step supervised workflows, voice/task isolation, consumer
-disconnects, explicit cancellation and conservative reconstruction. It reports
-completed, parked and cancelled simulated tasks separately.
+- [Implementation and qualification record](implementation.md)
+- [Production-readiness ledger](docs/engineering/production-readiness.md)
+- [Operator console and credential setup](docs/engineering/operator-control-console.md)
+- [Windows Stripe sandbox setup](docs/engineering/stripe-sandbox-setup.md)
+- [Voice evidence boundary](docs/engineering/voice-evidence.md)
+- [Migration and rollback](docs/engineering/zero-activity-task-replacement.md)

@@ -75,6 +75,26 @@ def test_explicit_cancel_inspect_review_accept_creates_one_linked_task(replaceme
         assert json.loads(db.execute('SELECT checkpoint FROM task_checkpoints WHERE task_id=?',(env.original_id,)).fetchone()[0])['state']=='CANCELLED'
 
 
+def test_replacement_controls_follow_review_state_without_waiting_for_snapshot(replacement_console):
+    env,page=replacement_console
+    eligible(page)
+    held=[]
+    page.route('**/api/snapshot',lambda route:held.append(route))
+    with page.expect_request('**/api/snapshot'):
+        page.get_by_role('button',name='Refresh',exact=True).click()
+    assert len(held)==1
+    try:
+        page.locator('#replacement-prepare').click()
+        expect(page.locator('#proposal-transcript')).to_have_text('SIMULATED move cargo')
+        expect(page.locator('#replacement-prepare')).to_be_disabled()
+        page.locator('#proposal-finish').click()
+        expect(page.locator('#replacement-prepare')).to_be_enabled()
+        assert counts(env)['task_checkpoints']==1 and claim_count(env)==0
+    finally:
+        for route in held:route.abort('failed')
+        page.unroute('**/api/snapshot')
+
+
 @pytest.mark.parametrize('replacement_console',[True],indirect=True)
 def test_recorded_pending_action_blocks_replacement_and_does_not_imply_rollback(replacement_console):
     env,page=replacement_console

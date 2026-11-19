@@ -1,5 +1,5 @@
 // Presentation/receipt recovery only. The server owns evidence and authority.
-export function installProposalReview({ api, session, available, ready }) {
+export function installProposalReview({ api, session, available, ready, changed = () => {} }) {
   const $ = (id) => document.getElementById(id);
   let owner = null, key = null, view = null, ids = null;
   let busy = false, attempted = false, admitted = false, blocked = false, generation = 0;
@@ -58,6 +58,7 @@ export function installProposalReview({ api, session, available, ready }) {
     $("proposal-admit").disabled = !ready() || busy || attempted || admitted || blocked || !view?.current || view?.expired || !$("proposal-confirmed").checked;
     $("proposal-status").disabled = busy || !ids || !session();
     $("proposal-finish").disabled = busy || (attempted && !admitted);
+    changed();
   }
   function sync() {
     const current = session();

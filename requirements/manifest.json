@@ -3,17 +3,17 @@
     "requirements-dev.txt": "856e8f9a1f1893ae6ce788f7156dfcdd17b03cae99443b67497e5008bed1ec7c",
     "requirements/browser.in": "3b98eeeb3b4f76ff1c1b90ae750b756e3c63089574def43d6307e303c500278e",
     "requirements/locking.txt": "0f8a1a194d6eb48372383a8b4b7c99b38ad2adb5bb4c2f98cf2a4cd19421bfa5",
-    "requirements/runtime.in": "a54effd577b02a31611ae6f971618db5b35037cd9d2d0445a4fe3c9e76575095",
+    "requirements/runtime.in": "8eb8ecdf912a63e2df6b40fdacbedd7f7b861b19374ddc7d3f6a15a3624ada68",
     "requirements/security.in": "84f64c4a205fdd1a97936b51a4763d2d7ae8d4a4b37564f300be2a0055a342ab"
   },
   "locks": {
-    "requirements-browser.txt": "f400644f0d389e25254938548da65005fa735057abfe4462b39e6484da2135fc",
+    "requirements-browser.txt": "851820cc71f878ab5b6d1306ac4e360a53fd4491c1a3c288513434001215fb57",
     "requirements-security.txt": "bb48b856edd556e4490b113061c9ce9ff20fe058e6712711d01ecd030a9db327",
-    "requirements.txt": "b2d317b34599001d03ba2d5e6307b4b09932a0795c7f253b76c555d2d6aab909"
+    "requirements.txt": "f5c369083c054b889ada436e7097f0be0af7d2dafba759862d03ab2336ddb0db"
   },
   "python_series": "3.13",
   "resolver": {
-    "cutoff": "2026-10-23T13:59:36Z",
+    "cutoff": "2026-10-30T00:00:00Z",
     "index": "https://pypi.org/simple",
     "name": "uv",
     "version": "0.13.5"

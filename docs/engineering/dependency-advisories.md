@@ -24,6 +24,36 @@ override or finding suppression is used. See the official
 [LiveKit release](https://github.com/livekit/agents/releases/tag/livekit-agents%401.8.8)
 and [OpenTelemetry release](https://github.com/open-telemetry/opentelemetry-python/releases/tag/v1.45.1).
 
+The complete online scan on source `9222417` (2026-11-19) then found
+`CVE-2026-126360` / `GHSA-mf5v-w3w3-f6cg` in `opentelemetry-api==1.45.1` in
+both the runtime and browser graphs. The security-tool graph had no findings.
+The [reviewed advisory](https://github.com/advisories/GHSA-mf5v-w3w3-f6cg)
+identifies quadratic regex backtracking in trace-context parsing and lists
+`1.45.2` as patched. The OpenTelemetry API `1.45.2` release was published on
+2026-10-29 ([PyPI release metadata](https://pypi.org/project/opentelemetry-api/1.45.2/)).
+
+The follow-up lock bundle pins the API to `1.45.2` and advances the resolver
+cutoff to `2026-10-30T00:00:00Z`, the first day after that release. The pinned
+resolver also updates `opentelemetry-sdk` to `1.45.2` and
+`opentelemetry-semantic-conventions` to `0.66b2`; the security-tool lock and
+other application pins are unchanged. The exact archive hashes are generated
+by the repository resolver, not copied into the requirements files by hand.
+Qualification is verified on source commit
+`ba6197e11bfa9522c47dc840343a2f9f432eaf59`: fresh hash-locked installation
+and `pip check` passed, the repository runtime dependency audit passed, and 86
+targeted non-async regression tests passed. The hosted push and pull-request
+runs each passed all five jobs (Linux and Windows runtime, browser and
+advisory checks), for ten successful hosted jobs total. The earlier failure
+on `9222417` remains recorded evidence.
+
+The local Windows async suite did not complete: this environment hung while
+Python initialized a Proactor event loop's socket pair, before CCS test code
+ran. A minimal `asyncio.new_event_loop()` reproduction showed the same
+environment-level hang. This is not counted as a pass or a CCS regression;
+the hosted Windows runtime and browser jobs did pass on the qualified source
+commit. Re-run the local async suite after resolving or isolating that host
+runtime issue.
+
 The voice observer retains its version guard, now qualified against `1.8.8`.
 Older or arbitrary newer SDK versions cannot connect. Real SDK-object tests
 retain proposal-only behavior, absent LLM/TTS/tools/recording, and no durable
