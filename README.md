@@ -14,13 +14,14 @@ checks remain the source of truth.
 ## Project status
 
 This is an active research implementation, **not a production-readiness claim**.
-The safety stack is developed in a series of unmerged pull requests; public
-`main` remains the verified Phase 0 baseline at
-`4162ec17f4bda15c13de3fa1f0e1e33e3fe35591`.
+The code baseline on public `main` is Phase 0 at
+`4162ec17f4bda15c13de3fa1f0e1e33e3fe35591`; main has received README-only
+project-status documentation since. The safety stack is developed in a series
+of unmerged pull requests.
 
 | Evidence label | Current meaning |
 | --- | --- |
-| **PUBLIC MAIN VERIFIED** | Public `main` is still the Phase 0 commit above; it does not contain the current safety stack. |
+| **PUBLIC MAIN VERIFIED** | Public `main` still has the Phase 0 code baseline above, with README-only documentation added since. It does not contain the current safety stack. |
 | **LOCAL BRANCH VERIFIED** | The active implementation is on `codex/ci-correctness-recovery` and tracked in draft PR [#45](https://github.com/dushyant-puro/chronocortex-saga/pull/45), stacked on earlier safety phases. Check the exact commit before relying on a result. |
 | **SIMULATED** | Offline provider fixtures, synthetic voice evidence, and independent process-fault drills. These do not establish real provider or live audio behavior. |
 | **REAL PROVIDER** | A real provider account, authorized operation, and authoritative status readback. This acceptance has not been run. |
